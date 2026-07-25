@@ -1,286 +1,377 @@
 # dngscan
 
-A small offline tool that reads a RAW file and compresses it into a JPEG through AgX.
-The AgX implementation comes from darktable's `agx` module.
+This is a small RAW-to-JPEG tool I wrote for myself.
+
+I like what AgX does to digital images, especially its highlights and highly saturated
+colors, but I usually only want to develop one RAW through AgX rather than open a full
+photo editor. darktable's scene-linear pipeline is the foundation of this project; it
+simply contains far more than I need for this particular job.
+
+dngscan follows that one path: read the RAW, analyse the signal the sensor actually
+recorded, form the image in scene-linear Rec.2020, compile a tone plan from the RAW
+analysis, and compress it through AgX into an sRGB or Display P3 JPEG. It is not a photo
+editor. I think of it as a very narrow digital developer, or a small signal-and-algorithm
+toy.
+
+The repository is public mainly so friends can use it too. Anyone interested can tinker
+with the code, parameters, and data from other cameras.
 
 [中文说明](README.zh-CN.md) · [License](LICENSE) · [Third-party notices](NOTICE.md)
 
-dngscan reads a RAW file, measures the signal the sensor actually recorded, renders it
-in scene-linear Rec.2020, and compresses it through AgX into an 8-bit sRGB or Display
-P3 JPEG. Its responsibility ends there: no catalog, no layers, no masks, no local
-retouching. **It is not a photo editor** — it is more precisely a signal-processing
-tool: a developer, in the darkroom sense, whose single concern is compressing RAW
-through AgX.
+## Why I made a separate pipeline
 
-## Why it exists
+I have always thought of darktable's scene-referred pipeline as a signal-processing
+laboratory, where much of the pleasure comes from understanding what every module does
+to the signal. dngscan takes out the path I use most: LibRaw interpretation,
+scene-linear Rec.2020, and the curve construction and primary geometry from darktable's
+GPL `agx` module. AgX originated with Troy Sobotka and developed through the Blender /
+EaryChow ecosystem; this project mainly inherits it through darktable's photographic
+implementation.
 
-My judgment of darktable is that it is, at its core, a signal-and-algorithm processing
-instrument — a toy for signals, in the entirely respectful sense of an apparatus whose
-pleasure lies in understanding and manipulating them. Its scene-referred pipeline is
-rigorous and complete, but that completeness carries the full complexity of a general
-editor. For the single task of compressing a RAW through AgX, most of that capability
-is beside the point — and dngscan exists for exactly that reason. It takes this one
-path out of the full editing system and makes it a standalone, reproducible,
-deliberately small tool: LibRaw interpretation, scene-linear Rec.2020, and the curve
-construction and primaries geometry ported from darktable's GPL `agx` module. Nothing
-more.
+There would not be much point in merely extracting darktable's AgX module. The useful
+part of dngscan is carrying information from RAW capture all the way into the final
+display transform.
 
-Two positions run through the design.
+darktable's AgX module receives a floating-point image after demosaic, white balance,
+and exposure. It sees the image, but not the original CFA: it cannot know which channel
+really clipped on the sensor, or whether a smooth highlight contains measured signal or
+values invented by highlight reconstruction. A small integrated pipeline can preserve
+that evidence before demosaic, then use it to distinguish the reliable scene body, the
+sensor tail, and highlights whose original information has already been lost.
 
-**First, automatic decisions can only be justified by measurement.** The digitized
-optical signal is the data this tool absolutely depends on: black and white levels,
-per-channel CFA clipping, usable shadow range, the scene's luminance distribution — the
-compression curve is compiled from these measurements. Automation here is respect for
-the captured signal, not aesthetic decision-making on the user's behalf. A night scene
-therefore stays dark at EV 0, and a lamp that clipped on the sensor does not acquire
-the authority to define the image's white point merely because highlight reconstruction
-rendered it smooth.
+That is also what “automatic” means here. It is not an attempt to make aesthetic choices
+for a photograph. It assigns measurable questions to measurements: black and white
+levels, per-channel CFA clipping, noise floor, usable dynamic range, the luminance body,
+and the highlight tail. These can decide how much scene EV the curve must contain, when
+chroma may retreat toward white, and when a reconstructed pixel should not be trusted.
 
-**Second, the imaging path must remain explainable.** The AgX compression pipeline
-itself is deterministic; scene measurement compiles its working parameters, but taste
-never enters the automatic analysis. Every control that expresses intent — exposure
-compensation, white balance policy, the camera-response prefeed, chromatic looks, LUT
-filters — stands outside the AgX core as an explicit option, off or neutral by default.
-When the image changes, the cause can be named: the RAW itself, the DRT, or a choice
-the user made.
+Exposure compensation, white balance, looks, and LUTs are different. They express
+capture intent or taste, so they remain explicit choices outside the automatic AgX
+analysis. I do not require exposure and white balance to remain untouched; I only do
+not want a content-adaptive algorithm silently turning a night scene gray or removing
+the color of its original light.
 
 ## Pipeline
 
 ```text
 RAW / DNG
   |
-  +-- pre-demosaic CFA evidence
-  |     black/white levels · per-channel clipping · headroom · noise confidence
-  |
-  +-- LibRaw: demosaic · selected WB · camera interpretation
+  +-- Capture
+  |     black / white level
+  |     per-channel CFA clipping and headroom
+  |     noise confidence and usable dynamic range
+  |     demosaic, highlight handling, camera interpretation
   |
 scene-linear Rec.2020
   |
-  +-- optional camera-response prefeed          (outside the core)
-  +-- RenderPlan compiled from reliable scene statistics and RAW evidence
-  +-- compression core: agx · gated · lum · neutral
-  +-- optional chromatic look / LUT filter      (outside the core)
+  +-- optional camera-response prefeed
   |
-Oklab gamut fit · sRGB/P3 encode · 8-bit dither · JPEG
+  +-- Tone
+  |     black point / white point / pivot
+  |     contrast / toe / shoulder / view brightness
+  |
+  +-- Color geometry
+  |     AgX inset / outset / hue path
+  |     RAW clip retreat / punch / gamut fit
+  |     optional look or local LUT
+  |
+  +-- Delivery
+        sRGB / Display P3
+        8-bit TPDF dither
+        JPEG quality and chroma sampling
 ```
 
-Reconstructed highlights can look continuous, but they never regain sensor headroom.
-The CFA clipping evidence is collected before demosaicing and stays available to the
-renderer, so reconstructed pixels cannot define the global white endpoint.
+These layers are deliberately separate. Tone controls luminance relationships and the
+display dynamic range. Color geometry controls hue paths, chroma compression, and the
+path to white. Capture supplies evidence without directly deciding taste. When one
+stage changes the image, its reason should remain identifiable.
 
-## Stage-by-stage choices
+## Capture: where the RAW evidence comes from
 
-Every option visible in the GUI corresponds to a real stage of the pipeline; this
-section explains, in order, what each one actually does.
+### Black, white, and per-channel clipping
 
-**Demosaic.** Full-resolution export defaults to `--demosaic auto`: Bayer sensors get
-the best algorithm the current build supports in DHT → DCB → AHD order; non-Bayer
-sensors (Fujifilm X-Trans) keep libraw's native path. Previews bypass interpolation
-entirely and use half-size superpixel binning (each 2×2 cell collapses to one pixel),
-so preview texture says nothing about interpolation quality. Manual choices are
-`dht / dcb / ahd / aahd / vng / ppg`. One judgment matters here: this tool performs no
-noise reduction, which makes demosaic the only texture lever. DHT resolves the most
-detail on clean low-ISO signal; on noise-heavy high-ISO files, detail-aggressive
-interpolation amplifies chroma noise into maze patterns and false color — the smoother
-`vng` and `ppg`, or the false-color-suppressing `dcb` and `aahd`, often read better
-there. Noisy night captures are worth one manual comparison. Worth knowing: libraw
-itself defines more algorithms — LMMSE (the classic choice designed for noise-heavy
-captures), AMaZE, VCD, AFD — which come from the GPL demosaic packs and are absent
-from standard rawpy wheel builds. If your libraw build carries them, exposing one is a
-one-line addition to `DEMOSAIC_CHOICES`: the resolver already checks availability and
-falls back gracefully.
+dngscan reads the pre-demosaic CFA from `raw_image_visible` and
+`raw_colors_visible`. Black level comes from metadata. Full well first looks for a
+credible saturation pile at the top of each channel and uses that measured ceiling
+when present; otherwise it falls back to per-channel metadata white levels. The values
+are never collapsed into one scalar for all R/G/B, so clipping is a threshold map
+indexed by CFA color. If no channel has a reliable pile, the report labels full well as
+a metadata fallback rather than presenting the estimate as a measurement.
 
-**White balance.** `camera` uses the in-camera AsShot measurement; `daylight` uses
-libraw's calibrated daylight multipliers for film-style roll consistency — every frame
-under the same light gets the same balance, and color casts remain as properties of the
-scene. Either way, the AsShot deviation from daylight is reported as testimony about
-the light source. The position here is, again, to trust measurement: as long as the
-illuminant belongs to the daylight family (sun, overcast, shade), the estimation
-problem lives on the roughly one-dimensional blackbody–daylight locus and is
-well-conditioned — the in-camera measurement is usually accurate enough, whereas the
-eye judging a display is already chromatically adapted to that display's white point
-and the room, which makes eyeballing white balance a circular reference. The limits of
-the measurement deserve equal honesty: mixed sources, narrow-band artificial light
-(LED, fluorescent, sodium vapor) and frames dominated by a single color degrade the
-estimate into an ill-posed problem. And one layer further, often overlooked: much of
-what is perceived as "wrong white balance" is not white balance at all — color
-appearance effects (Hunt, Stevens, Abney, Bezold–Brücke) mean that a tone curve's
-redistribution of luminance and purity itself shifts perceived hue and warmth, and
-memory colors (skin, sky, foliage) were never colorimetrically correct expectations to
-begin with. Before touching WB, confirm the deviation is not coming from the tone and
-chroma layers.
+This affects more than the clip percentage in a report. Spatial clip maps, 2x2 cell
+metrics, highlight classes, and render-time clip masks use the same thresholds. If a
+camera's green channel reaches full well before red, the rest of the pipeline should
+know that green information was lost first rather than treating all three channels as
+simultaneously clipped.
 
-**Highlights.** The three libraw strategies differ in mechanism. `clip` cuts hard at
-sensor saturation — the most honest, but the three channels clip at different levels,
-so highlight borders often carry magenta or cyan fringes; `blend` feathers the
-transition; `reconstruct` estimates the clipped channels from the surviving ones —
-plausible luminance structure, but the chroma is an estimate that drifts toward the
-surviving channel's hue. The choice affects visual continuity only, never evidence:
-the CFA clipping state is captured before demosaicing, reconstructed pixels can never
-feed back into the curve endpoints, and the clip classes are exactly what the `gated`
-core consumes. In practice: use reconstruct where highlight gradients matter (lamps,
-backlit sky), and clip where maximum honesty matters (calibration, measurement).
+Highlight reconstruction can create continuous luminance and plausible color, but it
+cannot recover signal the sensor never recorded. Clipping evidence is saved before
+reconstruction, so a repaired pixel can never feed back and define the global white
+endpoint.
 
-**Purity compensation (punch).** The mechanism behind AgX-family flatness is described
-in the section above; punch is a scene-gated correction for it, not a style layer. The
-gate is a product of three scalars — subject brightness (median near mid gray), sensor
-quality (usable DR from camera priors or single-frame measurement), and window width —
-so bright, low-ISO, wide-window scenes receive an Oklab chroma lift automatically,
-while night and high-ISO scenes gate to exactly zero and short-circuit the operator:
-their renders are byte-identical. Every weight multiplies into the gain's increment,
-so the gain is ≥ 1 everywhere (it never desaturates) and attenuates on the neutral
-axis (grays immune), in deep shadows (no noise amplification), in highlights
-(preserving the path-to-white), on already-rich colors (a knee caps them) and in the
-skin band (halved). Its limits deserve stating too: this is a global chroma policy
-driven by scalar scene statistics, with thresholds tuned on a limited corpus. The
-slider is a multiplier on the automatic value: 1 uses the analyzed value, 0 disables.
+### Demosaic
 
-**Output and gamut.** SDR is an 8-bit JPEG, default quality 100 with 4:4:4 chroma
-(4:2:2 / 4:2:0 available), with deterministic TPDF dither applied before quantization
-to avoid banding in smooth gradients. `--output-gamut srgb` targets maximum
-compatibility; `p3` embeds a Display P3 ICC profile and fails loudly rather than
-writing untagged wide-gamut data. `--output-format ultrahdr` writes an ISO gain-map
-HDR JPEG, with `--hdr-headroom` setting the gain-map ceiling in EV; this path remains
-experimental.
+Full-resolution `auto` export tries DHT, DCB, then AHD according to what the local
+rawpy/LibRaw build actually supports. Non-Bayer data such as X-Trans stays on the
+corresponding LibRaw path. Preview uses half-size 2x2 superpixel binning, so it is useful
+for exposure, color, and highlight decisions but not for judging final texture.
 
-**Exposure.** The anchor is a content-independent constant: nominally exposed mid gray
-maps to scene-linear 0.18, shared by all four cores, so EV means the same thing in any
-scene under any core, and `--ev` offsets from there. This is a deliberate rejection of
-content-adaptive exposure — a night scene staying dark at EV 0 is design, not defect;
-for sufficiently clean dark scenes the tool applies a display-side interior brightness
-lift (view brightness, true black and white point untouched) instead of raising
-exposure. `--ev auto` is an explicit brightness reference: it aligns the frame median
-to 18% gray, bounded by a highlight growth budget — light sources already clipped on
-the sensor do not count against the budget (lamps are supposed to clip), only newly
-created clipping limits the boost. Its limitation follows from its mechanism: the
-median is a global statistic, so a backlit subject whose median is dominated by the
-background still needs manual EV — which is what the slider is for.
+dngscan performs no denoising, which makes demosaic the main texture choice. DHT suits
+clean low-ISO signal; DCB, AAHD, VNG, or PPG can look more natural on noisy night files.
+Standard rawpy wheels do not necessarily include GPL demosaic-pack algorithms such as
+AMaZE, LMMSE, VCD, or AFD, so the available set depends on the local LibRaw build. The
+GUI/CLI can select `dht / dcb / ahd / aahd / vng / ppg` manually; an algorithm supplied
+by another LibRaw build only needs an entry in `DEMOSAIC_CHOICES` to use the existing
+availability check and fallback logic.
 
-## AgX formation and the compression cores
+### White balance
 
-First, what AgX itself is. A per-channel sigmoid is the shared skeleton of every
-film-like digital formation: R, G and B each pass through the same S-curve, so
-highlights roll off and shadows compress naturally. But a bare per-channel curve has a
-famous side effect — the three channels saturate at different rates, so hue drifts with
-brightness (the "notorious six": pure red slides toward orange-yellow in highlights,
-pure blue toward cyan). AgX's contribution is a pair of matrices around the curve. The
-**inset**, before the curve, contracts the working primaries toward the achromatic axis
-with a small rotation: the contraction guarantees no color enters the curve at extreme
-purity, giving bright saturated colors a smooth path-to-white instead of congealing
-into neon patches at the channel ceiling; the rotation pre-compensates perceptual hue
-shifts such as Abney. The **outset**, after the curve, restores purity — deliberately
-not the inverse of the inset, and the difference between the two is precisely AgX's
-character. The curve itself uses darktable's C1 piecewise construction (toe, linear
-segment, shoulder, continuous in both value and slope at the joins); its endpoints are
-compiled from scene statistics, and calibrated EV 0 always maps to 18% output.
+`camera` uses the file's AsShot measurement. `daylight` uses LibRaw's calibrated
+daylight multipliers and is useful when a group of images under the same light should
+keep a fixed balance.
 
-AgX's inherent limits deserve equal clarity, because they motivate several of this
-tool's later designs. First, the inset's up-front desaturation is only earned back by
-content deep in the toe, through per-channel expansion — which is why high-ISO night
-frames look rich while daylight wide-DR scenes run inherently flat (that the Blender
-ecosystem never ships AgX Base without a Punchy look is the same fact stated
-differently); purity compensation (punch) exists for exactly this. Second, chromatic
-behavior is coupled to where content lands on the curve: the same object can render
-with different saturation in different framings or exposures. That is the structural
-price of delegating color decisions to per-channel curves — and the reason the `gated`
-and `lum` control paths exist.
+Sun, overcast, and shade lie roughly on a predictable daylight locus, where the camera
+measurement is usually useful. Mixed light, narrow-band LED, fluorescent, and sodium
+light are not a simple color-temperature problem. Some changes that look like incorrect
+white balance also come from a tone curve redistributing luminance and purity, which is
+why WB and the DRT remain separate stages. The AsShot deviation from the daylight
+multipliers is also written into the analysis: it is both WB data and evidence about the
+light at capture.
 
-All four cores share the same exposure anchor and delivery safeguards, so an A/B
-between them isolates exactly one variable.
+I do not treat an adapted eye in front of a display as an absolute white-point meter.
+Hunt, Stevens, Abney, and Bezold-Brücke appearance effects can make changes in luminance
+and purity look like changes in hue or warmth, while memory colors such as skin, sky,
+and foliage are not simple colorimetric targets. When something looks “off,” separating
+the illuminant, camera balance, tone, and color geometry is more useful than immediately
+turning the temperature control.
 
-| core | what it does |
+### Highlight handling
+
+LibRaw's three choices affect the appearance after reconstruction:
+
+- `clip` cuts at saturation. It is closest to sensor state, but staggered channel
+  clipping can leave colored borders.
+- `blend` feathers the clipping boundary.
+- `reconstruct` estimates missing channels from surviving ones. It can recover
+  continuous structure, but its chroma is inferred.
+- Its hue often leans toward the surviving channel, so continuity is not color truth.
+
+I generally use `reconstruct` for photographs and `clip` when inspecting the sensor or
+the algorithm itself. The saved RAW clipping evidence is unchanged in every case.
+
+## Tone: exposure and curve construction
+
+### Fixed exposure anchor
+
+The pipeline uses scene-linear `0.18` as nominal middle gray. Its exposure baseline is
+a fixed camera constant plus manual EV, not an operation that forces every image median
+to 18% gray. Constant scaling preserves scene intent: a dark scene remains dark before
+AgX, a bright scene remains bright, and content-adaptive exposure does not reorder the
+relationship between photographs.
+
+The GUI's **brightness reference**, also available as `--ev auto`, is an explicitly
+requested alternate reading. It tries to place the global median at 18% gray while
+respecting a budget for newly created highlight clipping. Lights already clipped in the
+CFA do not consume that budget; they were emitters in the scene already. Only areas that
+still contained information but are pushed into the display ceiling limit the increase.
+The global median can still be misled by a background, so this remains a reference and
+not the default exposure.
+
+### Scene statistics are not simple min/max
+
+The tone plan separates the reliable body from the highlight tail. Body statistics
+exclude CFA-clipped and low-confidence areas and estimate black, pivot, contrast, and
+the useful mid-frequency range. The tail only reserves space for the shoulder. Sparse
+emitters and large bright surfaces are also different: letting a few lamps define white
+EV makes the highlights harsh while the rest of the image remains dark.
+
+The controls in the tone plan therefore have different evidence:
+
+- `black point` and `toe` follow the noise floor, usable shadows, and target display black.
+- `white point` and `shoulder` follow the reliable luminance tail, display headroom, and emitter topology.
+- `pivot` and `contrast` follow the subject midtones rather than a few extreme pixels.
+- `view brightness` raises only the curve interior while preserving true black and the target white endpoint.
+
+### The four GUI tone adjustments
+
+The GUI does not expose the automatic pivot, black EV, or white EV directly. Instead,
+it adds four bounded biases to the compiled tone plan. The center **Auto** value is the
+analysed result, not another preset. With all four at zero, the original render plan is
+used directly and the output is unchanged.
+
+| Control | Move left | Move right | What stays fixed |
+| --- | --- | --- | --- |
+| **Midtone brightness** | Makes the subject darker and more restrained | Raises the subject and visible shadows | Scene exposure, black point, and white point |
+| **Midtone contrast** | Softens midtone separation | Increases separation across the automatic pivot | The pivot position itself |
+| **Shadow transition** | Deepens the toe and reaches black sooner | Opens the toe and reveals more shadow separation | Black point; it cannot create low-SNR information |
+| **Highlight transition** | Makes the shoulder more direct and highlights more forceful | Softens the shoulder and preserves bright detail earlier | White point and RAW clipping position |
+
+**Midtone brightness** is not exposure compensation. Exposure EV scales the
+scene-linear signal, changes where content enters the shoulder, and consumes highlight
+headroom. Midtone brightness reshapes only the display-referred curve interior while
+true black and target white remain fixed. **Midtone contrast** is not another brightness
+control either: it changes slope around the automatic pivot, separating values within
+the subject instead of moving the subject as a whole.
+
+In practice, set subject placement with **midtone brightness**, shape it with **midtone
+contrast**, then tune the two ends with **shadow transition** and **highlight
+transition**. Opening shadows only reveals what the sensor recorded; in a low-SNR scene
+it also reveals read and chroma noise. **Highlight fade** is separate from these four
+luminance controls and changes only the chroma path near display white.
+
+### The darktable-style C1 curve
+
+The main curve follows darktable AgX's C1 construction. Toe, linear latitude, and
+shoulder meet with both value and first derivative continuous. The tone plan supplies
+black/white EV, contrast, toe and shoulder powers, and latitude, while the calibrated
+EV 0 to 18% anchor remains stable.
+
+Feeding scene min/max directly into a generic sigmoid lets a handful of lamps define
+white EV, producing bright, sharp highlights over a dark body. C1 endpoints plus the
+body/tail split make “how wide the scene is” and “where its important content should
+sit” two different questions.
+
+## Color geometry: what AgX actually changes
+
+A bare per-channel S-curve sends R, G, and B into the toe and shoulder at different
+rates, so highly saturated colors change hue with brightness. AgX is not only a
+sigmoid; its defining structure is the primary geometry around that curve.
+
+The pre-curve `inset` contracts the working primaries toward the neutral axis and adds
+a small rotation. Extreme colors do not hit a single channel ceiling directly and gain
+a smoother path to white. The post-curve `outset` restores purity, but is deliberately
+not the exact inverse of the inset. The difference between the two, plus optional hue
+restoration, is part of AgX's color character. This also addresses the notorious six of
+bare per-channel curves, such as pure red moving toward orange-yellow and pure blue
+toward cyan as they brighten; the inset rotation carries some Abney-style perceptual hue
+compensation as well.
+
+dngscan defaults to darktable's `smooth` primaries. `base`, `punchy`, and `muted` remain
+as geometric references from the wider AgX ecosystem; they do not participate in RAW
+analysis or change the exposure algorithm.
+
+AgX pays for this behavior through the same structure. The inset removes purity before
+the curve, and content largely earns it back through per-channel expansion in the toe.
+This is why high-ISO night images can look rich while bright wide-DR daylight images can
+look comparatively flat. Blender's common Base-plus-Punchy pairing addresses the same
+fact. Chroma is also coupled to where content lands on the curve: the same object can
+render at a different purity after a change in framing or exposure. `punch`, `gated`,
+and `lum` exist to separate and inspect these effects, not to reject AgX.
+
+### Four compression cores
+
+All four share the same exposure anchor, CFA evidence, and delivery safeguards so they
+can be compared at the same EV:
+
+| Core | Underlying difference |
 | --- | --- |
-| `agx` | Full-frame darktable-style AgX with `smooth` primaries; the finished default. |
-| `gated` | Same AgX candidate, but RAW evidence decides per pixel how much of its chromatic path applies. More conservative. |
-| `lum` | The same scene-compiled C1 toe/shoulder applied to luminance only, RGB ratios preserved. Shows what AgX color geometry adds. |
-| `neutral` | A fixed generic shoulder, no AgX at all. A conventional-export reference, not a recommendation. |
+| `agx` | Complete inset -> per-channel C1 curve -> hue path -> outset. The default render. |
+| `gated` | Computes both AgX-color and luminance-preserving candidates, then mixes them per pixel from RAW clipping, headroom, and noise confidence. |
+| `lum` | Applies the same scene-compiled C1 curve to a luminance norm while preserving RGB ratios; no AgX inset/outset. |
+| `neutral` | A fixed conventional shoulder without scene-compiled AgX geometry. |
 
-`gated` deserves one more sentence of mechanism: it renders both the lum luminance
-result and the AgX color result, re-normalizes the AgX output to the same Rec.2020
-luminance as lum, and then lets RAW evidence (clip class, remaining headroom, noise
-confidence) decide the per-pixel mix — there is exactly one luminance authority, so a
-confidence boundary can never produce a brightness seam. `neutral`'s curve endpoints
-are fixed constants rather than scene-compiled; the question it answers is "roughly
-what would an ordinary converter produce".
+`gated` is not another exposure curve. It first normalizes the AgX candidate to the same
+Rec.2020 luminance as the lum candidate, then chooses how much chromatic path to mix.
+There is one luminance authority, so confidence-mask boundaries cannot create brightness
+seams. It uses CFA information that a mid-pipeline darktable module cannot see: whether
+a color change came from valid channels or from an area already clipped and rebuilt.
 
-When `lum` is selected, the norm option decides which scalar the curve acts on, and
-this is a trade with no single right answer: `y` (Rec.2020 luminance) is
-colorimetrically strictest, but a saturated color's loudest channel can overshoot the
-display ceiling and needs the display-side chroma retreat as a backstop; `max` drives
-the curve with the loudest channel, so saturated colors never overshoot — at the cost
-of darkening every saturated color relative to its luminance, the flattest rendering;
-`power` (fourth-power weighting) is the compromise. Ratio preservation means hue and
-saturation are carried through tone exactly — which also means bright saturated
-highlights read "neon". That is the known failure mode of chromaticity-preserving tone
-mapping, and precisely the reason the per-channel AgX route is the default.
+`lum` deliberately preserves RGB ratios. It retains mid-frequency purity, but bright
+saturated colors can look neon because they do not retreat toward white as AgX colors
+do. The `y`, `max`, and `power` norms trade colorimetric luminance, loudest-channel
+protection, and a compromise between the two.
 
-The `--agx-primaries` presets (`smooth` default, `base`, `punchy`, `muted`) change only
-the AgX inset/outset geometry — comparison references, not different exposure
-algorithms.
+### RAW clip retreat, punch, and gamut fit
 
-## Camera-response prefeed (experimental)
+RAW clip retreat only engages where CFA evidence says channel information was lost. It
+moves the color toward the neutral axis at the same luminance before the curve. This is
+different from AgX's global inset: one is driven by actual sensor clipping, while the
+other is the color geometry of the display transform itself.
 
-"Prefeed" here means correcting a camera's systematic colorimetric error in the
-scene-linear domain, before the image formation — not applying a style after it. The
-premise is that a camera's color is determined by its spectral sensitivity functions
-(SSF) and filter-stack transmission, which are measurable, physically stable properties
-of an individual body. The first-order goal follows directly: if the deviation is
-known, compensate it digitally before the DRT has to compress it. The generalization
-is the second: given two sufficiently well-measured responses, the same operator can
-map part of camera A's response relationships toward camera B or a different
-CMOS/filter stack. This has a hard physical boundary — no per-pixel operator can
-recover spectral information the sensor never recorded, so two materials that are
-metameric under A cannot be given the distinction they would have shown under B. What
-remains feasible is approximating response relationships per material class, with an
-error figure and a confidence attached to each class.
+`punch` (labelled **mid-frequency purity** in the GUI) compensates for the broad loss
+of purity caused by the AgX inset in bright, wide-dynamic-range scenes. It works in
+Oklab and its automatic strength is gated by
+subject brightness, usable DR, and tone-window width. It fades on the neutral axis, in
+deep shadows, in highlights, on already vivid colors, and in the skin band. Every
+weight multiplies the gain increment, so gain is always >= 1: it only restores purity
+and never reverses into local desaturation. Night or high-ISO scenes can gate exactly to
+zero and short-circuit the operator so shadow chroma noise is not amplified. The GUI
+strength is a multiplier on the analysed value: `1` uses it and `0` disables it. This is
+still a global policy tuned on a limited image set, not a sensor measurement itself.
 
-The current implementation is built to that boundary. For five material classes —
-skin, foliage, cyan, neutral, magenta — constrained per-class 3×3 mappings are fitted
-on synthesized responses (SSF × illuminant × reflectance). At runtime each mapping's
-domain of validity is bounded by a soft Gaussian window in the (R/G, B/G) chromaticity
-plane, transported across white balance via von Kries scaling; per-class residuals and
-cross-class leakage are recorded in a calibration report, and each class's confidence
-is folded into its effective strength. All inputs are public: the ALEV III SSF is
-digitized from Leonhardt & Brendel (CIC23) — ARRI averaged measurements of five ALEXA
-bodies because the sensor stack's interference ripple is unit-specific, which is also
-why serious prefeed calibration must target the individual body, not the model; the
-Sigma fp side uses the Sony A7 III full-camera SSF measured by Weta Digital (AMPAS
-rawtoaces-data; same IMX410 sensor); camera→Rec.2020 profiles are fitted on the AMPAS
-190 training reflectances. One distinction matters: CFA clipping and headroom evidence
-is collected before demosaicing and feeds the tone plan and the gated core; the color
-prefeed itself operates after demosaicing and camera interpretation, immediately
-before AgX.
+**Highlight fade** is a separate, restrained display-side chroma bias. It does not alter
+the luminance shoulder or pretend to reconstruct clipped RAW data. Moving it right sends
+colors near display white toward the neutral axis earlier; moving it left retains more
+highlight chroma under the protection of the final gamut fit.
 
-Choosing ARRI as the mapping target is personal: I want the skin I see in ARRI
-footage — a warmth carried by blood color, set against a cooler cyan field. I suspect
-this owes something to the ALEV stack's comparatively permissive red/near-IR passband,
-and this project's own calibration report points the same way: of the five material
-classes, the largest native divergence is foliage, the class that depends on red-edge
-response. But this is a goal, not an achievement. I own no controlled illuminants,
-reference targets or spectral measurement equipment; the shipped mapping is a
-geometric approximation built from digitized public curves and analytic spectra, and
-it behaves like a restrained color mapping rather than an ARRI skin response. Errors,
-confidences and data provenance are documented in
-`dngscan_assets/spectral/README.md`.
+Final gamut fitting occurs after tone and looks. It pushes colors that do not fit the
+target sRGB/P3 gamut back along Oklab chroma rather than clipping each RGB channel. This
+keeps highlight colors retained by AgX or P3 from collapsing into hard primaries at the
+last step.
 
-## Looks and LUT slots
+## The prefeed experiment I am keeping
 
-One project-authored look ships — `optic_warm_cyan`, warm skin against a cooler field —
-because I like it; it is a by-product of the ARRI-look work above. It is a small
-post-AgX Oklab field written for this repository, not a vendor LUT.
+I like the idea of compensating repeatable camera defects from measurements before the
+image reaches AgX. If two sensor and filter-stack responses are measured well enough,
+the same layer can also approximate some response relationships of another camera,
+within the information the original sensor actually recorded.
 
-The LUT filter adapter stays, with three documented slots (Kodak 2383 print emulation,
-RED IPP2, Sony LC-709TypeA). Place a legally obtained `.cube` at the expected path
-under `dngscan_assets/vendor_luts/` (exact paths are in `dngscan/display_filter.py`)
-and the filter appears in the CLI and GUI automatically; remove the file and it
-disappears. I honestly do not know which LUT truly "belongs" after an AgX DRT — that question is
-left to everyone; I hope it produces good new ideas. **No vendor LUT is distributed in this repository**,
-and please do not attach vendor LUT files to issues or pull requests without explicit
-redistribution permission.
+The included ARRI-like prefeed came from a personal goal: I wanted to see whether the
+Sigma fp could move a little toward the skin I like in ARRI footage, with blood warmth
+set against a cooler cyan field. My original suspicion involved the ALEV filter stack's
+red/near-IR behavior and the different filter and magenta behavior of the fp/IMX410.
+
+The current implementation integrates public camera SSFs, illuminant SPDs, and material
+reflectance spectra. It fits constrained 3x3 mappings for skin, foliage, cyan, neutral,
+and magenta classes, then limits every mapping with a soft window in the `(R/G, B/G)`
+chromaticity plane. The windows move with selected white balance through von Kries
+scaling. A neutral-axis constraint prevents it from becoming hidden white balance,
+while per-class residual and cross-class leakage enter its confidence.
+
+The ALEV III SSF was digitized from Leonhardt & Brendel's CIC23 paper. ARRI averaged
+measurements from five ALEXA bodies because interference patterns in the sensor stack
+vary between units. The Sigma fp side currently uses the full-camera Sony A7 III SSF
+measured by Weta Digital in AMPAS `rawtoaces-data`; it shares the IMX410 sensor but is
+not the same complete filter stack as the fp. The camera-to-Rec.2020 profile is fitted
+on AMPAS's 190 training reflectances. The calibration files keep these sources and
+substitutions explicit rather than treating “same CMOS” as “same camera.”
+
+There is a firm physical limit. If two materials have already become metameric on the
+fp, a per-pixel matrix cannot recreate the distinction they would have shown on ALEV.
+Sensor stacks also vary between individual bodies, so serious calibration should target
+the exact camera in hand. I do not have controlled illuminants, targets, or spectral
+equipment, and the present result is closer to a restrained geometric color mapping
+than the ARRI skin response I originally wanted. Sources, assumptions, CSV data, and
+fit reports are in [`dngscan_assets/spectral/`](dngscan_assets/spectral/).
+
+## Looks and LUTs
+
+The repository includes one look I wrote, `optic_warm_cyan`, because I actually use it.
+It is an Oklab chroma field after AgX, not a vendor LUT and not a camera prefeed.
+
+The code also keeps optional `.cube` slots for Kodak 2383, RED IPP2, and Sony
+LC-709TypeA. Legally obtained LUTs can be placed in the corresponding paths under
+`dngscan_assets/vendor_luts/`, where the GUI discovers them automatically. The files
+themselves are not distributed here. Prefeed, AgX geometry, and a display-side LUT sit
+at three different points in the pipeline even when some of their visual effects look
+similar.
+
+## Output
+
+SDR output is an 8-bit JPEG with deterministic TPDF dither, quality 100 and 4:4:4 by
+default. Dither is applied before quantization to reduce banding in smooth gradients; it
+does not alter the tone plan. 4:2:2 and 4:2:0 are available when smaller files matter at
+the cost of chroma resolution. Display P3 embeds an ICC profile and export stops if that
+profile is unavailable rather than writing untagged wide-gamut values.
+
+An ISO 21496-1 gain-map HDR JPEG path also exists. It uses a P3 SDR base as the
+compatibility image and attaches a luminance gain map. `--output-format ultrahdr`
+selects it and `--hdr-headroom` sets its gain ceiling in EV. This path remains
+experimental.
 
 ## Quick start
 
-Python 3.10 or newer.
+Python 3.10 or newer is required.
 
 ```bash
 git clone https://github.com/Gen-416/dngscan.git
@@ -291,82 +382,79 @@ pip install -r requirements.txt
 python -m dngscan.gui
 ```
 
-The GUI runs on localhost, fully offline. Selecting a file silently warms a proxy scene
-and its basic analysis; that proxy stays in memory and is also kept in the local user cache,
-so reopening the same file after a restart can reuse it. On macOS the default location is
-`~/Library/Caches/dngscan/preview-v1`; it is bounded to 768 MB and evicts old entries automatically.
-Deleting it only means the next preview will warm again: it never changes a RAW or an export.
-Previews use the proxy, while export always renders from the full-resolution scene buffer in a
-short-lived worker process, so its large arrays return to the OS when it finishes. A reasonable
-first session: open a RAW at EV 0 with the default AgX core, look at the
-render, then switch cores at the same EV when you want to know where a visual
-difference comes from. The brightness-reference button (`--ev auto`) is an explicit
-alternate exposure reading — it is never applied silently.
+Open the localhost address printed in the terminal. The GUI runs entirely on the local
+machine and uploads nothing. The first open decodes and analyses the file and builds a
+1280px proxy; later previews reuse memory and disk caches, while full export always
+returns to the full-resolution scene buffer. Full export runs in a short-lived worker
+process so its large arrays leave with that process instead of remaining in the GUI
+server.
 
-### CLI examples
+On macOS the cache defaults to `~/Library/Caches/dngscan/preview-v1`, is limited to
+768 MB, and evicts older entries automatically.
+
+I normally start at EV 0 with `AgX`, `smooth` primaries, camera WB, and highlight
+reconstruction, then adjust from the photograph itself. Quality 100 and 4:4:4 are the
+default output settings.
+
+### CLI
 
 ```bash
-# Default full-frame AgX, quality 100, 4:4:4
+# Default AgX JPEG
 python -m dngscan photo.dng --jpeg photo.jpg
 
-# Add the six-panel RAW report
+# Highlight reconstruction and Display P3
+python -m dngscan photo.dng --jpeg photo_p3.jpg \
+  --highlight-mode reconstruct --output-gamut p3
+
+# RAW analysis dashboard and CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
 
-# Compare cores at the same EV
+# Compare another core at the same EV
 python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
-python -m dngscan photo.dng --jpeg lum.jpg   --tone-core lum
-python -m dngscan photo.dng --jpeg plain.jpg --tone-core neutral
 
-# Highlight reconstruction, Display P3
-python -m dngscan photo.dng --jpeg photo_p3.jpg --highlight-mode reconstruct --output-gamut p3
-
-# Deliberately apply the brightness reference
+# Deliberately use the brightness reference
 python -m dngscan photo.dng --jpeg reference.jpg --ev auto
 ```
 
-`python -m dngscan --help` lists everything.
+Run `python -m dngscan --help` for the complete list.
 
-### Optional native acceleration
+### Optional C++ acceleration
 
-The NumPy renderer is the reference implementation and always works. An optional C++
-backend (pybind11) accelerates the AgX hot path only — formation, C1 curve, hue
-restore and punch fused into one pass, roughly 2× on that stage — and releases the GIL
-so it stacks with the threaded export pipeline. Build it with:
+NumPy is the reference implementation and works without a native build. The pybind11
+C++ kernel accelerates only the normal AgX hot path: formation, C1 curve, hue restoration,
+and punch. RAW analysis, tone-plan compilation, and fallback policy remain in Python.
 
 ```bash
 pip install pybind11 cmake
-tools/build_native.sh   # drops _dngscan_fast*.so into dngscan/
+tools/build_native.sh
 ```
 
-Dispatch is controlled by `DNGSCAN_FAST`: `auto` (default) uses the kernel when it is
-importable and the plan qualifies, silently falling back to NumPy otherwise; `0`
-disables it; `1` is strict mode that raises instead of falling back (useful in CI).
-The kernel is parity-tested against the NumPy path (≤ 2 × 10⁻⁶ linear difference on
-real scenes, within one dither step at 8 bits) and gates itself behind an ABI check
-and a self-test at import.
+`DNGSCAN_FAST=auto` is the default; `0` forces NumPy; `1` requires the native kernel and
+raises if it cannot be used. The kernel releases the GIL and works with the existing
+chunked export path; the AgX hot stage measures at roughly 2x. Import checks its ABI and
+runs a self-test. Current real-scene linear differences are around `2e-6`, with final
+8-bit differences within one dither step. Its job is only to reduce export time, not to
+change the imaging decisions.
 
-## Output and diagnostics
+## RAW reports
 
-SDR export is an 8-bit JPEG with deterministic TPDF dither (default quality 100,
-4:4:4). Display P3 embeds the ICC profile and fails loudly rather than writing untagged
-P3. The ISO gain-map HDR path exists but is experimental. `--scan` writes a six-panel
-capture report — SNR versus stops, separate R/G/B RAW distributions, exposure and gamut
-pressure, spatial clipping maps; plotted curves may be smoothed, numerical statistics
-never are.
+`--scan` writes a six-panel report with SNR versus stops, separate R/G/B RAW
+distributions, exposure and gamut pressure, spatial exposure zones, clipped-channel
+maps, and per-channel full-well, clip, black-level, and WB readouts. RAW distributions
+use stops from clipping on the horizontal axis and peak-normalized linear density on the
+vertical axis. Density curves may be lightly smoothed for display; clip percentages,
+medians, percentiles, and all other statistics always come from the unsmoothed samples.
+SNR and dynamic range are single-frame estimates, not full photon-transfer measurements;
+container bit depth is not the same as usable dynamic range.
 
-## Contributing
+## License and sources
 
-The project is public so people can play with AgX and push it somewhere new. Camera measurements, better RAW evidence models, grounded AgX/DRT
-comparisons, and original or clearly redistributable looks are all welcome. Keep the
-line between measured evidence, heuristic policy and creative taste explicit, and do
-not commit RAW test files or third-party LUTs without permission.
+dngscan is GPL-3.0-or-later because its AgX curve and primary-geometry implementation
+derives from darktable's GPL `agx` code. See [NOTICE.md](NOTICE.md) for code, spectral
+data, and optional dependency attribution.
 
-## License and acknowledgements
-
-dngscan is GPL-3.0-or-later because its AgX implementation derives from darktable's
-GPL code; see [NOTICE.md](NOTICE.md) for spectral data sources and optional
-dependencies. AgX itself originates with Troy Sobotka and matured in the Blender /
-EaryChow ecosystem; this project inherits it through darktable's `agx` module. This is
-an independent experiment: ARRI, ALEXA, ALEV, darktable, Blender, Fujifilm, Sony, RED,
-Kodak, Resolve and other names belong to their owners, and are referenced only for
-provenance and comparison.
+AgX was created by Troy Sobotka and developed through the Blender/EaryChow ecosystem;
+this project mainly follows darktable's photographic implementation. ARRI, ALEXA, ALEV,
+Sony, Sigma, RED, Kodak, darktable, Blender, and other names belong to their respective
+owners and are used here only to describe sources, compatibility, and comparisons in
+the pipeline.

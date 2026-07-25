@@ -199,6 +199,8 @@ class ColorGeometryPlan:
     # A restrained display-side safety valve for the luminance core. AgX already has
     # its own inset/outset path toward white, so this is zero for the AgX core.
     display_highlight_chroma_retreat: float = 0.0
+    display_highlight_chroma_start: float = 0.75
+    display_highlight_chroma_end: float = 0.98
     # RAW-gated DRT (tone_core=gated): master scale on color-path blend weight.
     color_path_master: float = 1.0
     gated_midtone_protect: float = 0.92
@@ -215,6 +217,33 @@ class RenderPlan:
     tone: ToneCompressionPlan
     color: ColorGeometryPlan
     scene: SceneToneMetrics
+
+
+@dataclass(frozen=True)
+class RenderAdjustments:
+    """Bounded user biases applied after the automatic render plan is compiled.
+
+    Zero is an exact identity. These controls deliberately do not expose or replace the
+    automatically derived pivot, tone endpoints, or RAW evidence decisions.
+    """
+
+    midtone_brightness: float = 0.0
+    midtone_contrast: float = 0.0
+    shadow_transition: float = 0.0
+    highlight_transition: float = 0.0
+    highlight_fade: float = 0.0
+
+    def is_identity(self) -> bool:
+        return all(
+            abs(float(value)) <= 1e-12
+            for value in (
+                self.midtone_brightness,
+                self.midtone_contrast,
+                self.shadow_transition,
+                self.highlight_transition,
+                self.highlight_fade,
+            )
+        )
 
 
 @dataclass

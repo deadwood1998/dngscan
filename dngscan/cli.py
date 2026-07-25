@@ -23,9 +23,10 @@ from .plot import default_png_path, plot_dashboard
 from .raw_io import load_raw
 from .report import csv_row, print_report, write_csv
 from .scene_transform import SCENE_TRANSFORM_CHOICES
+from .models import RenderAdjustments
 from .tone import (
-    LUM_NORM_CHOICES, TONE_CORE_CHOICES, compute_exposure_gain, exposure_mode_for_tone_core,
-    build_render_plan,
+    LUM_NORM_CHOICES, TONE_CORE_CHOICES, apply_render_adjustments, compute_exposure_gain,
+    exposure_mode_for_tone_core, build_render_plan,
 )
 
 
@@ -134,6 +135,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=1.0,
         help="AgX 纯度补偿倍率 0-1.5（默认 1.0=场景自动值；0=关闭；夜景自动为 0）",
     )
+    # Bounded post-plan biases, identical in meaning and range to the GUI sliders, so a
+    # render dialled in there can be reproduced from the command line. 0 is exact
+    # identity; the automatic endpoints and RAW evidence decisions stay authoritative.
+    for _flag, _help in (
+        ("midtone-brightness", "中间调亮度偏置 -1..1（显示端内部提升，不改曝光与端点）"),
+        ("midtone-contrast", "中间调对比偏置 -1..1"),
+        ("shadow-transition", "暗部过渡 -1..1（正=趾部更开）"),
+        ("highlight-transition", "高光过渡 -1..1（正=肩部更柔）"),
+        ("highlight-fade", "高光褪色 -1..1（显示端色度退让）"),
+    ):
+        parser.add_argument(f"--{_flag}", type=float, default=0.0, help=_help)
     parser.add_argument(
         "--agx-primaries",
         choices=AGX_PRIMARIES_CLI_CHOICES,
@@ -184,6 +196,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--scene-transform-strength must be between 0 and 3")
     if not 0.0 <= args.punch <= 1.5:
         parser.error("--punch must be between 0 and 1.5")
+    for _name in (
+        "midtone_brightness", "midtone_contrast", "shadow_transition",
+        "highlight_transition", "highlight_fade",
+    ):
+        if not -1.0 <= getattr(args, _name) <= 1.0:
+            parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
     if args.grade != "none" and args.output_format == "ultrahdr":
         parser.error("成片风格暂不支持 Ultra HDR 输出")
     return args
@@ -263,6 +281,17 @@ def main(argv: list[str]) -> int:
             if jpeg_path is not None
             else None
         )
+        if render_plan is not None:
+            render_plan = apply_render_adjustments(
+                render_plan,
+                RenderAdjustments(
+                    midtone_brightness=args.midtone_brightness,
+                    midtone_contrast=args.midtone_contrast,
+                    shadow_transition=args.shadow_transition,
+                    highlight_transition=args.highlight_transition,
+                    highlight_fade=args.highlight_fade,
+                ),
+            )
         if jpeg_path is not None:
             jpeg_icc_embedded = export_jpeg(
                 args.path,

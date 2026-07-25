@@ -105,6 +105,30 @@ button.preview:disabled{opacity:.5;cursor:default}
   </div>
 </div>
 
+<div class="card" id="toneAdjustCard">
+  <div class="secTitle">明暗</div>
+  <div class="row">
+    <div class="sliderField">
+      <div class="labelRow"><label title="只改变曲线内部亮度，不移动曝光、黑点或白点。">中间调亮度</label><span class="val" id="midtoneBrightnessVal">自动</span></div>
+      <input type="range" id="midtoneBrightness" min="-1" max="1" step="0.05" value="0" title="向左压低主体，向右提亮主体。">
+    </div>
+    <div class="sliderField">
+      <div class="labelRow"><label title="围绕自动 pivot 改变中间调斜率，pivot 位置仍由场景分析决定。">中间调对比</label><span class="val" id="midtoneContrastVal">自动</span></div>
+      <input type="range" id="midtoneContrast" min="-1" max="1" step="0.05" value="0" title="向左柔和，向右增强。">
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <div class="sliderField">
+      <div class="labelRow"><label title="微调 toe 的形状，不移动黑点。">暗部过渡</label><span class="val" id="shadowTransitionVal">自动</span></div>
+      <input type="range" id="shadowTransition" min="-1" max="1" step="0.05" value="0" title="向左更深，向右更开放。">
+    </div>
+    <div class="sliderField">
+      <div class="labelRow"><label title="微调 shoulder 的形状，不移动白点。">高光过渡</label><span class="val" id="highlightTransitionVal">自动</span></div>
+      <input type="range" id="highlightTransition" min="-1" max="1" step="0.05" value="0" title="向左更直接，向右更柔和。">
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="secTitle">成像</div>
   <div class="row">
@@ -156,9 +180,15 @@ SCENE_TRANSFORM_OPTIONS
       <div class="labelRow"><label>前馈强度</label><span class="val" id="sceneTransformStrengthVal">1.00</span></div>
       <input type="range" id="sceneTransformStrength" min="0" max="3" step="0.05" value="1" title="1 为校准强度；更高数值用于比较。">
     </div>
+  </div>
+  <div class="row" style="margin-top:12px">
     <div id="punchBlock" class="sliderField">
-      <div class="labelRow"><label>中调纯度</label><span class="val" id="punchVal">1.00</span></div>
+      <div class="labelRow"><label>中频纯度</label><span class="val" id="punchVal">1.00</span></div>
       <input type="range" id="punch" min="0" max="1.5" step="0.05" value="1" title="1 使用场景分析值；0 关闭。">
+    </div>
+    <div id="highlightFadeBlock" class="sliderField">
+      <div class="labelRow"><label title="只调整接近显示白的色度，不改变亮度 shoulder。">高光褪白</label><span class="val" id="highlightFadeVal">自动</span></div>
+      <input type="range" id="highlightFade" min="-1" max="1" step="0.05" value="0" title="向左保留更多颜色，向右更早褪向白色。">
     </div>
   </div>
 </div>
@@ -277,11 +307,16 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
-const STORE_KEY="dngscan.settings.v5";
+const STORE_KEY="dngscan.settings.v6";
+const V5_STORE_KEY="dngscan.settings.v5";
 const LEGACY_STORE_KEY="dngscan.settings.v4";
 function setGradeStrengthLabel(){const v=+$("#gradeStrength").value;$("#gradeStrengthVal").textContent=v.toFixed(2);}
 function updateGradeUi(){$("#gradeStrengthBlock").style.display=$("#grade").value!=="none"?"block":"none";}
 function setPunchLabel(){const v=+$("#punch").value;$("#punchVal").textContent=v.toFixed(2);}
+function fmtBias(v){return Math.abs(v)<0.001?"自动":(v>0?"+":"")+v.toFixed(2);}
+function setAdjustmentLabels(){
+  ["midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"].forEach(id=>{$("#"+id+"Val").textContent=fmtBias(+$("#"+id).value);});
+}
 function setSceneTransformStrengthLabel(){const v=+$("#sceneTransformStrength").value;$("#sceneTransformStrengthVal").textContent=v.toFixed(2);}
 function updateSceneTransformUi(){$("#sceneTransformStrengthBlock").style.display=$("#sceneTransform").value!=="none"?"block":"none";}
 const CORE_FACTS={
@@ -301,6 +336,8 @@ function updateToneCoreUi(){
   $("#lumNormBlock").style.display=lum?"block":"none";
   $("#agxPrimariesBlock").style.display=core==="agx"?"block":"none";
   $("#punchBlock").style.display=control?"none":"block";
+  $("#toneAdjustCard").style.display=neutral?"none":"block";
+  $("#highlightFadeBlock").style.display=neutral?"none":"block";
   const facts=(CORE_FACTS[core]||[]).map(v=>"<span"+(control?' class="control"':"")+">"+v+"</span>").join("");
   $("#coreFacts").innerHTML=facts;
   $("#controlHint").textContent=CONTROL_HINTS[core]||"";
@@ -355,6 +392,8 @@ function saveSettings(){
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
     grade:$("#grade").value,gradeStrength:$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:$("#sceneTransformStrength").value,punch:$("#punch").value,
+    midtoneBrightness:$("#midtoneBrightness").value,midtoneContrast:$("#midtoneContrast").value,
+    shadowTransition:$("#shadowTransition").value,highlightTransition:$("#highlightTransition").value,highlightFade:$("#highlightFade").value,
     hdrHeadroom:$("#hdrHeadroom").value,outdir:$("#outdir").value,png:$("#png").checked
   }));}catch(e){}
 }
@@ -362,10 +401,11 @@ function restoreSettings(){
   let s={};let migrated=false;
   try{
     const current=localStorage.getItem(STORE_KEY);
-    s=JSON.parse(current||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
+    const v5=localStorage.getItem(V5_STORE_KEY);
+    s=JSON.parse(current||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
     // v4's stock pair was gated + base. Move that old default to the new
     // darktable baseline while retaining every other stored preference.
-    if(!current&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
+    if(!current&&!v5&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
       s.toneCore="agx";s.agxPrimaries="smooth";migrated=true;
     }
   }catch(e){}
@@ -397,11 +437,12 @@ function restoreSettings(){
   if(s.sceneTransform&&[...$("#sceneTransform").options].some(o=>o.value===s.sceneTransform))$("#sceneTransform").value=s.sceneTransform;
   if(s.sceneTransformStrength!==undefined)$("#sceneTransformStrength").value=s.sceneTransformStrength;
   if(s.punch!==undefined)$("#punch").value=s.punch;
+  ["midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"].forEach(id=>{if(s[id]!==undefined)$("#"+id).value=s[id];});
   if(s.format)$("#format").value=s.format;
   if(s.hdrHeadroom!==undefined)$("#hdrHeadroom").value=s.hdrHeadroom;
   if(s.outdir)$("#outdir").value=s.outdir;
   if(s.png!==undefined)$("#png").checked=!!s.png;
-  setEvLabel();setHdrLabel();setGradeStrengthLabel();setSceneTransformStrengthLabel();setPunchLabel();updateGradeUi();updateSceneTransformUi();updateToneCoreUi();updateFormatUi();
+  setEvLabel();setHdrLabel();setGradeStrengthLabel();setSceneTransformStrengthLabel();setPunchLabel();setAdjustmentLabels();updateGradeUi();updateSceneTransformUi();updateToneCoreUi();updateFormatUi();
   if(migrated)saveSettings();
 }
 ["quality","gamut","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
@@ -417,6 +458,9 @@ $("#ev").oninput=()=>{setEvLabel();saveSettings();};
 $("#hdrHeadroom").oninput=()=>{setHdrLabel();saveSettings();};
 $("#gradeStrength").oninput=()=>{setGradeStrengthLabel();saveSettings();};
 $("#punch").oninput=()=>{setPunchLabel();saveSettings();};
+[
+  "midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"
+].forEach(id=>$("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();});
 $("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();};
 restoreSettings();
 document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();});
@@ -461,6 +505,8 @@ function payload(){
     grade:$("#grade").value,gradeStrength:+$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:+$("#sceneTransformStrength").value,
     punch:+$("#punch").value,
+    midtoneBrightness:+$("#midtoneBrightness").value,midtoneContrast:+$("#midtoneContrast").value,
+    shadowTransition:+$("#shadowTransition").value,highlightTransition:+$("#highlightTransition").value,highlightFade:+$("#highlightFade").value,
     hdrHeadroom:+$("#hdrHeadroom").value,ev:+$("#ev").value,quality:+$("#quality").value,
     outdir:$("#outdir").value.trim(),png:$("#png").checked
   };

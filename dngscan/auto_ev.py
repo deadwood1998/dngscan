@@ -12,7 +12,10 @@ from . import retreat as retreat_engine
 from . import scene_transform as scene_transform_engine
 from .color import RGB_TO_XYZ, output_gamut_space, rec2020_to_output
 from .constants import EPS
-from .models import Analysis, AutoEvResult, RawBundle, RenderPlan, ToneCompressionPlan
+from .models import (
+    Analysis, AutoEvResult, RawBundle, RenderAdjustments, RenderPlan,
+    ToneCompressionPlan,
+)
 from .render import apply_tone_core, finalize_output_linear, plan_with_look_overrides
 from .tone import build_render_plan, compute_exposure_gain, exposure_mode_for_tone_core, scene_rec2020_to_float
 
@@ -98,6 +101,7 @@ def render_sample_linear_output(
     agx_primaries: str = "smooth",
     sample_masks: Any | None = None,
     sample_raw_guidance: Any | None = None,
+    adjustments: RenderAdjustments | None = None,
 ) -> Any:
     from .grade import RENDER_MODE
 
@@ -116,6 +120,7 @@ def render_sample_linear_output(
             tone_core,
             lum_norm,
             agx_primaries=agx_primaries,
+            adjustments=adjustments,
         ) if analysis is not None else None
     )
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
@@ -159,6 +164,7 @@ def max_safe_ev(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: RenderAdjustments | None = None,
 ) -> float:
     """Largest EV (>= from_ev) whose preview-scale output stays below highlight thresholds."""
     if np is None:
@@ -197,6 +203,7 @@ def max_safe_ev(
             agx_primaries=agx_primaries,
             sample_masks=sample_masks,
             sample_raw_guidance=sample_raw_guidance,
+            adjustments=adjustments,
         )
         return output_highlight_margin(rgb, gamut, baseline_stats)
 
@@ -218,6 +225,7 @@ def max_safe_ev(
         agx_primaries=agx_primaries,
         sample_masks=sample_masks,
         sample_raw_guidance=sample_raw_guidance,
+        adjustments=adjustments,
     )
     baseline_stats = output_highlight_stats(baseline_rgb, gamut)
     if output_highlight_margin(baseline_rgb, gamut, baseline_stats) <= 0.0:
@@ -256,6 +264,7 @@ def compute_auto_ev(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: RenderAdjustments | None = None,
 ) -> AutoEvResult:
     """Boost toward 18% gray median when scene is dark; never darken high-key captures.
 
@@ -280,6 +289,7 @@ def compute_auto_ev(
         tone_core=tone_core,
         lum_norm=lum_norm,
         agx_primaries=agx_primaries,
+        adjustments=adjustments,
     )
     boost_target = max(target, baseline_ev)
     ev = min(boost_target, cap)
@@ -309,6 +319,7 @@ def resolve_export_ev(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: RenderAdjustments | None = None,
 ) -> tuple[float, AutoEvResult | None]:
     if not is_ev_auto(ev):
         return float(ev), None
@@ -327,6 +338,7 @@ def resolve_export_ev(
         tone_core,
         lum_norm,
         agx_primaries,
+        adjustments,
     )
     return result.ev, result
 

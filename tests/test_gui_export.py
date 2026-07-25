@@ -22,6 +22,12 @@ class ExportSuffixTests(unittest.TestCase):
         self.assertIn("更新预览", html)
         self.assertIn("导出 JPEG", html)
         self.assertIn("前馈校正", html)
+        self.assertIn("中间调亮度", html)
+        self.assertIn("中间调对比", html)
+        self.assertIn("暗部过渡", html)
+        self.assertIn("高光过渡", html)
+        self.assertIn("高光褪白", html)
+        self.assertIn("中频纯度", html)
         self.assertNotIn('optgroup label="本地 LUT"', html)
         for vendor in ("ARRI Classic", "ARRI Reveal", "Fujifilm", "Kodak", "RED IPP2"):
             self.assertNotIn(vendor, html)

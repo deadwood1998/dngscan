@@ -69,18 +69,24 @@ def quantize_final_output_linear_to_u8(rgb_linear: Any, output_gamut: str = "srg
 
 
 def _apply_display_highlight_chroma_retreat(
-    rgb: Any, output_gamut: str, strength: float
+    rgb: Any,
+    output_gamut: str,
+    strength: float,
+    start: float = 0.75,
+    end: float = 0.98,
 ) -> Any:
     """Gently fade only near-display-white chroma in the luminance-core path.
 
     This is deliberately downstream of the scene-linear clip mask: it is an aesthetic
     guard for bright, *unclipped* colours, not a claim that sensor information is lost.
     """
-    if strength <= 0.0:
+    if abs(strength) <= 1e-9:
         return rgb
     lab_l, lab_a, lab_b = rgb_to_oklab(rgb, output_gamut)
-    amount = np.float32(strength) * smoothstep(0.75, 0.98, lab_l)
-    keep = np.float32(1.0) - np.clip(amount, 0.0, 1.0)
+    amount = np.float32(strength) * smoothstep(float(start), float(end), lab_l)
+    # Positive strength fades chroma toward display white. A small negative range lets
+    # the user retain more highlight colour; the final gamut fit remains authoritative.
+    keep = np.clip(np.float32(1.0) - amount, 0.0, 1.5)
     return oklab_to_output_rgb(lab_l, lab_a * keep, lab_b * keep, output_gamut)
 
 
@@ -104,9 +110,16 @@ def finalize_output_linear(
             lab_l, lab_a, lab_b = rgb_to_oklab(piece, output_gamut)
             lab_l, lab_a, lab_b = look_engine.apply_look_oklab(lab_l, lab_a, lab_b, look, look_strength)
             piece = oklab_to_output_rgb(lab_l, lab_a, lab_b, output_gamut)
-        if color_plan is not None and color_plan.display_highlight_chroma_retreat > 0.0:
+        if (
+            color_plan is not None
+            and abs(float(color_plan.display_highlight_chroma_retreat)) > 1e-9
+        ):
             piece = _apply_display_highlight_chroma_retreat(
-                piece, output_gamut, float(color_plan.display_highlight_chroma_retreat)
+                piece,
+                output_gamut,
+                float(color_plan.display_highlight_chroma_retreat),
+                float(color_plan.display_highlight_chroma_start),
+                float(color_plan.display_highlight_chroma_end),
             )
         # Oklab hue-preserving gamut fit replaces per-channel clipping for every mode.
         alpha = float(color_plan.gamut_fit_alpha) if color_plan is not None else 0.05

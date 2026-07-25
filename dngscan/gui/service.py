@@ -228,6 +228,7 @@ def estimate_ev_headroom(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: dg.RenderAdjustments | None = None,
 ) -> dict[str, float | str]:
     if analysis is None:
         return {}
@@ -247,6 +248,7 @@ def estimate_ev_headroom(
         tone_core=tone_core,
         lum_norm=lum_norm,
         agx_primaries=agx_primaries,
+        adjustments=adjustments,
     )
     return {
         "safe_ev_remaining": max(0.0, float(safe_ev - current_ev)),
@@ -317,6 +319,27 @@ def parse_punch(params: dict) -> float:
     return max(0.0, min(1.5, value))
 
 
+def parse_render_adjustments(params: dict) -> dg.RenderAdjustments:
+    fields = {
+        "midtone_brightness": "midtoneBrightness",
+        "midtone_contrast": "midtoneContrast",
+        "shadow_transition": "shadowTransition",
+        "highlight_transition": "highlightTransition",
+        "highlight_fade": "highlightFade",
+    }
+    values: dict[str, float] = {}
+    for field, key in fields.items():
+        raw = params.get(key, params.get(field, 0.0))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} 必须是数字") from exc
+        if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+            raise ValueError(f"{key} 需在 -1 到 1 之间")
+        values[field] = value
+    return dg.RenderAdjustments(**values)
+
+
 def parse_scene_transform(params: dict) -> tuple[str, float]:
     transform = dg.validate_scene_transform(str(params.get("sceneTransform", "none")))
     strength = float(params.get("sceneTransformStrength", params.get("scene_transform_strength", 1.0)))
@@ -363,6 +386,7 @@ def export_preview_jpeg(
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
     cached: PreviewEntry | None = None,
+    adjustments: dg.RenderAdjustments | None = None,
 ) -> dict:
     dg.require_dependencies()
     if cached is None:
@@ -384,6 +408,7 @@ def export_preview_jpeg(
             tone_core,
             lum_norm,
             agx_primaries=agx_primaries,
+            adjustments=adjustments,
         )
         icc_profile = dg.output_icc_profile_bytes(gamut)
         rgb_u8 = dg.render_output_u8(
@@ -429,6 +454,7 @@ def run_preview(params: dict) -> dict:
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
+    adjustments = parse_render_adjustments(params)
     tone_core, lum_norm = parse_tone_core(params)
     agx_primaries = parse_agx_primaries(params)
     cached = PREVIEW_STORE.get(inp, highlight, wb, tone_core == "gated")
@@ -448,6 +474,7 @@ def run_preview(params: dict) -> dict:
             tone_core=tone_core,
             lum_norm=lum_norm,
             agx_primaries=agx_primaries,
+            adjustments=adjustments,
         )
         ev = auto_ev_result.ev
     return export_preview_jpeg(
@@ -469,6 +496,7 @@ def run_preview(params: dict) -> dict:
         lum_norm=lum_norm,
         agx_primaries=agx_primaries,
         cached=cached,
+        adjustments=adjustments,
     )
 
 
@@ -537,6 +565,7 @@ def run_export(params: dict) -> dict:
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
+    adjustments = parse_render_adjustments(params)
     tone_core, lum_norm = parse_tone_core(params)
     agx_primaries = parse_agx_primaries(params)
     bundle = dg.load_raw(inp, highlight, demosaic=demosaic, wb_mode=wb)
@@ -563,6 +592,7 @@ def run_export(params: dict) -> dict:
             tone_core=tone_core,
             lum_norm=lum_norm,
             agx_primaries=agx_primaries,
+            adjustments=adjustments,
         )
         ev = auto_ev_result.ev
     bundle.exposure_gain = dg.compute_exposure_gain(dg.exposure_mode_for_tone_core(tone_core), ev)
@@ -577,6 +607,7 @@ def run_export(params: dict) -> dict:
         tone_core,
         lum_norm,
         agx_primaries=agx_primaries,
+        adjustments=adjustments,
     )
 
     grade_id = str(params.get("grade", "none"))
@@ -639,6 +670,7 @@ def run_export(params: dict) -> dict:
                 tone_core=tone_core,
                 lum_norm=lum_norm,
                 agx_primaries=agx_primaries,
+                adjustments=adjustments,
             )
         )
         preview = (
