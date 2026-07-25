@@ -20,6 +20,15 @@ SCENE_TRANSFORM_PRESETS_JSON = Path(__file__).with_name("scene_transform_presets
 
 
 @dataclass(frozen=True)
+class SceneTransformComponent:
+    """One Gaussian of a (possibly multi-modal) chromaticity window."""
+
+    mu_rg_bg: tuple[float, float]
+    cov_rg_bg: tuple[tuple[float, float], tuple[float, float]]
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
 class SceneTransformRegion:
     name: str
     matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -31,6 +40,12 @@ class SceneTransformRegion:
     # matrix actually explains on its material class (from the calibrator's error report).
     # Folded into the effective region weight so poorly-constrained fits act gently.
     confidence: float = 1.0
+    # Mixture window: within-scene illumination (sun/shade/tungsten) moves a material's
+    # chromaticity further than camera differences do, so one Gaussian cannot cover a
+    # material across lighting. When components are present they replace the scalar
+    # mu/cov; the region weight is the MAX over components (never the sum, so overlap
+    # cannot double-count). Empty tuple = legacy single-Gaussian behavior.
+    components: tuple[SceneTransformComponent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -43,7 +58,26 @@ class SceneTransformPreset:
     note: str = ""
 
 
+def _component_from_dict(raw: dict[str, Any]) -> SceneTransformComponent:
+    return SceneTransformComponent(
+        mu_rg_bg=tuple(float(v) for v in raw["mu_rg_bg"]),  # type: ignore[arg-type]
+        cov_rg_bg=tuple(tuple(float(v) for v in row) for row in raw["cov_rg_bg"]),  # type: ignore[arg-type]
+        weight=float(raw.get("weight", 1.0)),
+    )
+
+
 def _region_from_dict(name: str, raw: dict[str, Any]) -> SceneTransformRegion:
+    components: tuple[SceneTransformComponent, ...] = ()
+    raw_components = raw.get("components")
+    if isinstance(raw_components, list):
+        parsed = []
+        for item in raw_components:
+            if isinstance(item, dict):
+                try:
+                    parsed.append(_component_from_dict(item))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        components = tuple(parsed)
     return SceneTransformRegion(
         name=str(raw.get("name", name)),
         matrix=tuple(tuple(float(v) for v in row) for row in raw["matrix"]),  # type: ignore[arg-type]
@@ -52,6 +86,7 @@ def _region_from_dict(name: str, raw: dict[str, Any]) -> SceneTransformRegion:
         scale=float(raw.get("scale", 2.5)),
         strength=float(raw.get("strength", 1.0)),
         confidence=float(raw.get("confidence", 1.0)),
+        components=components,
     )
 
 
@@ -139,14 +174,15 @@ def _apply_matrix(rgb: Any, matrix: Any) -> Any:
     return out
 
 
-def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple[float, float] | None = None) -> Any:
-    denom = np.maximum(rgb[:, 1], np.float32(EPS))
-    chroma = np.empty((rgb.shape[0], 2), dtype=np.float32)
-    chroma[:, 0] = rgb[:, 0] / denom
-    chroma[:, 1] = rgb[:, 2] / denom
-
-    mu = np.asarray(region.mu_rg_bg, dtype=np.float32)
-    cov = np.asarray(region.cov_rg_bg, dtype=np.float32) * np.float32(max(region.scale, EPS) ** 2)
+def _gaussian_weight(
+    chroma: Any,
+    mu_rg_bg: tuple[float, float],
+    cov_rg_bg: tuple[tuple[float, float], tuple[float, float]],
+    scale: float,
+    wb_adapt: tuple[float, float] | None,
+) -> Any:
+    mu = np.asarray(mu_rg_bg, dtype=np.float32)
+    cov = np.asarray(cov_rg_bg, dtype=np.float32) * np.float32(max(scale, EPS) ** 2)
     if wb_adapt is not None:
         # Transport the calibrated window to the applied white balance: the anchor moves
         # with the chromaticity ratios and the covariance stretches with them (the
@@ -161,7 +197,25 @@ def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple[float
     d = chroma - mu[None, :]
     mahal = d[:, 0] * (inv_cov[0, 0] * d[:, 0] + inv_cov[0, 1] * d[:, 1])
     mahal += d[:, 1] * (inv_cov[1, 0] * d[:, 0] + inv_cov[1, 1] * d[:, 1])
-    weight = np.exp(np.clip(-0.5 * mahal, -80.0, 0.0)).astype(np.float32, copy=False)
+    return np.exp(np.clip(-0.5 * mahal, -80.0, 0.0)).astype(np.float32, copy=False)
+
+
+def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple[float, float] | None = None) -> Any:
+    denom = np.maximum(rgb[:, 1], np.float32(EPS))
+    chroma = np.empty((rgb.shape[0], 2), dtype=np.float32)
+    chroma[:, 0] = rgb[:, 0] / denom
+    chroma[:, 1] = rgb[:, 2] / denom
+
+    if region.components:
+        # Mixture window: MAX over components, not sum — overlapping lobes must not
+        # double-count. Each component transports through von Kries individually.
+        weight = np.zeros((rgb.shape[0],), dtype=np.float32)
+        for comp in region.components:
+            comp_w = _gaussian_weight(chroma, comp.mu_rg_bg, comp.cov_rg_bg, region.scale, wb_adapt)
+            comp_w *= np.float32(min(1.0, max(0.0, comp.weight)))
+            np.maximum(weight, comp_w, out=weight)
+    else:
+        weight = _gaussian_weight(chroma, region.mu_rg_bg, region.cov_rg_bg, region.scale, wb_adapt)
     signal = np.max(rgb, axis=1)
     return np.where(signal > np.float32(EPS), weight, np.float32(0.0))
 

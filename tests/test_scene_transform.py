@@ -78,3 +78,76 @@ if __name__ == "__main__":
         w_zero = st._region_weight(rgb, zero, None) * zero.strength * zero.confidence
         self.assertGreater(float(w_full[0]), 0.0)
         self.assertEqual(float(w_zero[0]), 0.0)
+
+
+class MixtureWindowTests(unittest.TestCase):
+    """Multi-modal windows: one material under several illuminants."""
+
+    @staticmethod
+    def _region(**kw):
+        from dngscan.scene_transform import SceneTransformRegion
+
+        base = dict(
+            name="skin",
+            matrix=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            mu_rg_bg=(1.90, 0.42),
+            cov_rg_bg=((0.03, 0.0), (0.0, 0.004)),
+            scale=1.5,
+            strength=1.0,
+        )
+        base.update(kw)
+        return SceneTransformRegion(**base)
+
+    def test_absent_components_keep_legacy_behaviour(self) -> None:
+        from dngscan.scene_transform import _region_weight
+
+        rgb = dg.np.asarray([[1.90, 1.0, 0.42], [1.30, 1.0, 0.95]], dtype=dg.np.float32)
+        legacy = _region_weight(rgb, self._region())
+        explicit_empty = _region_weight(rgb, self._region(components=()))
+        self.assertTrue(dg.np.allclose(legacy, explicit_empty))
+        # the second illumination cluster is out of reach for a single Gaussian
+        self.assertLess(float(legacy[1]), 0.01)
+
+    def test_components_cover_second_illumination_cluster(self) -> None:
+        from dngscan.scene_transform import SceneTransformComponent, _region_weight
+
+        region = self._region(
+            components=(
+                SceneTransformComponent((1.90, 0.42), ((0.03, 0.0), (0.0, 0.004))),
+                SceneTransformComponent((1.30, 0.95), ((0.03, 0.0), (0.0, 0.004))),
+            )
+        )
+        rgb = dg.np.asarray([[1.90, 1.0, 0.42], [1.30, 1.0, 0.95]], dtype=dg.np.float32)
+        w = _region_weight(rgb, region)
+        self.assertGreater(float(w[0]), 0.95)
+        self.assertGreater(float(w[1]), 0.95)
+
+    def test_overlapping_components_do_not_exceed_one(self) -> None:
+        # MAX, not sum: two lobes on the same spot must not double-count into >1.
+        from dngscan.scene_transform import SceneTransformComponent, _region_weight
+
+        region = self._region(
+            components=(
+                SceneTransformComponent((1.90, 0.42), ((0.03, 0.0), (0.0, 0.004))),
+                SceneTransformComponent((1.90, 0.42), ((0.03, 0.0), (0.0, 0.004))),
+            )
+        )
+        rgb = dg.np.asarray([[1.90, 1.0, 0.42]], dtype=dg.np.float32)
+        self.assertLessEqual(float(_region_weight(rgb, region)[0]), 1.0 + 1e-6)
+
+    def test_json_components_round_trip(self) -> None:
+        from dngscan.scene_transform import _region_from_dict
+
+        region = _region_from_dict("skin", {
+            "name": "skin",
+            "matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "mu_rg_bg": [1.9, 0.42],
+            "cov_rg_bg": [[0.03, 0.0], [0.0, 0.004]],
+            "components": [
+                {"mu_rg_bg": [1.9, 0.42], "cov_rg_bg": [[0.03, 0.0], [0.0, 0.004]], "weight": 0.7},
+                {"mu_rg_bg": [1.3, 0.95], "cov_rg_bg": [[0.02, 0.0], [0.0, 0.005]], "weight": 0.3},
+                {"broken": True},
+            ],
+        })
+        self.assertEqual(len(region.components), 2)  # malformed entry skipped, not fatal
+        self.assertAlmostEqual(region.components[0].weight, 0.7)
