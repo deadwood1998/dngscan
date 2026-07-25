@@ -95,12 +95,26 @@ class LookOverrideC1InteractionTest(unittest.TestCase):
         self.assertGreater(float(lifted[0]), float(base[0]) + 1e-3)
 
     def test_pivot_offset_flows_through_c1(self) -> None:
+        # The offset must reach the compiled curve and reallocate contrast, while the
+        # EV0 anchor holds. Slope is deliberately NOT the witness: the anchor solver
+        # runs at the uncompensated base slope, so an offset alone leaves it unchanged;
+        # what moves is the curve geometry (transitions) and the subject's rendering.
         plan = _plan()
         shifted = ToneCompressionPlan(**{**plan.__dict__, "pivot_ev_offset": -2.0})
         p0 = curve_params_from_plan(plan)
         p1 = curve_params_from_plan(shifted)
         self.assertEqual(float(p0["black_ev"]), float(p1["black_ev"]))
-        self.assertNotAlmostEqual(float(p0["slope"]), float(p1["slope"]), places=4)
+        self.assertNotAlmostEqual(
+            float(p0["toe_transition_x"]), float(p1["toe_transition_x"]), places=3
+        )
+        subject = np.asarray([-2.0], dtype=np.float32)
+        self.assertNotAlmostEqual(
+            float(apply_c1_endpoints(subject, plan)[0]),
+            float(apply_c1_endpoints(subject, shifted)[0]),
+            places=3,
+        )
+        anchored = float(apply_c1_endpoints(np.asarray([0.0], dtype=np.float32), shifted)[0])
+        self.assertAlmostEqual(anchored, 0.18, delta=0.006)
 
     def test_target_white_fades_shoulder_in_c1(self) -> None:
         plan = _plan()

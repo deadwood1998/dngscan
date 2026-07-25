@@ -77,14 +77,16 @@ class AdaptivePivotTest(unittest.TestCase):
         b = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, pivot_ev_offset=0.0)
         self.assertEqual(a, b)
 
-    def test_shifted_pivot_preserves_brightness_at_pivot(self) -> None:
+    def test_shifted_pivot_holds_ev0_not_subject_brightness(self) -> None:
+        # The two constraints (subject brightness preserved / EV0 anchored) share one
+        # degree of freedom; the EV0 anchor is the hard one. The subject's own output
+        # is allowed to move — that shift IS the contrast reallocation — while
+        # calibrated EV 0 must keep rendering ~0.18 linear (see Ev0AnchorSolverTest).
         offset = -0.9
-        base = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3)
         shifted = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, pivot_ev_offset=offset)
-        x = np.asarray([(offset + 8.0) / 12.0], dtype=np.float32)
-        y_base = float(apply_curve(x, base)[0]) ** float(base["gamma"])
-        y_shift = float(apply_curve(x, shifted)[0]) ** float(shifted["gamma"])
-        self.assertAlmostEqual(y_base, y_shift, delta=0.01)
+        x0 = np.asarray([8.0 / 12.0], dtype=np.float32)
+        y0 = float(apply_curve(x0, shifted)[0]) ** float(shifted["gamma"])
+        self.assertAlmostEqual(y0, 0.18, delta=0.006)
 
     def test_shifted_pivot_raises_contrast_at_subject(self) -> None:
         offset = -1.2
@@ -397,6 +399,9 @@ class DarkSceneTonePlanTest(unittest.TestCase):
             exposure_gain=compute_exposure_gain("agx", 0.0),
         )
         plan = build_tone_compression_plan(bundle, self._dark_analysis(), "Rec2020", ev_from_agx_inset=True)
+        # The automatic path keeps the pivot at mid gray: measured on a real night frame,
+        # relocating it either crushes the subject (EV0 anchored) or blows EV0 to white
+        # (subject brightness preserved). See the pivot comment in tone.py.
         self.assertEqual(plan.pivot_ev_offset, 0.0)
         from dngscan.drt import apply_c1_endpoints
 
@@ -514,3 +519,19 @@ class AgxPlanStabilityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Ev0AnchorSolverTest(unittest.TestCase):
+    def test_shifted_pivot_holds_ev0_anchor(self) -> None:
+        # The contrast pivot may move onto the subject, but calibrated EV 0 must keep
+        # rendering to 0.18 linear — the solver's whole contract.
+        for offset in (-0.8, -1.5, -2.5):
+            p = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, pivot_ev_offset=offset)
+            x0 = (0.0 - float(p["black_ev"])) / float(p["range_ev"])
+            y0 = float(apply_curve(np.asarray([x0], dtype=np.float32), p)[0]) ** float(p["gamma"])
+            self.assertAlmostEqual(y0, 0.18, delta=0.006, msg=f"offset={offset}")
+
+    def test_zero_offset_bitwise_unchanged(self) -> None:
+        a = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3)
+        b = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, pivot_ev_offset=0.0)
+        self.assertEqual(a, b)

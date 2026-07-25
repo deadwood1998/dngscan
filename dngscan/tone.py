@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Any
 
 from ._deps import np
@@ -15,8 +16,8 @@ from .color import (
 from .constants import EPS, EV_REPORT_FLOOR, GAMUT_EPS, GRAY_EV, MIDGRAY_HEADROOM_STOPS
 from . import retreat as retreat_engine
 from .models import (
-    Analysis, ColorGeometryPlan, RawBundle, RenderPlan, SceneToneMetrics,
-    ToneCompressionPlan,
+    Analysis, ColorGeometryPlan, RawBundle, RenderAdjustments, RenderPlan,
+    SceneToneMetrics, ToneCompressionPlan,
 )
 
 TONE_CORE_CHOICES = ("gated", "agx", "lum", "neutral")
@@ -283,10 +284,15 @@ def build_tone_compression_plan(
     dark_body = clamp_float((-metrics.body_ev_p50 - 1.5) / 3.0, 0.0, 1.0)
     toe_power = 1.50 - 0.35 * dark_body
     shoulder_power = 2.55 if metrics.sparse_emitter_tail else 2.90
-    # darktable exposes pivot position and pivot target output separately. Our automatic
-    # path has no independent pivot target, so moving its pivot would silently move the
-    # calibrated EV=0 -> 18% anchor. Keep the anchor fixed until a constrained solver
-    # can satisfy both conditions.
+    # Scene-adaptive pivot stays OFF, now for a measured reason rather than an unsolved
+    # constraint. agx.curve_params can hold the EV0 -> 18% anchor while the pivot moves
+    # (bisection on the pivot output, see Ev0AnchorSolverTest), but measuring both ends
+    # of that trade on a -3.4 EV night frame refutes the idea itself: anchoring EV0
+    # crushes the subject (output at -2 EV falls 0.024 -> 0.007) for no contrast gain,
+    # while preserving subject brightness instead drives EV0 to 0.95 — nearly white.
+    # A pivot move needs contrast/toe/shoulder re-solved with it (darktable relies on
+    # the user for exactly that); one automatic knob cannot do it. Left compiled-in and
+    # tested so the capability is ready if that 2-D solve is ever attempted.
     pivot_ev_offset = 0.0
     target_black_linear = 0.0
     shadow_quality = _smoothstep_f(5.5, 8.5, plan_dr) if math.isfinite(plan_dr) else 0.5
@@ -356,6 +362,71 @@ def build_tone_compression_plan(
     )
 
 
+def apply_render_adjustments(
+    plan: RenderPlan, adjustments: RenderAdjustments | None
+) -> RenderPlan:
+    """Apply restrained user biases without recompiling the scene analysis.
+
+    The automatic pivot and scene endpoints remain authoritative. Tone controls alter
+    only the local curve shape; highlight fade is a display-side chroma control. The
+    fixed neutral reference intentionally ignores all of these adjustments.
+    """
+    if (
+        adjustments is None
+        or adjustments.is_identity()
+        or plan.tone.tone_core == "neutral"
+    ):
+        return plan
+
+    brightness_bias = clamp_float(float(adjustments.midtone_brightness), -1.0, 1.0)
+    contrast_bias = clamp_float(float(adjustments.midtone_contrast), -1.0, 1.0)
+    shadow_bias = clamp_float(float(adjustments.shadow_transition), -1.0, 1.0)
+    highlight_bias = clamp_float(float(adjustments.highlight_transition), -1.0, 1.0)
+    fade_bias = clamp_float(float(adjustments.highlight_fade), -1.0, 1.0)
+
+    tone = replace(
+        plan.tone,
+        # At 18% gray this range is approximately -0.5 to +0.4 display EV. It is a
+        # darktable-style interior power, not scene exposure, so both endpoints hold.
+        view_brightness=clamp_float(
+            float(plan.tone.view_brightness) * (2.0 ** (0.25 * brightness_bias)),
+            0.65,
+            1.65,
+        ),
+        contrast=clamp_float(
+            float(plan.tone.contrast) * (2.0 ** (0.25 * contrast_bias)),
+            1.5,
+            4.5,
+        ),
+        # Positive UI direction means a more open toe and a softer shoulder. Lower
+        # endpoint powers produce those two shapes in the C1 solver.
+        toe_power=clamp_float(
+            float(plan.tone.toe_power) * (2.0 ** (-0.45 * shadow_bias)),
+            0.65,
+            2.5,
+        ),
+        shoulder_power=clamp_float(
+            float(plan.tone.shoulder_power) * (2.0 ** (-0.45 * highlight_bias)),
+            1.25,
+            5.0,
+        ),
+    )
+    color = replace(
+        plan.color,
+        display_highlight_chroma_retreat=clamp_float(
+            float(plan.color.display_highlight_chroma_retreat) + 0.30 * fade_bias,
+            -0.30,
+            0.70,
+        ),
+        display_highlight_chroma_start=clamp_float(
+            float(plan.color.display_highlight_chroma_start) - 0.12 * fade_bias,
+            0.58,
+            0.90,
+        ),
+    )
+    return replace(plan, tone=tone, color=color)
+
+
 def build_render_plan(
     bundle: RawBundle,
     analysis: Analysis,
@@ -367,6 +438,7 @@ def build_render_plan(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: RenderAdjustments | None = None,
 ) -> RenderPlan:
     """Compile independent scene, tone and colour plans from an immutable capture."""
     tone_core = tone_core if tone_core in TONE_CORE_CHOICES else "agx"
@@ -404,11 +476,12 @@ def build_render_plan(
         plan_exposure_gain=plan_gain,
         scene_metrics=scene,
     )
-    return RenderPlan(
+    plan = RenderPlan(
         tone=tone,
         color=build_color_geometry_plan(analysis, output_gamut, tone_core),
         scene=scene,
     )
+    return apply_render_adjustments(plan, adjustments)
 
 
 def plan_for_mode(
@@ -422,6 +495,7 @@ def plan_for_mode(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "smooth",
+    adjustments: RenderAdjustments | None = None,
 ) -> ToneCompressionPlan:
     """Compatibility accessor for callers that only need the tone sub-plan."""
     return build_render_plan(
@@ -435,4 +509,5 @@ def plan_for_mode(
         tone_core,
         lum_norm,
         agx_primaries,
+        adjustments,
     ).tone

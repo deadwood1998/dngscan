@@ -48,6 +48,12 @@ DEFAULT_CURVE_GAMMA = 2.2
 # toward ε and warns in the GUI; our headless pipeline forbids that mathematically.
 MIN_SEGMENT_X = 0.06
 
+# Search bounds for the EV0-anchor solve on the relocated pivot's linear output. The
+# lower bound also defines how far the contrast pivot can travel before the anchor
+# becomes unreachable (see the feasibility clamp in curve_params).
+PIVOT_Y_SOLVE_MIN = 0.002
+PIVOT_Y_SOLVE_MAX = 0.60
+
 
 class PrimariesGeometry(NamedTuple):
     """darktable-style per-channel inset/outset geometry on the work profile."""
@@ -220,12 +226,10 @@ def formation_matrices(plan: Any) -> tuple[Any, Any]:
 def compute_pivot_ev_offset(body_ev_p50: float, black_ev: float, white_ev: float) -> float:
     """Move max-contrast pivot toward the scene body (darktable picker workflow).
 
-    PARKED: no production caller yet — build_tone_compression_plan keeps pivot_ev_offset
-    at 0 until a constrained solver can hold the EV=0 -> 18% anchor while moving the
-    contrast pivot (see the pivot comment in tone.py). Tests keep this honest meanwhile.
-
-    Negative body_ev_p50 pulls the steep part of the curve onto the subject without
-    changing exposure gain; brightness at the pivot is preserved by curve_params.
+    Wired into build_tone_compression_plan for the AgX-family cores. curve_params holds
+    the calibrated EV0 -> 18% anchor via a bisection on the pivot output, so a negative
+    body_ev_p50 pulls the steep part of the curve onto the subject without changing the
+    frame's overall brightness mapping.
     """
     if body_ev_p50 >= -0.25:
         return 0.0
@@ -235,6 +239,11 @@ def compute_pivot_ev_offset(body_ev_p50: float, black_ev: float, white_ev: float
     margin = MIN_SEGMENT_X * range_ev
     lo = black_ev + margin
     hi = min(0.0, white_ev - margin)
+    # Policy cap: relocating the pivot more than 2 EV turns "put the steep part on the
+    # subject" into "re-expose the frame", which is not this knob's job. curve_params
+    # additionally enforces the hard anchor-feasibility bound, which is contrast
+    # dependent and may be tighter than this.
+    lo = max(lo, -2.0)
     return max(lo, min(hi, offset))
 
 
@@ -263,6 +272,7 @@ def _build_curve_params(
     gamma: float,
     target_black_linear: float,
     target_white_linear: float = 1.0,
+    compensate_slope_for_pivot: bool = True,
 ) -> dict[str, float | bool]:
     # Derived from darktable's GPLv3 AgX implementation:
     # https://github.com/darktable-org/darktable/blob/master/src/iop/agx.c
@@ -278,11 +288,17 @@ def _build_curve_params(
     range_adjusted_slope = contrast * (range_ev / 16.5)
     # Contrast compensation (darktable): keep the pivot's slope in LINEAR output terms
     # constant when gamma / pivot_y move, so "contrast" means the same thing whether the
-    # adaptive gamma engaged or not.
-    pivot_y_default = 0.18 ** (1.0 / DEFAULT_CURVE_GAMMA)
-    derivative_current = gamma * max(EPS, pivot_y) ** (gamma - 1.0)
-    derivative_default = DEFAULT_CURVE_GAMMA * pivot_y_default ** (DEFAULT_CURVE_GAMMA - 1.0)
-    slope = range_adjusted_slope / (derivative_current / derivative_default)
+    # adaptive gamma engaged or not. The EV0-anchor solver disables it: coupling slope
+    # to pivot_y makes the anchored output non-monotone in pivot_y (U-shaped, target
+    # unreachable); a constant encoded slope keeps the solve monotone and gives the
+    # relocated pivot the full base contrast.
+    if compensate_slope_for_pivot:
+        pivot_y_default = 0.18 ** (1.0 / DEFAULT_CURVE_GAMMA)
+        derivative_current = gamma * max(EPS, pivot_y) ** (gamma - 1.0)
+        derivative_default = DEFAULT_CURVE_GAMMA * pivot_y_default ** (DEFAULT_CURVE_GAMMA - 1.0)
+        slope = range_adjusted_slope / (derivative_current / derivative_default)
+    else:
+        slope = range_adjusted_slope
 
     # Latitude: a linear mid segment through the pivot. With zero latitude the curve is
     # Troy's pure sigmoid (toe meets shoulder at mid gray) — which converges channels and
@@ -370,12 +386,12 @@ def curve_params(
     """AgX curve parameterization with scene-adaptive pivot and adaptive gamma.
 
     pivot_ev_offset moves the point of maximum contrast (in EV relative to mid gray)
-    toward the subject; the pivot's OUTPUT is taken from the unshifted reference curve
-    at the same input, so overall brightness is preserved — only the contrast
-    distribution moves. The internal y gamma is then solved to put the pivot on the
-    curve diagonal (darktable's "keep the pivot on the diagonal"), which keeps the
-    curve S-shaped and the toe/shoulder powers effective across narrow-DR and
-    dark-scene windows that previously degenerated into fallback power curves.
+    toward the subject. Calibrated EV 0 keeps mapping to 0.18 linear: the pivot's own
+    output is solved for that constraint, so the shift reallocates CONTRAST without
+    moving the frame's brightness anchor. The internal y gamma is otherwise solved to
+    put the pivot on the curve diagonal (darktable's "keep the pivot on the diagonal"),
+    which keeps the curve S-shaped and the toe/shoulder powers effective across
+    narrow-DR and dark-scene windows that previously degenerated into fallback curves.
     """
     black_ev = float(black_ev)
     white_ev = float(white_ev)
@@ -385,6 +401,17 @@ def curve_params(
     # the brightness-preserving output for a shifted pivot.
     pivot_x0 = _clamp_float(-black_ev / range_ev, EPS, 1.0 - EPS)
     pivot_ev_offset = _clamp_float(pivot_ev_offset, black_ev + MIN_SEGMENT_X * range_ev, white_ev - MIN_SEGMENT_X * range_ev)
+    # Anchor feasibility (hard math constraint, independent of any caller's policy):
+    # under the solver's constant encoded slope, EV 0 sits |offset| EV above the pivot
+    # and therefore gains contrast*|offset|/16.5 of encoded rise no matter what the
+    # pivot output is. Once that rise alone exceeds the EV0 target minus the lowest
+    # usable pivot output, NO pivot output can restore the anchor. Clamp the request to
+    # the reachable region instead of silently rendering an unanchored curve.
+    if pivot_ev_offset < -1e-6:
+        target_encoded = 0.18 ** (1.0 / DEFAULT_CURVE_GAMMA)
+        floor_encoded = PIVOT_Y_SOLVE_MIN ** (1.0 / DEFAULT_CURVE_GAMMA)
+        max_offset_mag = 16.5 * max(0.0, target_encoded - floor_encoded) / max(contrast, EPS)
+        pivot_ev_offset = max(pivot_ev_offset, -0.95 * max_offset_mag)
     pivot_x = _clamp_float((pivot_ev_offset - black_ev) / range_ev, 0.10, 0.90)
 
     if abs(pivot_ev_offset) > 1e-6:
@@ -401,18 +428,62 @@ def curve_params(
     # darktable exposes this as "keep the pivot on the diagonal". Its scene-referred
     # default keeps the historical 2.2 curve gamma; callers selecting the automatic
     # option retain the older dngscan behavior.
-    if keep_pivot_diagonal and pivot_x < 1.0 - EPS and 0.0 < pivot_y_linear < 1.0:
-        gamma = _clamp_float(
-            float(np.log(pivot_y_linear) / np.log(pivot_x)), 1.5, 5.0
-        )
-    else:
-        gamma = _clamp_float(curve_gamma, 0.01, 100.0)
+    def _gamma_for(py_linear: float) -> float:
+        if keep_pivot_diagonal and pivot_x < 1.0 - EPS and 0.0 < py_linear < 1.0:
+            return _clamp_float(float(np.log(py_linear) / np.log(pivot_x)), 1.5, 5.0)
+        return _clamp_float(curve_gamma, 0.01, 100.0)
 
-    return _build_curve_params(
-        black_ev, white_ev, contrast, toe_power, shoulder_power,
-        latitude_lo_ev, latitude_hi_ev,
-        pivot_x, pivot_y_linear, gamma, target_black_linear, target_white_linear,
-    )
+    def _build(py_linear: float) -> dict[str, float | bool]:
+        return _build_curve_params(
+            black_ev, white_ev, contrast, toe_power, shoulder_power,
+            latitude_lo_ev, latitude_hi_ev,
+            pivot_x, py_linear, _gamma_for(py_linear), target_black_linear, target_white_linear,
+        )
+
+    params = _build(pivot_y_linear)
+
+    if abs(pivot_ev_offset) > 1e-6:
+        # EV0 anchor constraint: moving the contrast pivot toward the subject must not
+        # drift the calibrated mid-gray mapping. Diagonal-gamma coupling makes the EV0
+        # output NON-monotone in pivot_y (measured U-shape whose minimum can sit above
+        # 0.18), so the solve fixes gamma at the historical 2.2 — there the output is
+        # strictly monotone in pivot_y and the anchor is reachable. Bisect pivot_y
+        # until scene EV 0 renders back to 0.18 linear. Runs at plan-compile time
+        # (< 40 curve builds), never per pixel.
+        def _build_fixed_gamma(py_linear: float) -> dict[str, float | bool]:
+            return _build_curve_params(
+                black_ev, white_ev, contrast, toe_power, shoulder_power,
+                latitude_lo_ev, latitude_hi_ev,
+                pivot_x, py_linear, DEFAULT_CURVE_GAMMA,
+                target_black_linear, target_white_linear,
+                compensate_slope_for_pivot=False,
+            )
+
+        x_ev0 = _clamp_float((0.0 - black_ev) / range_ev, EPS, 1.0 - EPS)
+
+        def _ev0_linear(p: dict[str, float | bool]) -> float:
+            encoded = float(apply_curve(np.asarray([x_ev0], dtype=np.float32), p)[0])
+            return max(0.0, encoded) ** float(p["gamma"])
+
+        tol = 0.005
+        lo, hi = PIVOT_Y_SOLVE_MIN, PIVOT_Y_SOLVE_MAX
+        params = _build_fixed_gamma(pivot_y_linear)
+        if abs(_ev0_linear(params) - 0.18) > tol:
+            for _ in range(30):
+                mid = 0.5 * (lo + hi)
+                candidate = _build_fixed_gamma(mid)
+                out = _ev0_linear(candidate)
+                if abs(out - 0.18) <= tol:
+                    params = candidate
+                    break
+                if out < 0.18:
+                    lo = mid
+                else:
+                    hi = mid
+            else:
+                params = _build_fixed_gamma(0.5 * (lo + hi))
+
+    return params
 
 
 def scale(limit_x: float, limit_y: float, transition_x: float, transition_y: float, slope: float, power: float) -> float:
