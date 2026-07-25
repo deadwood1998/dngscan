@@ -288,10 +288,24 @@ def ensure_raw_guidance(bundle: RawBundle, analysis: Analysis | None = None) -> 
     return maps
 
 
-def _resize_nearest_scalar(values: Any, shape: tuple[int, int]) -> Any:
+def _resize_nearest_scalar(
+    values: Any,
+    shape: tuple[int, int],
+    crop: tuple[float, float, float, float] | None = None,
+) -> Any:
     from PIL import Image
 
     arr = np.asarray(values, dtype=np.uint8)
+    if crop is not None:
+        y0, x0, y1, x1 = (float(v) for v in crop)
+        interim_h = max(1, int(round(y1 - y0)))
+        interim_w = max(1, int(round(x1 - x0)))
+        arr = np.asarray(
+            Image.fromarray(arr, mode="L").resize(
+                (interim_w, interim_h), Image.Resampling.NEAREST, box=(x0, y0, x1, y1)
+            ),
+            dtype=np.uint8,
+        )
     if arr.shape[:2] == shape:
         return arr
     return np.asarray(
@@ -315,12 +329,16 @@ def raw_guidance_for_shape(
             return cached
     from .retreat import resize_clip_masks
 
+    crop = getattr(bundle, "scene_geometry_crop", None)
     resized = RawGuidanceMaps(
-        headroom=resize_clip_masks(maps.headroom, shape).astype(np.float16, copy=False),
-        clip_class=_resize_nearest_scalar(maps.clip_class, shape),
+        headroom=resize_clip_masks(maps.headroom, shape, crop=crop).astype(np.float16, copy=False),
+        clip_class=_resize_nearest_scalar(maps.clip_class, shape, crop=crop),
         snr_confidence=(
-            resize_clip_masks(maps.snr_confidence[:, :, None], shape)[:, :, 0].astype(np.float16, copy=False)
-            if maps.snr_confidence is not None else None
+            resize_clip_masks(maps.snr_confidence[:, :, None], shape, crop=crop)[:, :, 0].astype(
+                np.float16, copy=False
+            )
+            if maps.snr_confidence is not None
+            else None
         ),
     )
     bundle._raw_guidance_cache_shape = shape

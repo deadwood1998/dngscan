@@ -7,7 +7,12 @@ from typing import Any
 
 from ._deps import np, rawpy
 from . import metadata as dng_metadata
-from .constants import DEMOSAIC_AUTO_PREFERENCE, DEMOSAIC_CHOICES, WB_CHOICES
+from .constants import (
+    DECODER_CHOICES,
+    DEMOSAIC_AUTO_PREFERENCE,
+    DEMOSAIC_CHOICES,
+    WB_CHOICES,
+)
 from .models import RawBundle
 
 def decode_color_desc(desc: Any) -> str:
@@ -352,13 +357,23 @@ def load_raw(
     scene_half_size: bool = False,
     demosaic: str = "auto",
     wb_mode: str = "camera",
+    decoder: str = "libraw",
+    coreimage_version: str = "auto",
 ) -> RawBundle:
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
     if not path.is_file():
         raise FileNotFoundError(f"Input path is not a file: {path}")
+    if decoder not in DECODER_CHOICES:
+        raise ValueError(f"unknown decoder: {decoder}; expected one of {DECODER_CHOICES}")
     rawpy_highlight_mode(scene_highlight_mode)
     shot = dng_metadata.read_dng_shot_info(path)
+
+    scene_decoder = "libraw"
+    scene_decoder_version: str | None = None
+    evidence_shape: tuple[int, int] | None = None
+    scene_geometry_crop: tuple[float, float, float, float] | None = None
+    scene_geometry_corr: float | None = None
 
     try:
         with rawpy.imread(str(path)) as raw:
@@ -421,10 +436,41 @@ def load_raw(
                 scene_rec2020_render.shape[:2],
                 raw_pattern,
             )
+            evidence_shape = (int(scene_rec2020_render.shape[0]), int(scene_rec2020_render.shape[1]))
     except FileNotFoundError:
         raise
     except Exception as exc:
         raise RuntimeError(f"Cannot decode RAW file with rawpy/libraw: {exc}") from exc
+
+    if decoder == "coreimage":
+        if wb_mode != "camera":
+            raise ValueError(
+                "Core Image decoder currently supports only --wb camera; "
+                "daylight multipliers have no validated CIRAWFilter mapping yet"
+            )
+        from . import coreimage_decode
+
+        if not coreimage_decode.available():
+            raise RuntimeError(
+                "Core Image decoder unavailable on this system "
+                "(macOS + PyObjC Quartz / CIRAWFilter required)"
+            )
+        libraw_scene = scene_rec2020_render
+        ci_float, info = coreimage_decode.decode_scene_rec2020(
+            path,
+            half_size=scene_half_size,
+            version=coreimage_version,
+        )
+        scene_geometry_corr = coreimage_decode.verify_geometry_alignment(ci_float, libraw_scene)
+        scene_rec2020_render = coreimage_decode.scene_float_to_u16(ci_float, scene_scale)
+        xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
+        render_scale = scene_scale
+        eh, ew = evidence_shape if evidence_shape is not None else libraw_scene.shape[:2]
+        # Top-left fractional mapping: the full LibRaw evidence frame covers the CI buffer.
+        scene_geometry_crop = (0.0, 0.0, float(eh), float(ew))
+        scene_decoder = "coreimage"
+        scene_decoder_version = str(info.get("version") or coreimage_version)
+        # Masks stay at LibRaw evidence resolution; clip_masks_for_shape applies the crop.
 
     return RawBundle(
         path=path,
@@ -448,4 +494,9 @@ def load_raw(
         shot_model=shot.model,
         shot_iso=shot.iso,
         clip_masks=clip_masks,
+        scene_decoder=scene_decoder,
+        scene_decoder_version=scene_decoder_version,
+        evidence_shape=evidence_shape,
+        scene_geometry_crop=scene_geometry_crop,
+        scene_geometry_corr=scene_geometry_corr,
     )

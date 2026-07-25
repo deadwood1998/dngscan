@@ -366,6 +366,24 @@ def parse_agx_primaries(params: dict) -> str:
     return resolved
 
 
+def parse_decoder(params: dict) -> tuple[str, str]:
+    from dngscan.constants import COREIMAGE_VERSION_CHOICES, DECODER_CHOICES
+    from dngscan import coreimage_decode
+
+    decoder = str(params.get("decoder", "libraw"))
+    version = str(params.get("coreimageVersion", params.get("coreimage_version", "auto")))
+    if decoder not in DECODER_CHOICES:
+        raise ValueError(f"未知解码器：{decoder}")
+    if version not in COREIMAGE_VERSION_CHOICES:
+        raise ValueError(f"未知 Core Image 版本：{version}")
+    if decoder == "coreimage" and not coreimage_decode.available():
+        raise RuntimeError("Core Image 解码器在此系统不可用（需要 macOS + PyObjC Quartz）")
+    wb = str(params.get("wb", "camera"))
+    if decoder == "coreimage" and wb != "camera":
+        raise ValueError("Core Image 解码器目前仅支持拍摄白平衡（As Shot）")
+    return decoder, version
+
+
 def export_preview_jpeg(
     inp: Path,
     highlight: str,
@@ -387,10 +405,14 @@ def export_preview_jpeg(
     agx_primaries: str = "smooth",
     cached: PreviewEntry | None = None,
     adjustments: dg.RenderAdjustments | None = None,
+    decoder: str = "libraw",
+    coreimage_version: str = "auto",
 ) -> dict:
     dg.require_dependencies()
     if cached is None:
-        cached = PREVIEW_STORE.get(inp, highlight, wb, tone_core == "gated")
+        cached = PREVIEW_STORE.get(
+            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+        )
 
     proxy_bundle = replace(
         cached.bundle,
@@ -451,13 +473,16 @@ def run_preview(params: dict) -> dict:
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
+    decoder, coreimage_version = parse_decoder(params)
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
     tone_core, lum_norm = parse_tone_core(params)
     agx_primaries = parse_agx_primaries(params)
-    cached = PREVIEW_STORE.get(inp, highlight, wb, tone_core == "gated")
+    cached = PREVIEW_STORE.get(
+        inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+    )
     auto_ev_result = None
     if ev_auto:
         auto_ev_result = dg.compute_auto_ev(
@@ -497,6 +522,8 @@ def run_preview(params: dict) -> dict:
         agx_primaries=agx_primaries,
         cached=cached,
         adjustments=adjustments,
+        decoder=decoder,
+        coreimage_version=coreimage_version,
     )
 
 
@@ -506,10 +533,13 @@ def prepare_preview(params: dict) -> dict:
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
+    decoder, coreimage_version = parse_decoder(params)
     tone_core, _ = parse_tone_core(params)
     # Do not compete with the full-resolution export worker for memory bandwidth.
     with RENDER_LOCK:
-        entry = PREVIEW_STORE.get(inp, highlight, wb, tone_core == "gated")
+        entry = PREVIEW_STORE.get(
+            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+        )
     height, width = entry.bundle.scene_rec2020_render.shape[:2]
     return {"ok": True, "prepared": True, "width": int(width), "height": int(height)}
 
@@ -562,13 +592,21 @@ def run_export(params: dict) -> dict:
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
+    decoder, coreimage_version = parse_decoder(params)
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
     tone_core, lum_norm = parse_tone_core(params)
     agx_primaries = parse_agx_primaries(params)
-    bundle = dg.load_raw(inp, highlight, demosaic=demosaic, wb_mode=wb)
+    bundle = dg.load_raw(
+        inp,
+        highlight,
+        demosaic=demosaic,
+        wb_mode=wb,
+        decoder=decoder,
+        coreimage_version=coreimage_version,
+    )
 
     analysis, y, ev_img = dg.analyze(
         bundle,

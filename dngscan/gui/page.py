@@ -239,6 +239,22 @@ GRADE_OPTIONS
         <option value="ppg">PPG</option>
       </select>
     </div>
+    <div style="flex:1;min-width:170px" id="decoderBlock">
+      <label>解码器</label>
+      <select id="decoder" title="scene-linear RGB 来源。证据层始终来自 LibRaw。Core Image 为可选旁路，不是画质升级。">
+        <option value="libraw">LibRaw · 默认</option>
+        <option value="coreimage">Core Image · 可选</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
+      <label>CI 版本</label>
+      <select id="coreimageVersion" title="auto 选择文件支持的最高版本；显式版本在不支持时会报错。">
+        <option value="auto">自动</option>
+        <option value="9">9</option>
+        <option value="8">8</option>
+        <option value="7">7</option>
+      </select>
+    </div>
   </div>
 </div>
 
@@ -307,9 +323,11 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
-const STORE_KEY="dngscan.settings.v6";
+const STORE_KEY="dngscan.settings.v7";
+const V6_STORE_KEY="dngscan.settings.v6";
 const V5_STORE_KEY="dngscan.settings.v5";
 const LEGACY_STORE_KEY="dngscan.settings.v4";
+const COREIMAGE_AVAILABLE=COREIMAGE_AVAILABLE_FLAG;
 function setGradeStrengthLabel(){const v=+$("#gradeStrength").value;$("#gradeStrengthVal").textContent=v.toFixed(2);}
 function updateGradeUi(){$("#gradeStrengthBlock").style.display=$("#grade").value!=="none"?"block":"none";}
 function setPunchLabel(){const v=+$("#punch").value;$("#punchVal").textContent=v.toFixed(2);}
@@ -385,10 +403,29 @@ function formatText(v){return ({sdr:"SDR JPEG",ultrahdr:"HDR gain-map JPEG"})[v]
 function applyJobEv(j){
   if(j.ev!==undefined){$("#ev").value=j.ev;setEvLabel();saveSettings();}
 }
+function updateDecoderUi(){
+  const block=$("#decoderBlock");
+  const ver=$("#coreimageVersionBlock");
+  if(!COREIMAGE_AVAILABLE){
+    $("#decoder").value="libraw";
+    block.classList.add("dim");
+    $("#decoder").disabled=true;
+    ver.style.display="none";
+    return;
+  }
+  block.classList.remove("dim");
+  $("#decoder").disabled=false;
+  ver.style.display=$("#decoder").value==="coreimage"?"block":"none";
+  if($("#decoder").value==="coreimage" && $("#wb").value!=="camera"){
+    $("#wb").value="camera";
+  }
+}
 function saveSettings(){
   try{localStorage.setItem(STORE_KEY,JSON.stringify({
     input:$("#input").value,ev:$("#ev").value,quality:$("#quality").value,
-    highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,chroma:$("#chroma").value,format:$("#format").value,
+    highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,
+    decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
+    chroma:$("#chroma").value,format:$("#format").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
     grade:$("#grade").value,gradeStrength:$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:$("#sceneTransformStrength").value,punch:$("#punch").value,
@@ -401,11 +438,12 @@ function restoreSettings(){
   let s={};let migrated=false;
   try{
     const current=localStorage.getItem(STORE_KEY);
+    const v6=localStorage.getItem(V6_STORE_KEY);
     const v5=localStorage.getItem(V5_STORE_KEY);
-    s=JSON.parse(current||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
+    s=JSON.parse(current||v6||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
     // v4's stock pair was gated + base. Move that old default to the new
     // darktable baseline while retaining every other stored preference.
-    if(!current&&!v5&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
+    if(!current&&!v6&&!v5&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
       s.toneCore="agx";s.agxPrimaries="smooth";migrated=true;
     }
   }catch(e){}
@@ -416,6 +454,8 @@ function restoreSettings(){
   if(s.gamut)$("#gamut").value=s.gamut;
   if(s.wb)$("#wb").value=s.wb;
   if(s.demosaic)$("#demosaic").value=s.demosaic;
+  if(s.decoder&&[...$("#decoder").options].some(o=>o.value===s.decoder))$("#decoder").value=s.decoder;
+  if(s.coreimageVersion&&[...$("#coreimageVersion").options].some(o=>o.value===s.coreimageVersion))$("#coreimageVersion").value=s.coreimageVersion;
   if(s.chroma)$("#chroma").value=s.chroma;
   if(s.toneCore&&[...$("#toneCore").options].some(o=>o.value===s.toneCore))$("#toneCore").value=s.toneCore;
   if(s.lumNorm&&[...$("#lumNorm").options].some(o=>o.value===s.lumNorm))$("#lumNorm").value=s.lumNorm;
@@ -442,13 +482,15 @@ function restoreSettings(){
   if(s.hdrHeadroom!==undefined)$("#hdrHeadroom").value=s.hdrHeadroom;
   if(s.outdir)$("#outdir").value=s.outdir;
   if(s.png!==undefined)$("#png").checked=!!s.png;
-  setEvLabel();setHdrLabel();setGradeStrengthLabel();setSceneTransformStrengthLabel();setPunchLabel();setAdjustmentLabels();updateGradeUi();updateSceneTransformUi();updateToneCoreUi();updateFormatUi();
+  setEvLabel();setHdrLabel();setGradeStrengthLabel();setSceneTransformStrengthLabel();setPunchLabel();setAdjustmentLabels();updateGradeUi();updateSceneTransformUi();updateToneCoreUi();updateFormatUi();updateDecoderUi();
   if(migrated)saveSettings();
 }
 ["quality","gamut","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
 ["input","highlight"].forEach(id=>$("#"+id).addEventListener("change",()=>{saveSettings();preparePreview();}));
 ["demosaic","chroma","grade"].forEach(id=>$("#"+id).addEventListener("change",()=>{updateGradeUi();saveSettings();}));
-$("#wb").addEventListener("change",()=>{updateGradeUi();saveSettings();preparePreview();});
+$("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
+$("#coreimageVersion").addEventListener("change",()=>{saveSettings();preparePreview();});
+$("#wb").addEventListener("change",()=>{updateDecoderUi();updateGradeUi();saveSettings();preparePreview();});
 $("#toneCore").addEventListener("change",()=>{updateToneCoreUi();saveSettings();preparePreview();});
 $("#lumNorm").addEventListener("change",saveSettings);
 $("#agxPrimaries").addEventListener("change",saveSettings);
@@ -500,7 +542,9 @@ function payload(){
   const input=$("#input").value.trim();
   if(!input){setStatus("请先选择一个 DNG/RAW 文件","err");return null;}
   return {
-    input,highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,chroma:$("#chroma").value,format:$("#format").value,
+    input,highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,
+    decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
+    chroma:$("#chroma").value,format:$("#format").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
     grade:$("#grade").value,gradeStrength:+$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:+$("#sceneTransformStrength").value,
@@ -623,9 +667,12 @@ def _scene_transform_options_html() -> str:
 
 
 def render_page(init_dir: str) -> bytes:
+    from dngscan import coreimage_decode
+
     html = (
         PAGE.replace("INIT_DIR", json.dumps(init_dir))
         .replace("GRADE_OPTIONS", _grade_options_html())
         .replace("SCENE_TRANSFORM_OPTIONS", _scene_transform_options_html())
+        .replace("COREIMAGE_AVAILABLE_FLAG", "true" if coreimage_decode.available() else "false")
     )
     return html.encode("utf-8")

@@ -14,8 +14,8 @@ from .analysis import analyze
 from .auto_ev import AutoEvResult, compute_auto_ev, is_ev_auto, parse_ev_value, resolve_export_ev
 from .color import output_gamut_space
 from .constants import (
-    CHROMA_CHOICES, DEFAULT_GAINMAP_SCALE, DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES,
-    JPEG_OUTPUT_FORMATS, WB_CHOICES,
+    CHROMA_CHOICES, COREIMAGE_VERSION_CHOICES, DECODER_CHOICES, DEFAULT_GAINMAP_SCALE,
+    DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, JPEG_OUTPUT_FORMATS, WB_CHOICES,
 )
 from .export import chroma_to_subsampling, export_jpeg
 from .grade import RENDER_MODE, grade_choices, resolve_grade
@@ -177,6 +177,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="去马赛克插值算法（画质，非降噪；本工具不做任何降噪。仅全分辨率导出生效): auto=自动选最佳可用(DHT优先，非Bayer走原生)；其余为手动指定",
     )
     parser.add_argument(
+        "--decoder",
+        choices=DECODER_CHOICES,
+        default="libraw",
+        help="scene-linear RGB 解码器: libraw=默认；coreimage=macOS CIRAWFilter（证据层仍为 LibRaw；与 --wb daylight 不兼容）",
+    )
+    parser.add_argument(
+        "--coreimage-version",
+        choices=COREIMAGE_VERSION_CHOICES,
+        default="auto",
+        help="仅 --decoder coreimage：auto=选文件支持的最高版本(优先9)；显式 9/8/7 在不支持时直接报错",
+    )
+    parser.add_argument(
         "--output-gamut",
         choices=("srgb", "p3"),
         default="srgb",
@@ -218,7 +230,14 @@ def main(argv: list[str]) -> int:
         scan_requested = bool(args.scan or args.out is not None or (args.jpeg is None and args.csv is None))
         out_path = args.out if args.out is not None else (default_png_path(args.path) if scan_requested else None)
 
-        bundle = load_raw(args.path, args.highlight_mode, demosaic=args.demosaic, wb_mode=args.wb)
+        bundle = load_raw(
+            args.path,
+            args.highlight_mode,
+            demosaic=args.demosaic,
+            wb_mode=args.wb,
+            decoder=args.decoder,
+            coreimage_version=args.coreimage_version,
+        )
         diagnostics_requested = bool(scan_requested or args.csv is not None)
         analysis, y, ev = analyze(
             bundle,

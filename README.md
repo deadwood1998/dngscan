@@ -124,6 +124,23 @@ GUI/CLI can select `dht / dcb / ahd / aahd / vng / ppg` manually; an algorithm s
 by another LibRaw build only needs an entry in `DEMOSAIC_CHOICES` to use the existing
 availability check and fallback logic.
 
+### Optional Core Image decoder
+
+`--decoder coreimage` is a fifth control path in the same spirit as the `lum` /
+`neutral` tone cores: an alternate *interpretation* of the scene-linear RGB buffer, not
+a quality upgrade and never the default. CFA clip masks, mosaic evidence, and analysis
+still come from LibRaw. Only `scene_rec2020_render` is replaced by `CIRAWFilter`
+(RAW 9 when the file offers it; otherwise the highest supported version — some Fujifilm
+RAF files stop at 8 and must not be labeled as 9).
+
+Measured on a Sigma fp DNG: after the fixed scale compensation of `1/0.9314`, the same
+AgX plan shows a median Oklab ΔE of about **0.138** versus LibRaw — roughly twenty times
+the skin divergence between that camera and an ALEXA reference in the same study. RAW 9
+also smooths high-frequency energy even with noise reduction forced off (~9 % less on a
+high-ISO night frame). Use it to A/B Apple's camera matrix and reconstruction, not to
+“improve” the default path. `--wb daylight` is rejected until a validated temperature/tint
+mapping exists; `--highlight-mode` continues to describe the LibRaw evidence path only.
+
 ### White balance
 
 `camera` uses the file's AsShot measurement. `daylight` uses LibRaw's calibrated
@@ -411,6 +428,10 @@ python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
 
 # Compare another core at the same EV
 python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
+
+# Optional Core Image scene buffer (macOS; evidence stays on LibRaw)
+python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
+python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
 
 # Deliberately use the brightness reference
 python -m dngscan photo.dng --jpeg reference.jpg --ev auto

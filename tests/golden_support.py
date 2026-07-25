@@ -21,6 +21,10 @@ CORES = ("agx", "gated", "lum", "neutral")
 AGX_PRIMARIES = ("smooth", "base", "punchy", "muted")
 PLAN_KINDS = ("fixed", "compiled")
 
+# Do NOT add Core Image / CIRAWFilter cases to the golden matrix. Apple changes that
+# decoder between OS releases; pinned bytes would rot. The optional decoder is covered
+# by tests/test_coreimage_decode.py (skipped when Quartz is unavailable).
+
 
 @dataclass(frozen=True)
 class GoldenScene:

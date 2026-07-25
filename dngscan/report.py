@@ -211,6 +211,17 @@ def print_report(
             else jpeg_mode
         )
         wb_label = "日光固定配平" if bundle.wb_mode == "daylight" else "相机白平衡"
+        decoder = getattr(bundle, "scene_decoder", "libraw") or "libraw"
+        decoder_version = getattr(bundle, "scene_decoder_version", None)
+        if decoder == "coreimage":
+            decoder_label = f"Core Image/{decoder_version or '?'}"
+            highlight_note = (
+                f"高光处理={highlight_mode_cn(bundle.scene_highlight_mode)}"
+                "（LibRaw 证据路径；Core Image scene 缓冲不受此开关影响）"
+            )
+        else:
+            decoder_label = "LibRaw"
+            highlight_note = f"高光处理={highlight_mode_cn(bundle.scene_highlight_mode)}"
         ev_label = "全图亮度参考" if auto_ev is not None else "EV 补偿"
         ev_note = (
             f"{ev_label}={jpeg_ev:+.2f}（参考提升 {auto_ev.ev_boost:+.2f} EV）"
@@ -219,10 +230,11 @@ def print_report(
         )
         brighten_note = "全图亮度参考" if auto_ev is not None else "手动 EV / 固定锚点"
         print(
-            f"JPEG 设置: scene-linear Rec.2020 起点；8-bit {output_gamut_label(output_gamut)}（TPDF 抖动）；"
+            f"JPEG 设置: scene-linear Rec.2020 起点（解码={decoder_label}）；"
+            f"8-bit {output_gamut_label(output_gamut)}（TPDF 抖动）；"
             f"{wb_label}；{brighten_note}；"
             f"曝光锚定增益={bundle.exposure_gain:.3f}（{ev_note}）；"
-            f"模式={reported_mode}；高光处理={highlight_mode_cn(bundle.scene_highlight_mode)}；"
+            f"模式={reported_mode}；{highlight_note}；"
             f"AgX 前馈={scene_transform_label(scene_transform)}（强度={scene_transform_strength:.2f}）；"
             f"成片风格={grade_label(jpeg_grade)}（强度={jpeg_grade_strength:.2f}）；"
             f"质量={jpeg_quality}；"
@@ -367,6 +379,13 @@ def csv_row(
         "camera_model": bundle.shot_model or "",
         "iso": bundle.shot_iso if bundle.shot_iso else "",
         "wb_mode": bundle.wb_mode,
+        "scene_decoder": getattr(bundle, "scene_decoder", "libraw") or "libraw",
+        "scene_decoder_version": getattr(bundle, "scene_decoder_version", None) or "",
+        "scene_geometry_corr": (
+            getattr(bundle, "scene_geometry_corr", None)
+            if getattr(bundle, "scene_geometry_corr", None) is not None
+            else ""
+        ),
         "prior_id": analysis.prior_id or "",
         "gain_e_per_dn": analysis.gain_e_per_dn if analysis.gain_e_per_dn is not None else "",
         "noise_floor_e": analysis.noise_floor_e if analysis.noise_floor_e is not None else "",

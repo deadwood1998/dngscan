@@ -45,6 +45,15 @@ class RawBundle:
     _raw_guidance_cache_shape: tuple[int, int] | None = None
     _raw_guidance_resized: Any | None = None
     _raw_guidance_has_sensor_snr: bool = False
+    # Scene-linear RGB producer. Evidence (masks/mosaic) is always LibRaw-derived.
+    scene_decoder: str = "libraw"
+    scene_decoder_version: str | None = None
+    # Shape of clip_masks / LibRaw scene frame when scene_decoder != "libraw".
+    evidence_shape: tuple[int, int] | None = None
+    # Crop of the evidence frame covering the current scene, in evidence pixel coords
+    # (y0, x0, y1, x1). None means the full evidence frame maps onto the scene (pure scale).
+    scene_geometry_crop: tuple[float, float, float, float] | None = None
+    scene_geometry_corr: float | None = None
 
 
 @dataclass

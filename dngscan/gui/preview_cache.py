@@ -19,7 +19,7 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 1
+PREVIEW_CACHE_VERSION = 2
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
 
@@ -75,13 +75,27 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v1"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v1"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v2"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v2"
 
 
-def _cache_identity(path: Path, highlight: str, wb: str) -> tuple[tuple[str, int, int, str, str], str]:
+def _cache_identity(
+    path: Path,
+    highlight: str,
+    wb: str,
+    decoder: str = "libraw",
+    coreimage_version: str = "auto",
+) -> tuple[tuple[str, int, int, str, str, str, str], str]:
     stat = path.stat()
-    key = (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size), highlight, wb)
+    key = (
+        str(path.resolve()),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+        highlight,
+        wb,
+        str(decoder),
+        str(coreimage_version),
+    )
     encoded = "\0".join((str(PREVIEW_CACHE_VERSION), *(str(value) for value in key))).encode("utf-8")
     return key, hashlib.sha256(encoded).hexdigest()
 
@@ -120,6 +134,19 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
         "shot_make": bundle.shot_make,
         "shot_model": bundle.shot_model,
         "shot_iso": bundle.shot_iso,
+        "scene_decoder": str(getattr(bundle, "scene_decoder", "libraw") or "libraw"),
+        "scene_decoder_version": getattr(bundle, "scene_decoder_version", None),
+        "evidence_shape": (
+            [int(v) for v in bundle.evidence_shape]
+            if getattr(bundle, "evidence_shape", None) is not None
+            else None
+        ),
+        "scene_geometry_crop": (
+            [float(v) for v in bundle.scene_geometry_crop]
+            if getattr(bundle, "scene_geometry_crop", None) is not None
+            else None
+        ),
+        "scene_geometry_corr": getattr(bundle, "scene_geometry_corr", None),
     }
 
 
@@ -130,6 +157,8 @@ def _bundle_from_cache(
     masks: Any | None,
     guidance: RawGuidanceMaps | None,
 ) -> RawBundle:
+    evidence_shape = metadata.get("evidence_shape")
+    crop = metadata.get("scene_geometry_crop")
     return RawBundle(
         path=path,
         raw_image=None,
@@ -155,6 +184,23 @@ def _bundle_from_cache(
         raw_guidance=guidance,
         _raw_guidance_has_sensor_snr=(
             guidance is not None and guidance.snr_confidence is not None
+        ),
+        scene_decoder=str(metadata.get("scene_decoder", "libraw") or "libraw"),
+        scene_decoder_version=metadata.get("scene_decoder_version"),
+        evidence_shape=(
+            (int(evidence_shape[0]), int(evidence_shape[1]))
+            if evidence_shape is not None
+            else None
+        ),
+        scene_geometry_crop=(
+            (float(crop[0]), float(crop[1]), float(crop[2]), float(crop[3]))
+            if crop is not None
+            else None
+        ),
+        scene_geometry_corr=(
+            float(metadata["scene_geometry_corr"])
+            if metadata.get("scene_geometry_corr") is not None
+            else None
         ),
     )
 
@@ -183,15 +229,25 @@ def build_proxy_entry(
     np = dg.np
     proxy_scene = downsample_mean(source.scene_rec2020_render, PROXY_LONG_EDGE)
     proxy_shape = proxy_scene.shape[:2]
-    proxy_masks = resize_clip_masks(source.clip_masks, proxy_shape)
+    # Proxy masks are already in scene space after resize_clip_masks with the bundle crop.
+    proxy_masks = resize_clip_masks(
+        source.clip_masks,
+        proxy_shape,
+        crop=getattr(source, "scene_geometry_crop", None),
+    )
     if proxy_masks is not None:
         proxy_masks = proxy_masks.astype(np.float16, copy=False)
     proxy_guidance = None
     if include_guidance:
         proxy_guidance = _copy_guidance(raw_guidance_for_shape(source, proxy_shape, analysis))
+    meta = _bundle_metadata(source)
+    # After proxying, masks live at proxy geometry; clear the evidence crop so later
+    # resizes treat them as already scene-aligned.
+    meta["evidence_shape"] = [int(proxy_shape[0]), int(proxy_shape[1])]
+    meta["scene_geometry_crop"] = None
     bundle = _bundle_from_cache(
         source.path,
-        _bundle_metadata(source),
+        meta,
         proxy_scene,
         proxy_masks,
         proxy_guidance,
@@ -295,7 +351,7 @@ class PreviewCache:
     """One in-memory proxy plus a bounded, validated on-disk cache."""
 
     def __init__(self) -> None:
-        self.entries: dict[tuple[str, int, int, str, str], PreviewEntry] = {}
+        self.entries: dict[tuple[str, int, int, str, str, str, str], PreviewEntry] = {}
         self.lock = threading.Lock()
         self.build_lock = threading.Lock()
 
@@ -309,8 +365,10 @@ class PreviewCache:
         highlight: str,
         wb: str,
         require_guidance: bool = False,
+        decoder: str = "libraw",
+        coreimage_version: str = "auto",
     ) -> PreviewEntry:
-        key, digest = _cache_identity(path, highlight, wb)
+        key, digest = _cache_identity(path, highlight, wb, decoder, coreimage_version)
         with self.lock:
             cached = self.entries.get(key)
             if cached is not None and (not require_guidance or cached.bundle.raw_guidance is not None):
@@ -325,7 +383,14 @@ class PreviewCache:
             cache_path = _cache_dir() / f"{digest}.npz"
             cached = _read_disk_entry(cache_path, path, require_guidance)
             if cached is None:
-                source = dg.load_raw(path, highlight, scene_half_size=True, wb_mode=wb)
+                source = dg.load_raw(
+                    path,
+                    highlight,
+                    scene_half_size=True,
+                    wb_mode=wb,
+                    decoder=decoder,
+                    coreimage_version=coreimage_version,
+                )
                 analysis, _, _ = dg.analyze(source, 4, diagnostics=False)
                 cached = build_proxy_entry(source, analysis, require_guidance)
                 _write_disk_entry(cache_path, cached)

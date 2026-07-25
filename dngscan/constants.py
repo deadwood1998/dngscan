@@ -114,6 +114,13 @@ DEMOSAIC_CHOICES = ("auto", "dht", "dcb", "ahd", "aahd", "vng", "ppg")
 DEMOSAIC_AUTO_PREFERENCE = ("DHT", "DCB", "AHD")
 
 
+# Scene-linear RGB producers. Evidence (CFA masks, mosaic) always stays on LibRaw.
+DECODER_CHOICES = ("libraw", "coreimage")
+
+
+COREIMAGE_VERSION_CHOICES = ("auto", "9", "8", "7")
+
+
 OKLAB_M1 = (
     np.array(  # XYZ(D65) -> LMS
         [

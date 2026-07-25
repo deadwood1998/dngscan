@@ -104,6 +104,19 @@ AMaZE、LMMSE、VCD、AFD 等 GPL demosaic pack 算法，实际可选项取决�
 GUI/CLI 可手动指定 `dht / dcb / ahd / aahd / vng / ppg`；如果本机 LibRaw 还带有其他
 算法，把它加入 `DEMOSAIC_CHOICES` 即可交给现有的可用性检测与回退逻辑。
 
+### 可选 Core Image 解码器
+
+`--decoder coreimage` 和 `lum` / `neutral` tone 核是同一类东西：第五条**对照路径**，
+换的是 scene-linear RGB 的解释方式，不是默认画质升级。CFA clip mask、马赛克证据和
+分析仍全部来自 LibRaw；只有 `scene_rec2020_render` 改由 `CIRAWFilter` 产出（文件支持
+时用 RAW 9，否则取最高可用版本——部分 Fujifilm RAF 只到 8，不得宣称成 9）。
+
+在 Sigma fp DNG 上测得：固定补偿 `1/0.9314` 之后，同一套 AgX 计划相对 LibRaw 的
+Oklab 中位 ΔE 约 **0.138**，大约是同一次实验里该机与 ALEXA 肤色差的 20 倍。RAW 9
+在强制关掉降噪时仍会抹掉约 9% 的高频能量（高 ISO 夜景）。用途是 A/B Apple 的相机
+矩阵与重建，不是“让默认更好”。`--wb daylight` 在尚未验证温度/色调映射前会直接拒绝；
+`--highlight-mode` 继续只描述 LibRaw 证据路径。
+
 ### 白平衡
 
 `camera` 使用文件里的 AsShot 测量，`daylight` 使用 LibRaw 的日光标定乘子。前者跟随拍摄
@@ -338,6 +351,10 @@ python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
 
 # 相同 EV 下比较另一条核心
 python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
+
+# 可选 Core Image scene 缓冲（macOS；证据层仍为 LibRaw）
+python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
+python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
 
 # 主动使用亮度参考
 python -m dngscan photo.dng --jpeg reference.jpg --ev auto
