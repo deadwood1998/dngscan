@@ -461,7 +461,9 @@ def load_raw(
             half_size=scene_half_size,
             version=coreimage_version,
         )
-        scene_rec2020_render = coreimage_decode.scene_float_to_u16(ci_float, scene_scale)
+        scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_u16(
+            ci_float, scene_scale
+        )
         xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
         render_scale = scene_scale
         scene_decoder = "coreimage"

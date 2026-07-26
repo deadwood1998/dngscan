@@ -443,8 +443,36 @@ def decode_scene_rec2020(
     return rgb.astype(np.float32, copy=False), info
 
 
-def scene_float_to_u16(rgb: np.ndarray, scene_scale: float = 65535.0) -> np.ndarray:
-    """Convert linear float Rec.2020 to the pipeline's uint16 + scene_scale convention."""
-    scale = float(scene_scale)
+# Quantisation headroom for the Core Image buffer. LibRaw's 1.0 is sensor saturation,
+# and the pipeline anchors that at +3.00 EV (0.18 * 2**MIDGRAY_HEADROOM_STOPS), which is
+# also the white endpoint's lower bound. Apple's 1.0 is diffuse white instead and real
+# specular detail lives above it (measured up to 3.0 linear on a Sigma fp frame), so
+# clipping at 1.0 does not merely lose those pixels — it caps the reliable tail at
+# +3.00 EV and prevents the compiled white endpoint from ever rising above its floor.
+# Allocating headroom keeps that detail; the cost is a coarser quantisation step, still
+# finer than the 14-bit sensor data underneath (allowance 4.0 -> 6.1e-5 linear).
+COREIMAGE_MAX_HEADROOM = 4.0
+
+
+def scene_headroom(rgb: np.ndarray, *, percentile: float = 99.995) -> float:
+    """Headroom to reserve above diffuse white, ignoring single-pixel outliers."""
+    arr = np.asarray(rgb, dtype=np.float32)
+    if arr.size == 0:
+        return 1.0
+    top = float(np.percentile(arr, percentile))
+    return float(min(COREIMAGE_MAX_HEADROOM, max(1.0, top)))
+
+
+def scene_float_to_u16(
+    rgb: np.ndarray, scene_scale: float = 65535.0
+) -> tuple[np.ndarray, float]:
+    """Quantise linear float Rec.2020 into the pipeline's uint16 + scene_scale pair.
+
+    Returns the buffer and the scene_scale that reproduces it, so that
+    ``buffer / scene_scale`` recovers the original linear values including any headroom
+    above diffuse white. Callers must use the returned scale, not the requested one."""
     linear = np.asarray(rgb, dtype=np.float32)
-    return np.clip(linear * scale, 0.0, scale).astype(np.uint16)
+    headroom = scene_headroom(linear)
+    scale = float(scene_scale) / headroom
+    buffer = np.clip(linear * scale, 0.0, float(scene_scale)).astype(np.uint16)
+    return buffer, scale

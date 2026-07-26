@@ -145,11 +145,26 @@ percentages, SNR, noise floor, white-balance testimony) are distributions rather
 pixel positions, so they remain valid and still come from LibRaw. The report names the
 decoder, its version, and the opcodes that were executed.
 
-After the fixed `1/0.9314` scale compensation the two pipelines differ mainly in camera
-interpretation — warmer skin and a different highlight rendering on the Sigma fp sample.
-RAW 9 also smooths high-frequency energy even with noise reduction forced off (~9 % less
-on a high-ISO night frame), which is worth knowing before reading its output as “more
-detail”. `--wb daylight` is rejected until a validated temperature/tint mapping exists.
+After the fixed `1/0.9314` scale compensation the two pipelines agree on the midtones
+(measured 0.01 EV apart on an ISO 2500 frame) and differ mainly in camera
+interpretation — warmer skin and a different highlight rendering on the Sigma fp
+samples. Two behavioural differences follow from the decoders themselves rather than
+from taste, and are worth knowing before reading an A/B:
+
+- **`--ev auto` can choose a different exposure on each path.** Apple keeps detail above
+  diffuse white, so the reference's highlight growth budget sees more near-white pixels
+  and stops the boost earlier. On one ISO 2500 frame the LibRaw path took +0.73 EV and
+  the Core Image path +0.44 EV. Compare at a fixed `--ev` when the decoder itself is the
+  question.
+- **Apple's buffer carries genuine specular headroom** — 2.7 % of pixels above diffuse
+  white on one frame, up to 2.06 linear. dngscan reserves quantisation room for it, so
+  the compiled white endpoint can rise above its +3.00 EV floor (measured +3.67 EV on
+  that frame) and the shoulder rolls those highlights off instead of clipping them.
+
+RAW 9 was also observed smoothing high-frequency energy with noise reduction forced off
+(~9 % less on one high-ISO night frame), though a second ISO 2500 capture showed no such
+difference — treat it as a per-scene observation, not a fixed property. `--wb daylight`
+is rejected until a validated temperature/tint mapping exists.
 
 ### White balance
 
