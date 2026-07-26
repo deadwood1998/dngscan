@@ -179,7 +179,13 @@ reading an A/B:
 - **So a fixed `--ev` is not enough to isolate the decoder.** The wider window means the
   compiled dynamic range runs 0.5–1.0 stops longer on the Core Image path, and an A/B at
   matched exposure still compares two different tone plans. Some of the extra brightness
-  in a side-by-side comes from there rather than from the decode.
+  in a side-by-side comes from there rather than from the decode. `tools/decode_ab.py`
+  separates the two by rendering each buffer through each plan and attributing the
+  difference; it is a diagnostic and deliberately makes ugly pictures, since a plan
+  compiled from one buffer misplaces the other's endpoints. On one ISO 12800 frame it
+  showed the native comparison hiding as much as it revealed: pure-white pixels differed
+  by 0.00 % natively, yet the Core Image buffer alone contributed +1.49 % and its own
+  wider plan cancelled exactly that much.
 
 The tone analysis itself needs no adaptation for this. The worry that denoising would
 narrow the distribution and drag the percentile-derived endpoints did not survive
