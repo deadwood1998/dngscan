@@ -134,10 +134,22 @@ def scene_tone_metrics(
     y = np.clip(rec2020_to_xyz(rec)[:, 1], 2.0 ** EV_REPORT_FLOOR, None)
     ev = np.log2(y) - GRAY_EV
 
-    reliable = np.ones((ev.shape[0],), dtype=bool)
+    # Samples sitting at the representable floor are clamped values, not measurements:
+    # the decoder produced zero (or below one code value) and the clip above pinned them
+    # to EV_REPORT_FLOOR. Letting them into the body percentiles is the black-end twin of
+    # letting reconstructed highlights define the white point. Decoders differ sharply
+    # here — measured on one Sigma fp frame, LibRaw leaves 0.001 % of pixels at the floor
+    # while Core Image's black handling leaves 1.78 %, which dragged body p1 from
+    # -6.16 EV to -11.53 EV and widened the compiled log window by 3.5 EV purely from
+    # clamping. Exclude them, but only while enough real samples remain.
+    floor_ev = float(EV_REPORT_FLOOR) - GRAY_EV
+    above_floor = ev > (floor_ev + 1e-3)
+    reliable = above_floor.copy()
     if getattr(bundle, "clip_masks", None) is not None:
         masks = retreat_engine.clip_masks_for_shape(bundle, bundle.scene_rec2020_render.shape[:2])
-        reliable = np.max(masks.reshape(-1, 3)[::step], axis=1) < np.float32(0.10)
+        reliable &= np.max(masks.reshape(-1, 3)[::step], axis=1) < np.float32(0.10)
+    if int(np.count_nonzero(reliable)) < max(256, ev.size // 20):
+        reliable = above_floor if int(np.count_nonzero(above_floor)) >= 256 else np.ones_like(above_floor)
     reliable_ev = ev[reliable]
     if reliable_ev.size < max(256, ev.size // 20):
         reliable_ev = ev
