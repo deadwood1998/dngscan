@@ -145,8 +145,9 @@ percentages, SNR, noise floor, white-balance testimony) are distributions rather
 pixel positions, so they remain valid and still come from LibRaw. The report names the
 decoder, its version, and the opcodes that were executed.
 
-After the fixed `1/0.9314` scale compensation the two pipelines agree on the midtones
-(measured 0.01 EV apart on an ISO 2500 frame) and differ mainly in camera
+After the fixed `1/1.0293` scale compensation the two pipelines agree on the midtones
+(median CI/LibRaw midtone ratio over four Sigma fp frames, spread 0.94–1.12) and differ
+mainly in camera
 interpretation — warmer skin and a different highlight rendering on the Sigma fp
 samples. Two behavioural differences follow from the decoders themselves rather than
 from taste, and are worth knowing before reading an A/B:
@@ -173,21 +174,36 @@ paths at a fixed `--ev 0`:
 
 | frame | ISO | luma noise vs LibRaw | chroma noise vs LibRaw | fully black px |
 | --- | --- | --- | --- | --- |
-| stage, near-darkness | 25600 | 12 % | 11 % | 21.6 % vs 8.1 % |
-| garden, overcast daylight | 12800 | 81 % | 29 % | 2.8 % vs 1.4 % |
+| stage, near-darkness | 25600 | 15 % | 15 % | 9.5 % vs 8.1 % |
+| garden, overcast daylight | 12800 | 78 % | 28 % | 1.5 % vs 1.4 % |
 
 The chroma cleanup is consistent; the luma cleanup is not. The model earns most of its
 advantage where SNR is genuinely poor, and on a well-exposed frame the dark 30 % is dark
-in *tone* rather than starved of signal, so the two paths nearly converge. Both frames
-pay in crushed shadow. Switching LibRaw to a smoother demosaic (VNG, PPG) does not close
-the gap, so this is the model rather than interpolation choice. Worth weighing against
-this tool's position that it performs no denoising and leaves texture to the demosaic
-choice.
+in *tone* rather than starved of signal, so the two paths nearly converge. The shadows
+are not paid for: once `shadowBias` is zeroed (see below) the fully-black counts sit
+within about a point of the LibRaw path. Switching LibRaw to a smoother demosaic (VNG,
+PPG) does not close the gap, so this is the model rather than interpolation choice.
+Worth weighing against this tool's position that it performs no denoising and leaves
+texture to the demosaic choice.
 
-**Clearing controls stops at reconstruction.** "Zero every control" is a rule inherited
-from the LibRaw path, and applying it wholesale to a decoder built on different
-assumptions produces a worse decode, not a purer one. Two CIRAWFilter settings are
-therefore left where Apple puts them, each for a measured reason:
+**The decode follows Apple's own linear-extraction recipe.** WWDC21's "Capture and
+process ProRAW images" prescribes exactly five settings for reaching the linear
+scene-referred data — `baselineExposure`, `shadowBias`, `boostAmount` and
+`localToneMapAmount` at 0, `isGamutMappingEnabled` false — rendered into
+`extendedLinearITUR_2020`. All five are applied, and the header documents `boostAmount`
+0 as "no global tone curve, i.e. linear response", which is the property AgX needs.
+
+`shadowBias` is the one that is easy to miss: it defaults to **5.0**, subtracts from the
+shadows, and is a display-referred black pedestal with no place in a scene-linear buffer.
+Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800 frame
+and 21.0 % of an ISO 25600 one — against 0.006 % and 0.18 % once zeroed, both *below* the
+LibRaw path's own 0.16 % and 1.9 % — and pushed the 1st luminance percentile negative.
+Shadow loss that looks like the CoreML denoiser eating detail is mostly this subtraction.
+
+**Clearing controls stops at reconstruction.** "Zero every control" is otherwise a rule
+inherited from the LibRaw path, and applying it wholesale to a decoder built on different
+assumptions produces a worse decode, not a purer one. Two settings are therefore left
+where Apple puts them, each for a measured reason:
 
 - **`highlightRecoveryEnabled` stays on** (Apple's default). It reconstructs clipped
   channels, which is the same job `--highlight-mode reconstruct` does on the LibRaw side,
@@ -204,16 +220,32 @@ therefore left where Apple puts them, each for a measured reason:
   component — real scene colours outside Rec.2020 — and changed 14 % of pixels. AgX does
   its own gamut work downstream, so the handoff stays scene-referred.
 
-Two Apple controls are deliberately overridden rather than accepted. `boostAmount` and
-`boostShadowAmount` default to 1.0 and 0.9, which is Apple's camera look rather than a
-linear conversion, and both are zeroed. `baselineExposure` defaults to the value in the
-DNG (1.0 on these files, a clean +1 EV on every pixel) and is forced to 0, because
-exposure is the axis dngscan owns through `--ev`, auto-EV and the midgray headroom model.
 `extendedDynamicRangeAmount` is left at Apple's default of 0: raising it to 1.0 does
 expose more separation at the very top (range 0.11 → 1.74 across the topmost pixels), but
 the highlight region correlates at 0.996 in log2 with the default render, so it is
 substantially a remap of the same information — and it pushes the peak to 20, far past
 the headroom this pipeline reserves.
+
+**Which decoder version, and which variant.** A freshly initialised filter reports
+version 8, not 9, so RAW 9 must be opted into explicitly even where the file supports it;
+`supportedCameraModels` lists 921 models on macOS 27 and includes the Sigma fp. The
+version list also offers `.dng` variants (`9.dng` alongside `9`) which are a genuinely
+different decode — 99.96 % of pixels differ. Measured against the colour LibRaw derives
+from the file's own matrices, plain `9` sits at a chromaticity distance of 0.015 and
+`9.dng` at 0.041, noticeably bluer, so the plain version is the one this pipeline
+requests.
+
+**Controls that stay adjustable.** RAW 9 is a computational decoder, and several of its
+knobs are calibrated controls over the model rather than stages that can be switched off.
+`exposure` is plumbed through. The white-balance interface (`neutralTemperature` /
+`neutralTint` / `neutralChromaticity` / `neutralLocation`) is the supported way to move
+white balance and is why `--wb daylight` is refused rather than approximated on this
+path. `linearSpaceFilter` is Apple's own hook for inserting a CIFilter while the image is
+still linear, which is the architecturally correct place for any scene-referred operation
+this pipeline might want to push into the decode. Note in particular that
+`luminanceNoiseReductionAmount` at 0 does not mean "no denoising": on RAW 9 the denoise
+is fused into the demosaic model and always runs, so 0 selects the least-smoothed end of
+a calibrated range rather than turning a stage off.
 
 `--wb daylight`
 is rejected until a validated temperature/tint mapping exists.

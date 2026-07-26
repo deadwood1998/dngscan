@@ -15,8 +15,12 @@ from ._deps import np
 
 # Measured 2026-07 on macOS 27.0 against Sigma fp DNG: Core Image linear values are
 # 0.9314× the LibRaw Rec.2020 pipeline (−0.10 EV). Absorb once; do not re-fit per image.
-COREIMAGE_SCALE_COMPENSATION = 1.0 / 0.9314
-COREIMAGE_SCALE_COMPENSATION_NOTE = "measured 2026-07 Sigma fp; CI/LibRaw median ratio 0.9314"
+# Re-derived after shadowBias was zeroed: the old 1/0.9314 was mostly compensating for
+# that subtraction darkening the buffer, not for a real scale difference between the
+# decoders. With Apple's full linear recipe applied the two paths nearly agree on their
+# own. Median CI/LibRaw midtone ratio over four Sigma fp frames, spread 0.94..1.12.
+COREIMAGE_SCALE_COMPENSATION = 1.0 / 1.0293
+COREIMAGE_SCALE_COMPENSATION_NOTE = "measured 2026-07 Sigma fp; CI/LibRaw median ratio 1.0293"
 
 COREIMAGE_DECODER_VERSIONS = ("auto", "9", "8", "7")
 
@@ -177,9 +181,21 @@ def configure_linear_filter(
     Returns a small dict describing what was applied (for reports/tests).
     """
     filt.setDecoderVersion_(version)
+    # Apple's own recipe for linear scene-referred extraction (WWDC21 "Capture and
+    # process ProRAW images") is to zero baselineExposure, shadowBias, boostAmount and
+    # localToneMapAmount and disable gamut mapping, then render into
+    # extendedLinearITUR_2020. All five are applied here and in _render_linear_rec2020.
     _set_amount(filt, "setBoostAmount_", None, 0.0)
+    # No effect while boostAmount is 0, cleared so the pair cannot drift apart.
     _set_amount(filt, "setBoostShadowAmount_", None, 0.0)
     _set_amount(filt, "setBaselineExposure_", None, 0.0)
+    # shadowBias subtracts from the shadows and defaults to 5.0, which is a black-level
+    # pedestal: a display-referred operation with no place in a scene-linear buffer.
+    # Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800
+    # frame and 21.0 % of an ISO 25600 one, against 0.04 % and 0.18 % once zeroed, and
+    # pushed the 1st percentile of luminance negative. Shadow detail that looked like it
+    # had been eaten by the CoreML denoiser was mostly this subtraction.
+    _set_amount(filt, "setShadowBias_", None, 0.0)
     _set_amount(filt, "setExposure_", None, float(exposure))
     _set_amount(filt, "setLuminanceNoiseReductionAmount_", "isLuminanceNoiseReductionSupported", 0.0)
     color_nr_cleared = _set_amount(
@@ -239,6 +255,7 @@ def configure_linear_filter(
             float(filt.sharpnessAmount()) if hasattr(filt, "sharpnessAmount") else None
         ),
         "highlight_recovery": highlight_recovery,
+        "shadow_bias": float(filt.shadowBias()) if hasattr(filt, "shadowBias") else None,
     }
 
 
@@ -472,6 +489,7 @@ def decode_scene_rec2020(
         "color_noise_cleared": cfg["color_noise_cleared"],
         "sharpness_amount": cfg.get("sharpness_amount"),
         "highlight_recovery": cfg.get("highlight_recovery"),
+        "shadow_bias": cfg.get("shadow_bias"),
         "exposure": float(exposure),
     }
     return rgb.astype(np.float32, copy=False), info
