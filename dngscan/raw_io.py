@@ -359,6 +359,7 @@ def load_raw(
     wb_mode: str = "camera",
     decoder: str = "libraw",
     coreimage_version: str = "auto",
+    coreimage_scale: str = "measured",
 ) -> RawBundle:
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
@@ -371,6 +372,7 @@ def load_raw(
 
     scene_decoder = "libraw"
     scene_decoder_version: str | None = None
+    scene_scale_mode: str | None = None
     scene_opcode_names: tuple[str, ...] = ()
     evidence_shape: tuple[int, int] | None = None
     scene_geometry_crop: tuple[float, float, float, float] | None = None
@@ -460,6 +462,9 @@ def load_raw(
             path,
             half_size=scene_half_size,
             version=coreimage_version,
+            scale_compensation=coreimage_decode.scale_compensation_for_mode(
+                coreimage_scale
+            ),
         )
         scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_u16(
             ci_float, scene_scale
@@ -468,6 +473,7 @@ def load_raw(
         render_scale = scene_scale
         scene_decoder = "coreimage"
         scene_decoder_version = str(info.get("version") or coreimage_version)
+        scene_scale_mode = coreimage_scale
         scene_opcode_names = tuple(coreimage_decode.read_dng_opcodes(path)["names"])
         # Strict Core Image pipeline: this is a SEPARATE path, not a LibRaw back end.
         # Core Image executes the file's DNG opcodes (measured on Sigma fp: per-plane
@@ -505,6 +511,7 @@ def load_raw(
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
+        scene_scale_mode=scene_scale_mode,
         scene_opcode_names=scene_opcode_names,
         evidence_shape=evidence_shape,
         scene_geometry_crop=scene_geometry_crop,

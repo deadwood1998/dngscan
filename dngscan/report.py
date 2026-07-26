@@ -216,9 +216,11 @@ def print_report(
         if decoder == "coreimage":
             opcodes = tuple(getattr(bundle, "scene_opcode_names", ()) or ())
             opcode_note = f"，已执行 DNG opcode: {'/'.join(opcodes)}" if opcodes else ""
+            scale_mode = getattr(bundle, "scene_scale_mode", None)
+            scale_note = f"，曝光锚点对齐={scale_mode}" if scale_mode else ""
             decoder_label = (
                 f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
-                f"{opcode_note}）"
+                f"{opcode_note}{scale_note}）"
             )
             highlight_note = (
                 "高光处理=Core Image 高光重建（保留镜面余量）"

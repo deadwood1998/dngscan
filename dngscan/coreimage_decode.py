@@ -12,15 +12,41 @@ from pathlib import Path
 from typing import Any
 
 from ._deps import np
+from .constants import (
+    COREIMAGE_SCALE_DEFAULT_MODE,
+    COREIMAGE_SCALE_MEASURED_RATIO,
+)
 
-# Measured 2026-07 on macOS 27.0 against Sigma fp DNG: Core Image linear values are
-# 0.9314× the LibRaw Rec.2020 pipeline (−0.10 EV). Absorb once; do not re-fit per image.
-# Re-derived after shadowBias was zeroed: the old 1/0.9314 was mostly compensating for
-# that subtraction darkening the buffer, not for a real scale difference between the
-# decoders. With Apple's full linear recipe applied the two paths nearly agree on their
-# own. Median CI/LibRaw midtone ratio over four Sigma fp frames, spread 0.94..1.12.
-COREIMAGE_SCALE_COMPENSATION = 1.0 / 1.0293
+# A scalar gain that puts the same scene radiance at the same number on both decoders,
+# because their 1.0 means different things: LibRaw normalises to the sensor's saturation
+# white level, Apple to its own diffuse white. dngscan anchors --ev and the midgray
+# headroom model to a fixed value, so without this the same --ev is two exposures.
+#
+# It is an empirical fit, not a spec-derived number, and it is now small enough to be
+# worth doubting. Re-derived after shadowBias was zeroed (the old 1/0.9314 was mostly
+# compensating for that subtraction darkening the buffer), the median CI/LibRaw midtone
+# ratio over four Sigma fp frames is 1.0293 — a 0.04 EV correction against a per-frame
+# spread of 0.94..1.12. The correction is an order of magnitude smaller than the scatter
+# it is drawn from, so "unity" is offered as a first-class alternative: it asserts that
+# the two pipelines agree on their own, which the current evidence cannot distinguish
+# from the fitted value. Pick with --coreimage-scale and compare.
+COREIMAGE_SCALE_MODES = {
+    "measured": 1.0 / COREIMAGE_SCALE_MEASURED_RATIO,
+    "unity": 1.0,
+}
+COREIMAGE_SCALE_COMPENSATION = COREIMAGE_SCALE_MODES[COREIMAGE_SCALE_DEFAULT_MODE]
 COREIMAGE_SCALE_COMPENSATION_NOTE = "measured 2026-07 Sigma fp; CI/LibRaw median ratio 1.0293"
+
+
+def scale_compensation_for_mode(mode: str) -> float:
+    """Resolve a --coreimage-scale mode name to its gain."""
+    try:
+        return COREIMAGE_SCALE_MODES[mode]
+    except KeyError:
+        raise ValueError(
+            f"unknown coreimage scale mode: {mode}; "
+            f"expected one of {tuple(COREIMAGE_SCALE_MODES)}"
+        ) from None
 
 COREIMAGE_DECODER_VERSIONS = ("auto", "9", "8", "7")
 

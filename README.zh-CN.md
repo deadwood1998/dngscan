@@ -120,8 +120,14 @@ Sigma fp 的 DNG 上是逐平面 `WarpRectilinear` 加一张镜头阴影 `GainMa
 （黑白电平、剪切百分比、SNR、噪声底、白平衡证词）是分布而非像素位置，依然有效，仍由
 LibRaw 提供。报告会写明解码器、版本，以及被执行的 opcode。
 
-在固定补偿 `1/1.0293` 之后，两条管线在中间调上一致（四张 Sigma fp 片子的 CI/LibRaw
-中间调比值中位数，离散范围 0.94–1.12），
+两个解码器对 1.0 的定义不同——LibRaw 归一化到传感器饱和白电平，Apple 归一化到它自己的
+diffuse white——因此需要一个标量增益把同一场景辐照放到同一数值上，`--ev` 才能在两条路径上
+指同一件事。`--coreimage-scale` 用来选它：`measured`（默认）应用实测的 `1/1.0293`，
+`unity` 不做补偿。这个拟合值相当于 0.04 EV 的修正，而它所来自的逐片离散是 0.94–1.12，
+**修正量比自身离散小一个量级**；也就是说"两条管线本就一致"这个主张（`unity`）在现有证据下
+与拟合值不可区分。两者都提供，是为了让这个问题靠渲染而不是靠争论来解决：某张 ISO 12800
+片子上 `measured` 更贴近 LibRaw 参照（亮度中位 0.4452 对 0.4530，参照 0.4411），差异
+0.025 EV，影响 79% 的像素。报告会写明本次渲染用的是哪个模式。除此之外，
 差别主要来自相机解释本身——在 Sigma fp 样片上表现为更暖的肤色和不同的高光走向。另有
 两点行为差异来自解码器本身而非口味，做 A/B 之前值得知道：
 
@@ -437,6 +443,7 @@ python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
 # 可选 Core Image scene 缓冲（macOS；证据层仍为 LibRaw）
 python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
 python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
+python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
 
 # 主动使用亮度参考
 python -m dngscan photo.dng --jpeg reference.jpg --ev auto

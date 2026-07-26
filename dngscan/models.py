@@ -48,6 +48,9 @@ class RawBundle:
     # Scene-linear RGB producer. Evidence (masks/mosaic) is always LibRaw-derived.
     scene_decoder: str = "libraw"
     scene_decoder_version: str | None = None
+    # Which --coreimage-scale mode produced the buffer ("measured" | "unity"), so a
+    # comparison between the two is visible in the report rather than implicit.
+    scene_scale_mode: str | None = None
     # DNG opcodes the decoder executed (Core Image path only). Reported, not acted on:
     # their presence is why that path cannot share LibRaw's per-pixel CFA evidence.
     scene_opcode_names: tuple[str, ...] = ()

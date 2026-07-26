@@ -145,9 +145,18 @@ percentages, SNR, noise floor, white-balance testimony) are distributions rather
 pixel positions, so they remain valid and still come from LibRaw. The report names the
 decoder, its version, and the opcodes that were executed.
 
-After the fixed `1/1.0293` scale compensation the two pipelines agree on the midtones
-(median CI/LibRaw midtone ratio over four Sigma fp frames, spread 0.94–1.12) and differ
-mainly in camera
+The two decoders disagree on what 1.0 means — LibRaw normalises to the sensor's
+saturation white level, Apple to its own diffuse white — so a scalar gain puts the same
+scene radiance at the same number and keeps `--ev` meaning one thing on both paths.
+`--coreimage-scale` chooses it: `measured` (default) applies the fitted `1/1.0293`,
+`unity` applies none. The fit is a 0.04 EV correction drawn from a per-frame spread of
+0.94–1.12, so it is an order of magnitude smaller than its own scatter and `unity` — the
+claim that the pipelines agree unaided — is not currently distinguishable from it on the
+available evidence. Both are offered so the question can be settled by rendering rather
+than by argument; on one ISO 12800 frame `measured` landed nearer the LibRaw reference
+(median luma 0.4452 against 0.4530, reference 0.4411), a 0.025 EV difference touching
+79 % of pixels. The report names the mode that produced a render. Beyond this the paths
+differ mainly in camera
 interpretation — warmer skin and a different highlight rendering on the Sigma fp
 samples. Two behavioural differences follow from the decoders themselves rather than
 from taste, and are worth knowing before reading an A/B:
@@ -541,6 +550,7 @@ python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
 # Optional Core Image scene buffer (macOS; evidence stays on LibRaw)
 python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
 python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
+python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
 
 # Deliberately use the brightness reference
 python -m dngscan photo.dng --jpeg reference.jpg --ev auto

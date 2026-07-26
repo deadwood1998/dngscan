@@ -184,6 +184,31 @@ class DecoderGuardTests(unittest.TestCase):
             parse_args(["photo.dng", "--jpeg", "out.jpg",
                         "--decoder", "coreimage", "--tone-core", "gated"])
 
+    def test_scale_mode_rejected_on_libraw(self) -> None:
+        """The flag only means something on the Core Image path; accepting it silently
+        elsewhere would imply an alignment that never happened."""
+        from dngscan.cli import parse_args
+
+        with self.assertRaises(SystemExit):
+            parse_args(["photo.dng", "--jpeg", "out.jpg", "--coreimage-scale", "unity"])
+
+    def test_scale_modes_are_distinct_and_default_is_measured(self) -> None:
+        """Both alignments must be reachable, and they must actually differ: the point of
+        the option is to make the fitted correction falsifiable against unity."""
+        from dngscan.cli import parse_args
+
+        measured = coreimage_decode.scale_compensation_for_mode("measured")
+        unity = coreimage_decode.scale_compensation_for_mode("unity")
+        self.assertEqual(unity, 1.0)
+        self.assertNotAlmostEqual(measured, unity, places=3)
+        self.assertAlmostEqual(
+            measured, 1.0 / coreimage_decode.COREIMAGE_SCALE_MEASURED_RATIO, places=9
+        )
+        with self.assertRaises(ValueError):
+            coreimage_decode.scale_compensation_for_mode("nope")
+        args = parse_args(["photo.dng", "--jpeg", "out.jpg", "--decoder", "coreimage"])
+        self.assertEqual(args.coreimage_scale, "measured")
+
     def test_opcode_reader_is_best_effort(self) -> None:
         """Never fatal: a non-TIFF container just reports nothing."""
         result = coreimage_decode.read_dng_opcodes(Path("/nonexistent/x.raf"))

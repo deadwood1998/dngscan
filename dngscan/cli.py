@@ -14,7 +14,9 @@ from .analysis import analyze
 from .auto_ev import AutoEvResult, compute_auto_ev, is_ev_auto, parse_ev_value, resolve_export_ev
 from .color import output_gamut_space
 from .constants import (
-    CHROMA_CHOICES, COREIMAGE_VERSION_CHOICES, DECODER_CHOICES, DEFAULT_GAINMAP_SCALE,
+    CHROMA_CHOICES, COREIMAGE_SCALE_CHOICES, COREIMAGE_SCALE_DEFAULT_MODE,
+    COREIMAGE_SCALE_MEASURED_RATIO, COREIMAGE_VERSION_CHOICES, DECODER_CHOICES,
+    DEFAULT_GAINMAP_SCALE,
     DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, JPEG_OUTPUT_FORMATS, WB_CHOICES,
 )
 from .export import chroma_to_subsampling, export_jpeg
@@ -189,12 +191,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="仅 --decoder coreimage：auto=选文件支持的最高版本(优先9)；显式 9/8/7 在不支持时直接报错",
     )
     parser.add_argument(
+        "--coreimage-scale",
+        choices=COREIMAGE_SCALE_CHOICES,
+        default=None,
+        help=(
+            "仅 --decoder coreimage：两条管线的曝光锚点对齐方式。"
+            f"measured=实测中位比 1/{COREIMAGE_SCALE_MEASURED_RATIO:.4f}（默认）；"
+            "unity=不补偿，主张两者本就一致。修正量(0.04EV)小于逐片离散(0.94~1.12)，两者供对比"
+        ),
+    )
+    parser.add_argument(
         "--output-gamut",
         choices=("srgb", "p3"),
         default="srgb",
         help="JPEG 输出色彩空间: srgb=兼容优先；p3=Display P3 并嵌入 ICC",
     )
     args = parser.parse_args(argv)
+    if args.coreimage_scale is not None and args.decoder != "coreimage":
+        parser.error(
+            f"--coreimage-scale {args.coreimage_scale} 仅作用于 --decoder coreimage，"
+            f"当前解码器是 {args.decoder}"
+        )
+    if args.coreimage_scale is None:
+        args.coreimage_scale = COREIMAGE_SCALE_DEFAULT_MODE
     args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
     if args.margin < 0:
         parser.error("--margin must be >= 0")
@@ -246,6 +265,7 @@ def main(argv: list[str]) -> int:
             wb_mode=args.wb,
             decoder=args.decoder,
             coreimage_version=args.coreimage_version,
+            coreimage_scale=args.coreimage_scale,
         )
         diagnostics_requested = bool(scan_requested or args.csv is not None)
         analysis, y, ev = analyze(
