@@ -197,3 +197,21 @@ class DecoderGuardTests(unittest.TestCase):
         self.assertTrue(result["parsed"])
         self.assertIn("WarpRectilinear", result["names"])
         self.assertTrue(result["geometry"])
+
+
+class SubjectiveControlTests(unittest.TestCase):
+    """Every spatial/subjective CIRAW control must be off for a scene-linear decode."""
+
+    def test_sharpening_is_cleared(self) -> None:
+        """sharpnessAmount defaults to 0.485 and is a spatial operator. It was inert on
+        decoder version 8 but is live on version 9, so it silently started altering the
+        buffer when RAW 9 became the preferred version."""
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        _, info = coreimage_decode.decode_scene_rec2020(
+            SIGMA_DNG, half_size=True, version="auto"
+        )
+        self.assertIsNotNone(info["sharpness_amount"])
+        self.assertAlmostEqual(float(info["sharpness_amount"]), 0.0, places=6)
+        self.assertTrue(info["color_noise_cleared"])

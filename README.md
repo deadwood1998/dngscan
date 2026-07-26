@@ -161,9 +161,20 @@ from taste, and are worth knowing before reading an A/B:
   the compiled white endpoint can rise above its +3.00 EV floor (measured +3.67 EV on
   that frame) and the shoulder rolls those highlights off instead of clipping them.
 
-RAW 9 was also observed smoothing high-frequency energy with noise reduction forced off
-(~9 % less on one high-ISO night frame), though a second ISO 2500 capture showed no such
-difference — treat it as a per-scene observation, not a fixed property. `--wb daylight`
+**RAW 9 denoises by construction.** Apple describes it as a tiled CoreML model that
+fuses demosaic *with* denoise (WWDC26 session 305), so there is no unprocessed mode to
+ask for: the reconstruction is the decoder. dngscan clears every exposed control —
+including `sharpnessAmount`, which defaults to 0.485, is inert on version 8 and live on
+version 9, and `colorNoiseReductionAmount`, whose `isSupported` flag reports false on
+version 9 while its 0.5 default still affects 93.6 % of pixels — yet the residual
+difference remains large. On an ISO 25600 stage frame the Core Image render shows 40 %
+of the LibRaw path's dark-region luma noise and 39 % of its chroma noise, at the cost of
+far more crushed shadow: 22.1 % fully black pixels against 9.1 %. Switching LibRaw to a
+smoother demosaic (VNG, PPG) does not close the gap, so this is the model rather than
+interpolation choice. Worth weighing against this tool's position that it performs no
+denoising and leaves texture to the demosaic choice.
+
+`--wb daylight`
 is rejected until a validated temperature/tint mapping exists.
 
 ### White balance

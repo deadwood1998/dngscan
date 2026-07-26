@@ -185,12 +185,30 @@ def configure_linear_filter(
     color_nr_cleared = _set_amount(
         filt, "setColorNoiseReductionAmount_", "isColorNoiseReductionSupported", 0.0
     )
-    # colorNoiseReductionAmount defaults to 0.5 even when the "supported" flag is false
-    # on some versions — always try the setter.
+    # RAW 9 is a tiled CoreML model that fuses demosaic WITH denoise (WWDC26 session
+    # 305), so denoising is architectural rather than a stage that can be switched off.
+    # Apple documents colorNoiseReductionAmount as having no effect there, and the
+    # isSupported flag reports False — but the flag gates the call above, and measurement
+    # contradicts the documentation: colorNoiseReductionAmount / detailAmount /
+    # moireReductionAmount behave as aliases of one internal control on version 9
+    # (setting any of the three to 1.0 gives bit-identical output that differs from
+    # all-zero on 93.6 % of pixels). Its default is 0.5, so trusting the flag would leave
+    # half-strength denoising on. Clear it unconditionally; zero is the minimum under
+    # either reading.
     if not color_nr_cleared:
         color_nr_cleared = _set_amount(filt, "setColorNoiseReductionAmount_", None, 0.0)
     _set_amount(filt, "setDetailAmount_", "isDetailSupported", 0.0)
     _set_amount(filt, "setContrastAmount_", "isContrastSupported", 0.0)
+    # Sharpening defaults to 0.485 and is a spatial operator, so leaving it on made the
+    # buffer no longer a plain scene-linear decode. It was inert on decoder version 8
+    # (measured: setting 0 vs 1 changed nothing) but is live on version 9, so it only
+    # started mattering once RAW 9 became the default choice. Moire reduction is zero by
+    # default on both, cleared here so a future default change cannot slip through.
+    sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
+    if not sharpness_cleared:
+        sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", None, 0.0)
+    _set_amount(filt, "setMoireReductionAmount_", "isMoireReductionSupported", 0.0)
+    _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
     _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
     _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
     if hasattr(filt, "setGamutMappingEnabled_"):
@@ -207,6 +225,9 @@ def configure_linear_filter(
         "scale_factor": float(filt.scaleFactor()) if hasattr(filt, "scaleFactor") else float(scale_factor),
         "color_noise_reduction_amount": color_nr,
         "color_noise_cleared": color_nr is not None and abs(float(color_nr)) <= 1e-6,
+        "sharpness_amount": (
+            float(filt.sharpnessAmount()) if hasattr(filt, "sharpnessAmount") else None
+        ),
     }
 
 
@@ -438,6 +459,7 @@ def decode_scene_rec2020(
         "scale_compensation_note": COREIMAGE_SCALE_COMPENSATION_NOTE,
         "color_noise_reduction_amount": cfg["color_noise_reduction_amount"],
         "color_noise_cleared": cfg["color_noise_cleared"],
+        "sharpness_amount": cfg.get("sharpness_amount"),
         "exposure": float(exposure),
     }
     return rgb.astype(np.float32, copy=False), info
