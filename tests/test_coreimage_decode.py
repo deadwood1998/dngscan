@@ -215,3 +215,24 @@ class SubjectiveControlTests(unittest.TestCase):
         self.assertIsNotNone(info["sharpness_amount"])
         self.assertAlmostEqual(float(info["sharpness_amount"]), 0.0, places=6)
         self.assertTrue(info["color_noise_cleared"])
+
+    def test_highlight_recovery_stays_on_and_keeps_clipped_highlights_neutral(
+        self,
+    ) -> None:
+        """Highlight recovery is reconstruction, not taste, so it is the one control the
+        scene-linear decode leaves enabled. Without it Apple returns clipped highlights
+        with green pinned below red and blue, which renders as magenta highlight cores."""
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        rgb, info = coreimage_decode.decode_scene_rec2020(
+            SIGMA_DNG, half_size=True, version="auto"
+        )
+        self.assertTrue(info["highlight_recovery"])
+        headroom = coreimage_decode.scene_headroom(rgb)
+        near_top = rgb.max(axis=2) > 0.8 * headroom
+        if int(np.count_nonzero(near_top)) < 500:
+            raise unittest.SkipTest("frame carries too few clipped highlights to judge")
+        mean = rgb[near_top].reshape(-1, 3).mean(axis=0)
+        magenta_bias = float(mean[0] + mean[2] - 2.0 * mean[1])
+        self.assertLess(abs(magenta_bias), 0.25 * float(mean[1]))

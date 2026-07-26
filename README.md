@@ -140,7 +140,7 @@ a lens-shading `GainMap`. The warp moves corners by tens of pixels (measured ~70
 rather than re-mapped — carrying them over would put clip retreat on the wrong part of
 the image. Consequently this path has no per-pixel CFA evidence: `--tone-core gated` is
 refused, clip retreat does not run, and `--highlight-mode` does not apply because Core
-Image performs its own highlight handling. Aggregate RAW facts (levels, clipping
+Image performs its own highlight recovery. Aggregate RAW facts (levels, clipping
 percentages, SNR, noise floor, white-balance testimony) are distributions rather than
 pixel positions, so they remain valid and still come from LibRaw. The report names the
 decoder, its version, and the opcodes that were executed.
@@ -184,19 +184,36 @@ the gap, so this is the model rather than interpolation choice. Worth weighing a
 this tool's position that it performs no denoising and leaves texture to the demosaic
 choice.
 
-**Known limitation: RAW 9 blown highlights render magenta.** Where a highlight is
-clipped, Apple's buffer comes back with the green channel pinned far below red and blue
-— averaged over the affected pixels of one frame, R 2.02 / G 0.73 / B 1.94, and green is
-the largest channel in 0.0 % of them. The result is magenta highlight cores with pink
-halos, measured on that frame as a +0.080 magenta bias (R/G 1.043, B/G 1.043) in
-near-white pixels where the LibRaw path is neutral to within 0.005. It is present before
-the view transform, so it is a decode property, not an AgX artifact; AgX's highlight
-desaturation only partly washes it out. The LibRaw path avoids it by construction because
-`--highlight-mode clip` clips every channel to a common white, which also discards the
-roll-off Apple preserves. This signature appeared on every Sigma fp frame tested (0.3 %
-to 1.5 % of pixels), so treat it as systematic. Repairing it would mean inferring
-clipping from the decoded buffer, which is exactly the per-pixel CFA evidence this
-pipeline deliberately does without; it is currently documented rather than corrected.
+**Clearing controls stops at reconstruction.** "Zero every control" is a rule inherited
+from the LibRaw path, and applying it wholesale to a decoder built on different
+assumptions produces a worse decode, not a purer one. Two CIRAWFilter settings are
+therefore left where Apple puts them, each for a measured reason:
+
+- **`highlightRecoveryEnabled` stays on** (Apple's default). It reconstructs clipped
+  channels, which is the same job `--highlight-mode reconstruct` does on the LibRaw side,
+  not a look control. Disabling it returns clipped highlights with green pinned far below
+  red and blue — near-white mean R 1.933 / G 0.681 / B 1.816, green the largest channel
+  in 0 % of them — which renders as magenta highlight cores with pink halos, a +0.077
+  magenta bias in the exported JPEG where LibRaw sits at −0.000. With recovery on the
+  same pixels average 1.981 / 1.980 / 1.980 and the bias falls to +0.002, while the
+  specular headroom survives (p99.995 2.08, max 2.22). That makes it strictly better than
+  the LibRaw path's clip-to-common-white, which buys neutral highlights by throwing the
+  roll-off away.
+- **`gamutMappingEnabled` stays off.** It is an output-referred clamp and belongs after
+  the view transform. Enabling it cut p99.995 from 2.08 to 1.07, zeroed every negative
+  component — real scene colours outside Rec.2020 — and changed 14 % of pixels. AgX does
+  its own gamut work downstream, so the handoff stays scene-referred.
+
+Two Apple controls are deliberately overridden rather than accepted. `boostAmount` and
+`boostShadowAmount` default to 1.0 and 0.9, which is Apple's camera look rather than a
+linear conversion, and both are zeroed. `baselineExposure` defaults to the value in the
+DNG (1.0 on these files, a clean +1 EV on every pixel) and is forced to 0, because
+exposure is the axis dngscan owns through `--ev`, auto-EV and the midgray headroom model.
+`extendedDynamicRangeAmount` is left at Apple's default of 0: raising it to 1.0 does
+expose more separation at the very top (range 0.11 → 1.74 across the topmost pixels), but
+the highlight region correlates at 0.996 in log2 with the default render, so it is
+substantially a remap of the same information — and it pushes the peak to 20, far past
+the headroom this pipeline reserves.
 
 `--wb daylight`
 is rejected until a validated temperature/tint mapping exists.

@@ -221,7 +221,7 @@ def print_report(
                 f"{opcode_note}）"
             )
             highlight_note = (
-                "高光处理=由 Core Image 自行决定"
+                "高光处理=Core Image 高光重建（保留镜面余量）"
                 f"（--highlight-mode {bundle.scene_highlight_mode} 不作用于此管线）"
             )
         else:

@@ -209,14 +209,24 @@ def configure_linear_filter(
         sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", None, 0.0)
     _set_amount(filt, "setMoireReductionAmount_", "isMoireReductionSupported", 0.0)
     _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
-    _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
-    _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
+    # Gamut mapping is an output-referred clamp and belongs after the view transform, not
+    # before it. Enabling it collapses the buffer into the destination gamut: measured on
+    # a Sigma fp frame it cut p99.995 from 2.08 to 1.07, zeroed every negative component
+    # (real scene colours outside Rec.2020), and changed 14 % of pixels. AgX does its own
+    # gamut work downstream, so this stays off and the handoff stays scene-referred.
     if hasattr(filt, "setGamutMappingEnabled_"):
         filt.setGamutMappingEnabled_(False)
-    if hasattr(filt, "setHighlightRecoveryEnabled_") and getattr(
-        filt, "isHighlightRecoverySupported", lambda: False
-    )():
-        filt.setHighlightRecoveryEnabled_(False)
+    # Highlight recovery is reconstruction, not taste, so unlike the subjective controls
+    # above it is left at Apple's default of on. Disabling it does not yield a "purer"
+    # decode, it yields a wrong one: clipped highlights come back with green pinned far
+    # below red and blue (measured near-white mean R 1.933 / G 0.681 / B 1.816, green the
+    # largest channel in 0 % of them), which renders as magenta highlight cores. With
+    # recovery on the same pixels average 1.981 / 1.980 / 1.980 and the specular headroom
+    # survives intact (p99.995 2.08, max 2.22), so it is strictly better than the LibRaw
+    # path's clip-to-common-white, which buys neutral highlights by discarding roll-off.
+    highlight_recovery = None
+    if hasattr(filt, "isHighlightRecoveryEnabled"):
+        highlight_recovery = bool(filt.isHighlightRecoveryEnabled())
     filt.setScaleFactor_(float(scale_factor))
 
     color_nr = float(filt.colorNoiseReductionAmount()) if hasattr(filt, "colorNoiseReductionAmount") else None
@@ -228,6 +238,7 @@ def configure_linear_filter(
         "sharpness_amount": (
             float(filt.sharpnessAmount()) if hasattr(filt, "sharpnessAmount") else None
         ),
+        "highlight_recovery": highlight_recovery,
     }
 
 
@@ -460,6 +471,7 @@ def decode_scene_rec2020(
         "color_noise_reduction_amount": cfg["color_noise_reduction_amount"],
         "color_noise_cleared": cfg["color_noise_cleared"],
         "sharpness_amount": cfg.get("sharpness_amount"),
+        "highlight_recovery": cfg.get("highlight_recovery"),
         "exposure": float(exposure),
     }
     return rgb.astype(np.float32, copy=False), info
