@@ -167,12 +167,36 @@ ask for: the reconstruction is the decoder. dngscan clears every exposed control
 including `sharpnessAmount`, which defaults to 0.485, is inert on version 8 and live on
 version 9, and `colorNoiseReductionAmount`, whose `isSupported` flag reports false on
 version 9 while its 0.5 default still affects 93.6 % of pixels — yet the residual
-difference remains large. On an ISO 25600 stage frame the Core Image render shows 40 %
-of the LibRaw path's dark-region luma noise and 39 % of its chroma noise, at the cost of
-far more crushed shadow: 22.1 % fully black pixels against 9.1 %. Switching LibRaw to a
-smoother demosaic (VNG, PPG) does not close the gap, so this is the model rather than
-interpolation choice. Worth weighing against this tool's position that it performs no
-denoising and leaves texture to the demosaic choice.
+difference remains large, and how large depends on the scene. Measured as the median
+local standard deviation over 8×8 tiles in the darkest 30 % of the frame, with both
+paths at a fixed `--ev 0`:
+
+| frame | ISO | luma noise vs LibRaw | chroma noise vs LibRaw | fully black px |
+| --- | --- | --- | --- | --- |
+| stage, near-darkness | 25600 | 12 % | 11 % | 21.6 % vs 8.1 % |
+| garden, overcast daylight | 12800 | 81 % | 29 % | 2.8 % vs 1.4 % |
+
+The chroma cleanup is consistent; the luma cleanup is not. The model earns most of its
+advantage where SNR is genuinely poor, and on a well-exposed frame the dark 30 % is dark
+in *tone* rather than starved of signal, so the two paths nearly converge. Both frames
+pay in crushed shadow. Switching LibRaw to a smoother demosaic (VNG, PPG) does not close
+the gap, so this is the model rather than interpolation choice. Worth weighing against
+this tool's position that it performs no denoising and leaves texture to the demosaic
+choice.
+
+**Known limitation: RAW 9 blown highlights render magenta.** Where a highlight is
+clipped, Apple's buffer comes back with the green channel pinned far below red and blue
+— averaged over the affected pixels of one frame, R 2.02 / G 0.73 / B 1.94, and green is
+the largest channel in 0.0 % of them. The result is magenta highlight cores with pink
+halos, measured on that frame as a +0.080 magenta bias (R/G 1.043, B/G 1.043) in
+near-white pixels where the LibRaw path is neutral to within 0.005. It is present before
+the view transform, so it is a decode property, not an AgX artifact; AgX's highlight
+desaturation only partly washes it out. The LibRaw path avoids it by construction because
+`--highlight-mode clip` clips every channel to a common white, which also discards the
+roll-off Apple preserves. This signature appeared on every Sigma fp frame tested (0.3 %
+to 1.5 % of pixels), so treat it as systematic. Repairing it would mean inferring
+clipping from the decoded buffer, which is exactly the per-pixel CFA evidence this
+pipeline deliberately does without; it is currently documented rather than corrected.
 
 `--wb daylight`
 is rejected until a validated temperature/tint mapping exists.
