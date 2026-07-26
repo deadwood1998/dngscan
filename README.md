@@ -130,8 +130,9 @@ availability check and fallback logic.
 `neutral` tone cores: an alternate *interpretation* of the capture, not a quality
 upgrade and never the default. It uses `CIRAWFilter` (RAW 9 where the file offers it,
 otherwise the highest supported version — some Fujifilm RAF files stop at 8 and are not
-labelled 9), rendered with every subjective control zeroed into linear Rec.2020, so it
-hands AgX the same working space the LibRaw path does.
+labelled 9), rendered into linear Rec.2020 with the look controls cleared but the
+reconstruction ones left alone — the exact split is worked out below — so it hands AgX
+the same working space the LibRaw path does.
 
 It is a **separate pipeline, not a LibRaw back end.** Core Image executes the DNG
 opcodes a file carries; on a Sigma fp DNG that means a per-plane `WarpRectilinear` plus
@@ -155,31 +156,55 @@ claim that the pipelines agree unaided — is not currently distinguishable from
 available evidence. Both are offered so the question can be settled by rendering rather
 than by argument; on one ISO 12800 frame `measured` landed nearer the LibRaw reference
 (median luma 0.4452 against 0.4530, reference 0.4411), a 0.025 EV difference touching
-79 % of pixels. The report names the mode that produced a render. Beyond this the paths
-differ mainly in camera
-interpretation — warmer skin and a different highlight rendering on the Sigma fp
-samples. Two behavioural differences follow from the decoders themselves rather than
-from taste, and are worth knowing before reading an A/B:
+79 % of pixels. The report names the mode that produced a render.
+
+Beyond alignment the paths differ mainly in camera interpretation — warmer skin and a
+different highlight rendering on the Sigma fp samples. Three behavioural differences
+follow from the decoders themselves rather than from taste, and are worth knowing before
+reading an A/B:
 
 - **`--ev auto` can choose a different exposure on each path.** Apple keeps detail above
   diffuse white, so the reference's highlight growth budget sees more near-white pixels
   and stops the boost earlier. On one ISO 2500 frame the LibRaw path took +0.73 EV and
   the Core Image path +0.44 EV. Compare at a fixed `--ev` when the decoder itself is the
   question.
-- **Apple's buffer carries genuine specular headroom** — 2.7 % of pixels above diffuse
-  white on one frame, up to 2.06 linear. dngscan reserves quantisation room for it, so
-  the compiled white endpoint can rise above its +3.00 EV floor (measured +3.67 EV on
-  that frame) and the shoulder rolls those highlights off instead of clipping them.
+- **Apple's buffer carries genuine specular headroom**, which shows up as a systematically
+  wider compiled window. Across four Sigma fp frames the black endpoints agree to within
+  0.14 EV and the median EV to within 0.04 (except on a near-dark ISO 25600 frame, where
+  the estimator itself is noisy and the gap reaches 0.33). The white endpoints do not:
+  LibRaw sat on its +3.00 EV floor on three of the four — `clip` had destroyed everything
+  above the white level, so there was nothing left to measure — while Core Image compiled
+  +3.69, +3.75, +3.96 and +3.71 from real data. Both are behaving correctly; the buffers
+  genuinely differ.
+- **So a fixed `--ev` is not enough to isolate the decoder.** The wider window means the
+  compiled dynamic range runs 0.5–1.0 stops longer on the Core Image path, and an A/B at
+  matched exposure still compares two different tone plans. Some of the extra brightness
+  in a side-by-side comes from there rather than from the decode.
+
+The tone analysis itself needs no adaptation for this. The worry that denoising would
+narrow the distribution and drag the percentile-derived endpoints did not survive
+measurement: the black endpoints track each other closely, and only the white end — the
+end where one buffer really does hold more information — moves.
 
 **RAW 9 denoises by construction.** Apple describes it as a tiled CoreML model that
 fuses demosaic *with* denoise (WWDC26 session 305), so there is no unprocessed mode to
-ask for: the reconstruction is the decoder. dngscan clears every exposed control —
-including `sharpnessAmount`, which defaults to 0.485, is inert on version 8 and live on
-version 9, and `colorNoiseReductionAmount`, whose `isSupported` flag reports false on
-version 9 while its 0.5 default still affects 93.6 % of pixels — yet the residual
-difference remains large, and how large depends on the scene. Measured as the median
-local standard deviation over 8×8 tiles in the darkest 30 % of the frame, with both
-paths at a fixed `--ev 0`:
+ask for: the reconstruction is the decoder. Note that `luminanceNoiseReductionAmount` at
+0 therefore does not mean "no denoising" — it selects the least-smoothed end of a
+calibrated range over a model that always runs.
+
+dngscan clears the exposed look controls anyway, including `sharpnessAmount`, which
+defaults to 0.485, is inert on version 8 and live on version 9. One control is set
+against Apple's documentation rather than with it: WWDC26 states that
+`colorNoiseReductionAmount`, `detailAmount` and `moireReductionAmount` have no effect on
+RAW 9, and `isColorNoiseReductionSupported` duly reports false — but measurement here
+disagrees, with those three behaving as aliases of one internal control whose 0.5 default
+changes 93.6 % of pixels. Trusting the flag would leave half-strength denoising on, so it
+is cleared unconditionally; zero is the minimum under either reading. The discrepancy is
+unresolved and worth re-testing on a later macOS build.
+
+Even so the residual difference remains large, and how large depends on the scene.
+Measured as the median local standard deviation over 8×8 tiles in the darkest 30 % of the
+frame, with both paths at a fixed `--ev 0`:
 
 | frame | ISO | luma noise vs LibRaw | chroma noise vs LibRaw | fully black px |
 | --- | --- | --- | --- | --- |
@@ -251,13 +276,16 @@ knobs are calibrated controls over the model rather than stages that can be swit
 white balance and is why `--wb daylight` is refused rather than approximated on this
 path. `linearSpaceFilter` is Apple's own hook for inserting a CIFilter while the image is
 still linear, which is the architecturally correct place for any scene-referred operation
-this pipeline might want to push into the decode. Note in particular that
-`luminanceNoiseReductionAmount` at 0 does not mean "no denoising": on RAW 9 the denoise
-is fused into the demosaic model and always runs, so 0 selects the least-smoothed end of
-a calibrated range rather than turning a stage off.
+this pipeline might want to push into the decode. Until that white-balance interface has
+a validated temperature/tint mapping, `--wb daylight` is rejected on this path rather
+than approximated.
 
-`--wb daylight`
-is rejected until a validated temperature/tint mapping exists.
+One caveat this pipeline does not yet close: RAW 9 ships with the OS, so a macOS update
+can replace the model while `decoderVersion` still answers "9". The golden-sample
+regression is insulated by construction — it feeds pre-decoded buffers and never invokes
+Core Image — and the decode tests assert properties rather than pinned bytes, so an Apple
+model change will not raise a false alarm. It will not raise any alarm either, and the
+report records the decoder version but not the OS build that produced it.
 
 ### White balance
 
