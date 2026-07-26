@@ -7,6 +7,7 @@ when Quartz/PyObjC is absent.
 """
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,28 @@ COREIMAGE_SCALE_COMPENSATION_NOTE = "measured 2026-07 Sigma fp; CI/LibRaw median
 
 COREIMAGE_DECODER_VERSIONS = ("auto", "9", "8", "7")
 
-# Plan cited ≥0.98 on matched fractional sampling of milder frames. Extreme-DR night
-# frames sit lower from demosaic/highlight disagreement alone; keep a floor that still
-# rejects a flipped or otherwise broken mapping (wrong y-flip collapses the score).
+# Diagnostic-only alignment floors. The Core Image path is a SEPARATE pipeline: it does
+# not reuse LibRaw's per-pixel evidence, so frame alignment is no longer a correctness
+# precondition and is never gated on. Retained for the report and for tools that want to
+# quantify how far Apple's corrected geometry sits from LibRaw's uncorrected frame.
 GEOMETRY_CORR_MIN = 0.80
 GEOMETRY_CORR_FLIP_MARGIN = 0.30
+
+# DNG opcode IDs (DNG 1.7 spec, Chapter 6) that make Apple's decoded frame geometrically
+# or radiometrically incomparable to LibRaw's. WarpRectilinear is the decisive one: it is
+# a per-plane radial polynomial, so corners move by tens of pixels (measured ~70 px on a
+# 24 MP Sigma fp frame) and no affine crop can reconcile the two frames.
+DNG_OPCODE_WARP_RECTILINEAR = 1
+DNG_OPCODE_WARP_FISHEYE = 2
+DNG_OPCODE_FIX_VIGNETTE_RADIAL = 3
+DNG_OPCODE_GAIN_MAP = 9
+DNG_GEOMETRY_OPCODES = (DNG_OPCODE_WARP_RECTILINEAR, DNG_OPCODE_WARP_FISHEYE)
+_DNG_OPCODE_NAMES = {
+    DNG_OPCODE_WARP_RECTILINEAR: "WarpRectilinear",
+    DNG_OPCODE_WARP_FISHEYE: "WarpFisheye",
+    DNG_OPCODE_FIX_VIGNETTE_RADIAL: "FixVignetteRadial",
+    DNG_OPCODE_GAIN_MAP: "GainMap",
+}
 
 
 def available() -> bool:
@@ -319,23 +337,64 @@ def geometry_correlation(coreimage_rgb: np.ndarray, libraw_rgb: np.ndarray) -> f
     )
 
 
-def verify_geometry_alignment(
-    coreimage_rgb: np.ndarray,
-    libraw_rgb: np.ndarray,
-    *,
-    min_corr: float = GEOMETRY_CORR_MIN,
-) -> float:
-    """Raise if Core Image / LibRaw frames are not aligned for clip-mask reuse."""
-    corr = geometry_correlation(coreimage_rgb, libraw_rgb)
-    flipped = geometry_correlation(np.flipud(np.asarray(coreimage_rgb)), libraw_rgb)
-    if corr < float(min_corr) or corr < flipped + GEOMETRY_CORR_FLIP_MARGIN:
-        raise RuntimeError(
-            "Core Image scene buffer failed geometry alignment against LibRaw "
-            f"(corr={corr:.4f}, flipud_corr={flipped:.4f}, need>={min_corr:.2f} and "
-            f"margin over flipud >={GEOMETRY_CORR_FLIP_MARGIN:.2f}). "
-            "Clip retreat would land on the wrong pixels; refusing this decoder path."
+def read_dng_opcodes(path: Path) -> dict[str, Any]:
+    """Report which DNG OpcodeList entries the file carries.
+
+    Core Image executes these during decode; LibRaw does not. They are therefore the
+    reason the two decoders are separate pipelines rather than interchangeable back
+    ends, and knowing which are present is worth stating in the render report.
+    Best-effort and never fatal: a parse failure returns an empty result."""
+    result: dict[str, Any] = {"ids": (), "names": (), "geometry": False, "parsed": False}
+    try:
+        data = path.read_bytes()
+        if len(data) < 8 or data[:2] not in (b"II", b"MM"):
+            return result
+        order = "<" if data[:2] == b"II" else ">"
+        found: list[int] = []
+        seen_ifds: set[int] = set()
+
+        def walk(offset: int, depth: int = 0) -> None:
+            if depth > 3 or offset in seen_ifds or offset <= 0 or offset + 2 > len(data):
+                return
+            seen_ifds.add(offset)
+            count = struct.unpack(order + "H", data[offset : offset + 2])[0]
+            for i in range(count):
+                entry = offset + 2 + i * 12
+                if entry + 12 > len(data):
+                    return
+                tag, _typ, cnt = struct.unpack(order + "HHI", data[entry : entry + 8])
+                if tag in (0xC740, 0xC741, 0xC74E):  # OpcodeList1/2/3
+                    value_off = struct.unpack(order + "I", data[entry + 8 : entry + 12])[0]
+                    if value_off + 4 > len(data):
+                        continue
+                    # Opcode payloads are always big-endian, independent of TIFF order.
+                    n_ops = struct.unpack(">I", data[value_off : value_off + 4])[0]
+                    cursor = value_off + 4
+                    for _ in range(min(n_ops, 16)):
+                        if cursor + 16 > len(data):
+                            break
+                        op_id = struct.unpack(">I", data[cursor : cursor + 4])[0]
+                        size = struct.unpack(">I", data[cursor + 12 : cursor + 16])[0]
+                        found.append(int(op_id))
+                        cursor += 16 + size
+                elif tag == 0x014A:  # SubIFDs
+                    sub_off = struct.unpack(order + "I", data[entry + 8 : entry + 12])[0]
+                    for k in range(min(cnt, 8)):
+                        pos = sub_off + k * 4
+                        if pos + 4 <= len(data):
+                            walk(struct.unpack(order + "I", data[pos : pos + 4])[0], depth + 1)
+
+        walk(struct.unpack(order + "I", data[4:8])[0])
+        ids = tuple(sorted(set(found)))
+        result.update(
+            ids=ids,
+            names=tuple(_DNG_OPCODE_NAMES.get(i, f"opcode{i}") for i in ids),
+            geometry=any(i in DNG_GEOMETRY_OPCODES for i in ids),
+            parsed=True,
         )
-    return corr
+    except Exception:  # pragma: no cover - diagnostics must never break a render
+        return result
+    return result
 
 
 def decode_scene_rec2020(

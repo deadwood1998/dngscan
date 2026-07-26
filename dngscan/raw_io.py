@@ -371,6 +371,7 @@ def load_raw(
 
     scene_decoder = "libraw"
     scene_decoder_version: str | None = None
+    scene_opcode_names: tuple[str, ...] = ()
     evidence_shape: tuple[int, int] | None = None
     scene_geometry_crop: tuple[float, float, float, float] | None = None
     scene_geometry_corr: float | None = None
@@ -455,22 +456,28 @@ def load_raw(
                 "Core Image decoder unavailable on this system "
                 "(macOS + PyObjC Quartz / CIRAWFilter required)"
             )
-        libraw_scene = scene_rec2020_render
         ci_float, info = coreimage_decode.decode_scene_rec2020(
             path,
             half_size=scene_half_size,
             version=coreimage_version,
         )
-        scene_geometry_corr = coreimage_decode.verify_geometry_alignment(ci_float, libraw_scene)
         scene_rec2020_render = coreimage_decode.scene_float_to_u16(ci_float, scene_scale)
         xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
         render_scale = scene_scale
-        eh, ew = evidence_shape if evidence_shape is not None else libraw_scene.shape[:2]
-        # Top-left fractional mapping: the full LibRaw evidence frame covers the CI buffer.
-        scene_geometry_crop = (0.0, 0.0, float(eh), float(ew))
         scene_decoder = "coreimage"
         scene_decoder_version = str(info.get("version") or coreimage_version)
-        # Masks stay at LibRaw evidence resolution; clip_masks_for_shape applies the crop.
+        scene_opcode_names = tuple(coreimage_decode.read_dng_opcodes(path)["names"])
+        # Strict Core Image pipeline: this is a SEPARATE path, not a LibRaw back end.
+        # Core Image executes the file's DNG opcodes (measured on Sigma fp: per-plane
+        # WarpRectilinear plus a lens-shading GainMap), so its frame is a nonlinear warp
+        # of LibRaw's — corners move by tens of pixels. Per-pixel CFA evidence therefore
+        # cannot be carried across, and pretending otherwise would put clip retreat on
+        # the wrong pixels. Masks are dropped rather than re-mapped; the aggregate RAW
+        # facts (levels, clip %, SNR, noise floor, WB testimony) stay valid because they
+        # are distributions, not pixel positions, and continue to come from LibRaw.
+        clip_masks = None
+        evidence_shape = None
+        scene_geometry_crop = None
 
     return RawBundle(
         path=path,
@@ -496,6 +503,7 @@ def load_raw(
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
+        scene_opcode_names=scene_opcode_names,
         evidence_shape=evidence_shape,
         scene_geometry_crop=scene_geometry_crop,
         scene_geometry_corr=scene_geometry_corr,

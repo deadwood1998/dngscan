@@ -214,10 +214,15 @@ def print_report(
         decoder = getattr(bundle, "scene_decoder", "libraw") or "libraw"
         decoder_version = getattr(bundle, "scene_decoder_version", None)
         if decoder == "coreimage":
-            decoder_label = f"Core Image/{decoder_version or '?'}"
+            opcodes = tuple(getattr(bundle, "scene_opcode_names", ()) or ())
+            opcode_note = f"，已执行 DNG opcode: {'/'.join(opcodes)}" if opcodes else ""
+            decoder_label = (
+                f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
+                f"{opcode_note}）"
+            )
             highlight_note = (
-                f"高光处理={highlight_mode_cn(bundle.scene_highlight_mode)}"
-                "（LibRaw 证据路径；Core Image scene 缓冲不受此开关影响）"
+                "高光处理=由 Core Image 自行决定"
+                f"（--highlight-mode {bundle.scene_highlight_mode} 不作用于此管线）"
             )
         else:
             decoder_label = "LibRaw"

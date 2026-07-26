@@ -104,18 +104,26 @@ AMaZE、LMMSE、VCD、AFD 等 GPL demosaic pack 算法，实际可选项取决�
 GUI/CLI 可手动指定 `dht / dcb / ahd / aahd / vng / ppg`；如果本机 LibRaw 还带有其他
 算法，把它加入 `DEMOSAIC_CHOICES` 即可交给现有的可用性检测与回退逻辑。
 
-### 可选 Core Image 解码器
+### 可选 Core Image 管线
 
 `--decoder coreimage` 和 `lum` / `neutral` tone 核是同一类东西：第五条**对照路径**，
-换的是 scene-linear RGB 的解释方式，不是默认画质升级。CFA clip mask、马赛克证据和
-分析仍全部来自 LibRaw；只有 `scene_rec2020_render` 改由 `CIRAWFilter` 产出（文件支持
-时用 RAW 9，否则取最高可用版本——部分 Fujifilm RAF 只到 8，不得宣称成 9）。
+换的是对这次拍摄的解释方式，不是默认画质升级。它用 `CIRAWFilter`（文件支持时用
+RAW 9，否则取最高可用版本——部分 Fujifilm RAF 只到 8，不会被标成 9），把所有主观处理
+项清零后渲染到线性 Rec.2020，因此交给 AgX 的工作空间与 LibRaw 路径完全一致。
 
-在 Sigma fp DNG 上测得：固定补偿 `1/0.9314` 之后，同一套 AgX 计划相对 LibRaw 的
-Oklab 中位 ΔE 约 **0.138**，大约是同一次实验里该机与 ALEXA 肤色差的 20 倍。RAW 9
-在强制关掉降噪时仍会抹掉约 9% 的高频能量（高 ISO 夜景）。用途是 A/B Apple 的相机
-矩阵与重建，不是“让默认更好”。`--wb daylight` 在尚未验证温度/色调映射前会直接拒绝；
-`--highlight-mode` 继续只描述 LibRaw 证据路径。
+它是**独立管线，不是 LibRaw 的后端**。Core Image 会执行文件里的 DNG opcode：在
+Sigma fp 的 DNG 上是逐平面 `WarpRectilinear` 加一张镜头阴影 `GainMap`。这个畸变校正
+把画面角落移动了数十像素（24MP 实测约 70px），所以 LibRaw 的逐像素 CFA 掩码描述的
+已经是另一批像素——它们被丢弃而不是重映射，因为沿用会让 clip retreat 作用在错误的
+位置上。于是这条路径没有逐像素 CFA 证据：`--tone-core gated` 会被拒绝，clip retreat
+不运行，`--highlight-mode` 也不适用（Core Image 有自己的高光处理）。而聚合型 RAW 事实
+（黑白电平、剪切百分比、SNR、噪声底、白平衡证词）是分布而非像素位置，依然有效，仍由
+LibRaw 提供。报告会写明解码器、版本，以及被执行的 opcode。
+
+在固定补偿 `1/0.9314` 之后，两条管线的差别主要来自相机解释本身——在 Sigma fp 样片上
+表现为更暖的肤色和不同的高光走向。另外 RAW 9 即使强制关掉降噪，仍会抹掉约 9% 的高频
+能量（高 ISO 夜景），把它的输出当成"更多细节"之前值得知道这一点。`--wb daylight`
+在尚未验证温度/色调映射前会直接拒绝。
 
 ### 白平衡
 

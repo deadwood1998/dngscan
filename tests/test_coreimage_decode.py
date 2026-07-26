@@ -83,43 +83,61 @@ class CoreImageLiveTests(unittest.TestCase):
         ratio = float(np.median(b[mask] / np.maximum(a[mask], 1e-8)))
         self.assertAlmostEqual(ratio, 2.0, delta=0.02)
 
-    def test_geometry_gate_and_scale(self) -> None:
+    def test_separate_pipeline_drops_cfa_masks_and_scales(self) -> None:
+        """Strict Core Image pipeline: no per-pixel CFA evidence, correct scale.
+
+        Core Image executes the file's DNG opcodes (WarpRectilinear here), so its frame
+        is a nonlinear warp of LibRaw's — corners measured ~70 px away on this capture.
+        Reusing LibRaw masks would put clip retreat on the wrong pixels, so the bundle
+        must carry none, while the aggregate LibRaw facts stay available.
+        """
         _skip_unless_available()
         if not SIGMA_DNG.is_file():
             raise unittest.SkipTest(f"missing {SIGMA_DNG}")
         from dngscan.raw_io import load_raw
 
         libraw = load_raw(SIGMA_DNG, scene_half_size=True, decoder="libraw")
-        ci_float, info = coreimage_decode.decode_scene_rec2020(
-            SIGMA_DNG, half_size=True, version="auto"
-        )
-        corr = coreimage_decode.verify_geometry_alignment(ci_float, libraw.scene_rec2020_render)
-        self.assertGreaterEqual(corr, coreimage_decode.GEOMETRY_CORR_MIN)
-        # Deliberately corrupted mapping must raise.
-        with self.assertRaises(RuntimeError):
-            coreimage_decode.verify_geometry_alignment(
-                np.flipud(ci_float), libraw.scene_rec2020_render
-            )
-        # Scale compensation brings median ratio near 1.
-        lr = np.asarray(libraw.scene_rec2020_render, dtype=np.float32)
-        if np.issubdtype(lr.dtype, np.integer):
-            lr = lr / float(libraw.scene_scale)
-        from PIL import Image
+        ci_bundle = load_raw(SIGMA_DNG, scene_half_size=True, decoder="coreimage")
+        self.assertIsNotNone(libraw.clip_masks)
+        self.assertIsNone(ci_bundle.clip_masks)
+        self.assertEqual(ci_bundle.scene_decoder, "coreimage")
+        self.assertIn("WarpRectilinear", ci_bundle.scene_opcode_names)
+        # Aggregate (geometry-free) RAW facts survive: same mosaic, same levels.
+        self.assertEqual(int(ci_bundle.white_level), int(libraw.white_level))
+        self.assertEqual(list(ci_bundle.black_levels), list(libraw.black_levels))
+        # Scale compensation keeps both decoders on the same exposure anchor.
+        import numpy as np
 
-        def luma(rgb: np.ndarray) -> np.ndarray:
-            return 0.2627 * rgb[:, :, 0] + 0.6780 * rgb[:, :, 1] + 0.0593 * rgb[:, :, 2]
+        def mid_median(bundle):
+            arr = np.asarray(bundle.scene_rec2020_render, dtype=np.float32) / float(bundle.scene_scale)
+            y = 0.2627 * arr[:, :, 0] + 0.6780 * arr[:, :, 1] + 0.0593 * arr[:, :, 2]
+            return float(np.median(y[(y > 0.01) & (y < 0.5)]))
 
-        mapped = np.asarray(
-            Image.fromarray(luma(lr), mode="F").resize(
-                (ci_float.shape[1], ci_float.shape[0]), Image.Resampling.BILINEAR
-            ),
-            dtype=np.float32,
-        )
-        mid = (luma(ci_float) > 0.01) & (mapped > 0.01) & (luma(ci_float) < 0.5) & (mapped < 0.5)
-        if np.any(mid):
-            ratio = float(np.median(luma(ci_float)[mid] / mapped[mid]))
-            self.assertAlmostEqual(ratio, 1.0, delta=0.03)
-        self.assertTrue(info["color_noise_cleared"])
+        self.assertAlmostEqual(mid_median(ci_bundle) / mid_median(libraw), 1.0, delta=0.10)
+
+    def test_full_resolution_production_path_renders(self) -> None:
+        """Exercise the resolution the exporter actually uses.
+
+        The earlier gate passed at half size and rejected every full-size export; any
+        future check must be verified where production runs.
+        """
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        import numpy as np
+
+        from dngscan.analysis import analyze
+        from dngscan.raw_io import load_raw
+        from dngscan.render import render_output_u8
+        from dngscan.tone import build_render_plan
+
+        bundle = load_raw(SIGMA_DNG, scene_half_size=False, decoder="coreimage")
+        analysis, _, _ = analyze(bundle, 4, diagnostics=False, gamut_names=("P3",))
+        plan = build_render_plan(bundle, analysis, "agx", "p3")
+        rgb = render_output_u8(bundle, analysis, "p3", plan)
+        self.assertEqual(rgb.shape[:2], bundle.scene_rec2020_render.shape[:2])
+        self.assertGreater(int(np.asarray(rgb).max()), 32)
+
 
     def test_fuji_resolves_without_claiming_v9(self) -> None:
         _skip_unless_available()
@@ -139,57 +157,6 @@ def _normalize(token: str) -> str:
     return coreimage_decode._normalize_version_token(token)
 
 
-class ClipMaskGeometryTests(unittest.TestCase):
-    def test_crop_mapping_keeps_clipped_region(self) -> None:
-        # Evidence 100x80 with a bright clipped block at (20:40, 30:50).
-        masks = np.zeros((100, 80, 3), dtype=np.float32)
-        masks[20:40, 30:50, :] = 1.0
-        # Scene is a pure scale of the full evidence frame → crop is full frame.
-        crop = (0.0, 0.0, 100.0, 80.0)
-        resized = resize_clip_masks(masks, (50, 40), crop=crop)
-        self.assertEqual(resized.shape[:2], (50, 40))
-        peak = np.unravel_index(int(np.argmax(resized[:, :, 0])), resized.shape[:2])
-        # Half-scale maps evidence (20:40, 30:50) → scene (~10:20, ~15:25).
-        self.assertTrue(8 <= peak[0] <= 22)
-        self.assertTrue(12 <= peak[1] <= 28)
-
-        bundle = RawBundle(
-            path=Path("synthetic.dng"),
-            raw_image=np.zeros((2, 2), dtype=np.uint16),
-            raw_colors=np.zeros((2, 2), dtype=np.uint8),
-            xyz_render=np.zeros((50, 40, 3), dtype=np.uint16),
-            render_scale=65535.0,
-            scene_rec2020_render=np.zeros((50, 40, 3), dtype=np.uint16),
-            scene_scale=65535.0,
-            white_level=65535,
-            black_levels=[0.0, 0.0, 0.0, 0.0],
-            camera_wb=[1.0, 1.0, 1.0, 1.0],
-            color_desc="RGBG",
-            raw_pattern=[[0, 1], [3, 2]],
-            camera_white_levels=[65535.0] * 4,
-            clip_masks=masks.astype(np.float16),
-            evidence_shape=(100, 80),
-            scene_geometry_crop=crop,
-            scene_decoder="coreimage",
-        )
-        mapped = clip_masks_for_shape(bundle, (50, 40))
-        peak2 = np.unravel_index(int(np.argmax(mapped[:, :, 0])), mapped.shape[:2])
-        self.assertTrue(8 <= peak2[0] <= 22)
-        self.assertTrue(12 <= peak2[1] <= 28)
-
-    def test_corrupted_crop_moves_peak(self) -> None:
-        masks = np.zeros((100, 80, 3), dtype=np.float32)
-        masks[20:40, 30:50, :] = 1.0
-        # Deliberate wrong crop: take only the bottom-right quadrant.
-        bad = resize_clip_masks(masks, (50, 40), crop=(50.0, 40.0, 100.0, 80.0))
-        peak = np.unravel_index(int(np.argmax(bad[:, :, 0])), bad.shape[:2])
-        # The clipped block is outside this crop, so the peak should not sit in the
-        # expected half-scale window — or the max should be near zero.
-        if float(bad.max()) < 0.1:
-            return
-        self.assertFalse(8 <= peak[0] <= 22 and 12 <= peak[1] <= 28)
-
-
 class LoadRawDecoderGuardTests(unittest.TestCase):
     def test_daylight_rejected_for_coreimage(self) -> None:
         from dngscan.raw_io import load_raw
@@ -204,3 +171,29 @@ class LoadRawDecoderGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecoderGuardTests(unittest.TestCase):
+    def test_gated_core_rejected_with_coreimage(self) -> None:
+        """gated means "RAW evidence gates the colour path"; that evidence does not
+        exist on the Core Image pipeline, so the combination must be refused rather
+        than silently degraded."""
+        from dngscan.cli import parse_args
+
+        with self.assertRaises(SystemExit):
+            parse_args(["photo.dng", "--jpeg", "out.jpg",
+                        "--decoder", "coreimage", "--tone-core", "gated"])
+
+    def test_opcode_reader_is_best_effort(self) -> None:
+        """Never fatal: a non-TIFF container just reports nothing."""
+        result = coreimage_decode.read_dng_opcodes(Path("/nonexistent/x.raf"))
+        self.assertFalse(result["geometry"])
+        self.assertEqual(result["names"], ())
+
+    def test_opcode_reader_finds_dng_geometry_opcodes(self) -> None:
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        result = coreimage_decode.read_dng_opcodes(SIGMA_DNG)
+        self.assertTrue(result["parsed"])
+        self.assertIn("WarpRectilinear", result["names"])
+        self.assertTrue(result["geometry"])

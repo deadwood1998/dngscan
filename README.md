@@ -124,22 +124,32 @@ GUI/CLI can select `dht / dcb / ahd / aahd / vng / ppg` manually; an algorithm s
 by another LibRaw build only needs an entry in `DEMOSAIC_CHOICES` to use the existing
 availability check and fallback logic.
 
-### Optional Core Image decoder
+### Optional Core Image pipeline
 
 `--decoder coreimage` is a fifth control path in the same spirit as the `lum` /
-`neutral` tone cores: an alternate *interpretation* of the scene-linear RGB buffer, not
-a quality upgrade and never the default. CFA clip masks, mosaic evidence, and analysis
-still come from LibRaw. Only `scene_rec2020_render` is replaced by `CIRAWFilter`
-(RAW 9 when the file offers it; otherwise the highest supported version — some Fujifilm
-RAF files stop at 8 and must not be labeled as 9).
+`neutral` tone cores: an alternate *interpretation* of the capture, not a quality
+upgrade and never the default. It uses `CIRAWFilter` (RAW 9 where the file offers it,
+otherwise the highest supported version — some Fujifilm RAF files stop at 8 and are not
+labelled 9), rendered with every subjective control zeroed into linear Rec.2020, so it
+hands AgX the same working space the LibRaw path does.
 
-Measured on a Sigma fp DNG: after the fixed scale compensation of `1/0.9314`, the same
-AgX plan shows a median Oklab ΔE of about **0.138** versus LibRaw — roughly twenty times
-the skin divergence between that camera and an ALEXA reference in the same study. RAW 9
-also smooths high-frequency energy even with noise reduction forced off (~9 % less on a
-high-ISO night frame). Use it to A/B Apple's camera matrix and reconstruction, not to
-“improve” the default path. `--wb daylight` is rejected until a validated temperature/tint
-mapping exists; `--highlight-mode` continues to describe the LibRaw evidence path only.
+It is a **separate pipeline, not a LibRaw back end.** Core Image executes the DNG
+opcodes a file carries; on a Sigma fp DNG that means a per-plane `WarpRectilinear` plus
+a lens-shading `GainMap`. The warp moves corners by tens of pixels (measured ~70 px on a
+24 MP frame), so LibRaw's per-pixel CFA masks describe different pixels and are dropped
+rather than re-mapped — carrying them over would put clip retreat on the wrong part of
+the image. Consequently this path has no per-pixel CFA evidence: `--tone-core gated` is
+refused, clip retreat does not run, and `--highlight-mode` does not apply because Core
+Image performs its own highlight handling. Aggregate RAW facts (levels, clipping
+percentages, SNR, noise floor, white-balance testimony) are distributions rather than
+pixel positions, so they remain valid and still come from LibRaw. The report names the
+decoder, its version, and the opcodes that were executed.
+
+After the fixed `1/0.9314` scale compensation the two pipelines differ mainly in camera
+interpretation — warmer skin and a different highlight rendering on the Sigma fp sample.
+RAW 9 also smooths high-frequency energy even with noise reduction forced off (~9 % less
+on a high-ISO night frame), which is worth knowing before reading its output as “more
+detail”. `--wb daylight` is rejected until a validated temperature/tint mapping exists.
 
 ### White balance
 

@@ -216,6 +216,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
     if args.grade != "none" and args.output_format == "ultrahdr":
         parser.error("成片风格暂不支持 Ultra HDR 输出")
+    if args.decoder == "coreimage" and args.tone_core == "gated":
+        # gated is defined as "RAW evidence gates the colour path"; the Core Image
+        # pipeline has no per-pixel CFA evidence, so the combination is meaningless
+        # rather than merely degraded.
+        parser.error(
+            "--tone-core gated 需要逐像素 CFA 证据，而 --decoder coreimage 是独立管线"
+            "（Core Image 执行 DNG opcode，几何与 LibRaw 不可对齐）。"
+            "请改用 --tone-core agx/lum/neutral，或改回 --decoder libraw"
+        )
     return args
 
 
