@@ -68,9 +68,11 @@ def clip_masks_for_shape(bundle: Any, shape: tuple[int, int]) -> Any:
     if cache_shape == shape and cached is not None:
         return cached
     crop = getattr(bundle, "scene_geometry_crop", None)
-    # Only apply the evidence→scene crop when the request is the scene buffer itself
-    # (or a further resize of an already Core Image–sized mask). Masks stay stored at
-    # evidence (LibRaw) resolution; cropping is part of the mapping into scene space.
+    # Only apply the evidence→scene crop when the request is the scene buffer itself (or
+    # a further resize of an already scene-sized mask). Masks stay stored at evidence
+    # (LibRaw) resolution; cropping is part of the mapping into scene space. This path
+    # never runs for the Core Image decoder, which carries no masks at all — it exists
+    # for scene buffers that are a pure scale/crop of the evidence frame.
     evidence_shape = getattr(bundle, "evidence_shape", None)
     use_crop = None
     if crop is not None and evidence_shape is not None:

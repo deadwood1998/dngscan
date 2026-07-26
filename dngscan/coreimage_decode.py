@@ -1,9 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Optional Core Image (CIRAWFilter / RAW9) scene-linear Rec.2020 decoder.
+"""Optional Core Image (CIRAWFilter / RAW 9) scene-linear Rec.2020 decoder.
 
-Evidence (CFA clip masks, mosaic, levels) always stays on LibRaw. This module only
-produces an alternate scene-linear RGB buffer. Importing this module must not raise
-when Quartz/PyObjC is absent.
+A separate pipeline rather than a LibRaw back end: Core Image executes the file's DNG
+opcodes, so its frame is a warp of LibRaw's and per-pixel CFA evidence cannot be carried
+across (raw_io drops the masks; see the comment there). Aggregate RAW facts — levels,
+clip percentages, SNR, noise floor, white-balance testimony — are distributions rather
+than pixel positions and still come from LibRaw.
+
+The decode follows Apple's own recipe for reaching linear scene-referred data (WWDC21
+"Capture and process ProRAW images"): baselineExposure, shadowBias, boostAmount and
+localToneMapAmount at 0, gamut mapping off, rendered into extendedLinearITUR_2020. Look
+controls are cleared on top of that, but reconstruction is not — highlightRecovery stays
+at Apple's default of on, because it repairs clipped channels rather than expressing a
+taste, and disabling it returns magenta highlights.
+
+Importing this module must not raise when Quartz/PyObjC is absent.
 """
 from __future__ import annotations
 
@@ -35,7 +46,21 @@ COREIMAGE_SCALE_MODES = {
     "unity": 1.0,
 }
 COREIMAGE_SCALE_COMPENSATION = COREIMAGE_SCALE_MODES[COREIMAGE_SCALE_DEFAULT_MODE]
-COREIMAGE_SCALE_COMPENSATION_NOTE = "measured 2026-07 Sigma fp; CI/LibRaw median ratio 1.0293"
+
+
+def describe_scale_compensation(gain: float) -> str:
+    """Describe the gain that was actually applied.
+
+    A fixed note would keep advertising the fitted ratio even under --coreimage-scale
+    unity, where nothing was applied; the whole point of offering both is that a reader
+    can tell which one produced a given buffer.
+    """
+    if abs(float(gain) - 1.0) <= 1e-9:
+        return "unity: no compensation applied (pipelines asserted to agree unaided)"
+    return (
+        f"measured 2026-07 Sigma fp; CI/LibRaw median ratio "
+        f"{1.0 / float(gain):.4f} (per-frame spread 0.94..1.12)"
+    )
 
 
 def scale_compensation_for_mode(mode: str) -> float:
@@ -61,6 +86,14 @@ GEOMETRY_CORR_FLIP_MARGIN = 0.30
 # or radiometrically incomparable to LibRaw's. WarpRectilinear is the decisive one: it is
 # a per-plane radial polynomial, so corners move by tens of pixels (measured ~70 px on a
 # 24 MP Sigma fp frame) and no affine crop can reconcile the two frames.
+#
+# CIRAWFilter does expose lensCorrectionEnabled, which defaults to true and partly undoes
+# this: measured on a Sigma fp frame it lifts corner correlation against LibRaw from 0.24
+# to 0.64. That is nowhere near the ~0.999 a genuinely aligned crop reaches, so it does
+# not make per-pixel mask reuse viable, and it is left enabled deliberately rather than by
+# default — the file asks for those corrections (WarpRectilinear for lateral CA, GainMap
+# for lens shading) and the separate-pipeline design has no need of the alignment that
+# turning them off would partially buy.
 DNG_OPCODE_WARP_RECTILINEAR = 1
 DNG_OPCODE_WARP_FISHEYE = 2
 DNG_OPCODE_FIX_VIGNETTE_RADIAL = 3
@@ -202,7 +235,12 @@ def configure_linear_filter(
     scale_factor: float,
     exposure: float = 0.0,
 ) -> dict[str, Any]:
-    """Zero subjective CIRAW controls and select the decoder version.
+    """Put the filter into Apple's linear scene-referred configuration.
+
+    Not "zero everything": that rule came from the LibRaw path and produces a worse
+    decode here, not a purer one. Apple's own five settings for reaching linear data are
+    applied, look controls are cleared on top, and reconstruction (highlight recovery) is
+    deliberately left at Apple's default of on.
 
     Returns a small dict describing what was applied (for reports/tests).
     """
@@ -218,25 +256,30 @@ def configure_linear_filter(
     # shadowBias subtracts from the shadows and defaults to 5.0, which is a black-level
     # pedestal: a display-referred operation with no place in a scene-linear buffer.
     # Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800
-    # frame and 21.0 % of an ISO 25600 one, against 0.04 % and 0.18 % once zeroed, and
-    # pushed the 1st percentile of luminance negative. Shadow detail that looked like it
-    # had been eaten by the CoreML denoiser was mostly this subtraction.
+    # frame and 21.0 % of an ISO 25600 one, against 0.006 % and 0.18 % once zeroed — both
+    # below the LibRaw path's own 0.16 % and 1.9 % — and pushed the 1st percentile of
+    # luminance negative. Shadow detail that looked like it had been eaten by the CoreML
+    # denoiser was mostly this subtraction.
     _set_amount(filt, "setShadowBias_", None, 0.0)
     _set_amount(filt, "setExposure_", None, float(exposure))
+    # 0 is the least-smoothed end of a calibrated range, not "denoising off": RAW 9 fuses
+    # denoise into the demosaic model, so it always runs. Nothing here can turn it off.
     _set_amount(filt, "setLuminanceNoiseReductionAmount_", "isLuminanceNoiseReductionSupported", 0.0)
     color_nr_cleared = _set_amount(
         filt, "setColorNoiseReductionAmount_", "isColorNoiseReductionSupported", 0.0
     )
     # RAW 9 is a tiled CoreML model that fuses demosaic WITH denoise (WWDC26 session
     # 305), so denoising is architectural rather than a stage that can be switched off.
-    # Apple documents colorNoiseReductionAmount as having no effect there, and the
-    # isSupported flag reports False — but the flag gates the call above, and measurement
-    # contradicts the documentation: colorNoiseReductionAmount / detailAmount /
-    # moireReductionAmount behave as aliases of one internal control on version 9
-    # (setting any of the three to 1.0 gives bit-identical output that differs from
-    # all-zero on 93.6 % of pixels). Its default is 0.5, so trusting the flag would leave
-    # half-strength denoising on. Clear it unconditionally; zero is the minimum under
-    # either reading.
+    #
+    # This is set against Apple's documentation, not with it, and the conflict is
+    # unresolved. WWDC26 states that colorNoiseReductionAmount, detailAmount and
+    # moireReductionAmount have no effect on RAW 9, and isColorNoiseReductionSupported
+    # duly reports False — which gates the call above. Measurement here disagrees: the
+    # three behave as aliases of one internal control on version 9, since setting any of
+    # them to 1.0 gives bit-identical output differing from all-zero on 93.6 % of pixels.
+    # The default is 0.5, so trusting the flag would leave half-strength denoising on.
+    # Clear it unconditionally; zero is the minimum under either reading. Worth re-testing
+    # on a later macOS build, since one of the two readings is wrong.
     if not color_nr_cleared:
         color_nr_cleared = _set_amount(filt, "setColorNoiseReductionAmount_", None, 0.0)
     _set_amount(filt, "setDetailAmount_", "isDetailSupported", 0.0)
@@ -244,7 +287,8 @@ def configure_linear_filter(
     # Sharpening defaults to 0.485 and is a spatial operator, so leaving it on made the
     # buffer no longer a plain scene-linear decode. It was inert on decoder version 8
     # (measured: setting 0 vs 1 changed nothing) but is live on version 9, so it only
-    # started mattering once RAW 9 became the default choice. Moire reduction is zero by
+    # started mattering once this module began requesting RAW 9 — a fresh filter still
+    # reports version 8, so 9 is never reached without asking. Moire reduction is zero by
     # default on both, cleared here so a future default change cannot slip through.
     sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
     if not sharpness_cleared:
@@ -510,7 +554,7 @@ def decode_scene_rec2020(
         "half_size": bool(half_size),
         "scale_factor": cfg["scale_factor"],
         "scale_compensation": float(scale_compensation),
-        "scale_compensation_note": COREIMAGE_SCALE_COMPENSATION_NOTE,
+        "scale_compensation_note": describe_scale_compensation(scale_compensation),
         "color_noise_reduction_amount": cfg["color_noise_reduction_amount"],
         "color_noise_cleared": cfg["color_noise_cleared"],
         "sharpness_amount": cfg.get("sharpness_amount"),
@@ -524,7 +568,8 @@ def decode_scene_rec2020(
 # Quantisation headroom for the Core Image buffer. LibRaw's 1.0 is sensor saturation,
 # and the pipeline anchors that at +3.00 EV (0.18 * 2**MIDGRAY_HEADROOM_STOPS), which is
 # also the white endpoint's lower bound. Apple's 1.0 is diffuse white instead and real
-# specular detail lives above it (measured up to 3.0 linear on a Sigma fp frame), so
+# specular detail lives above it (measured p99.995 2.15 and peak 2.83 on a Sigma fp
+# frame, so the 4.0 allowance below is never reached in practice), so
 # clipping at 1.0 does not merely lose those pixels — it caps the reliable tail at
 # +3.00 EV and prevents the compiled white endpoint from ever rising above its floor.
 # Allocating headroom keeps that detail; the cost is a coarser quantisation step, still

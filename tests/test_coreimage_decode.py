@@ -225,12 +225,18 @@ class DecoderGuardTests(unittest.TestCase):
 
 
 class SubjectiveControlTests(unittest.TestCase):
-    """Every spatial/subjective CIRAW control must be off for a scene-linear decode."""
+    """Where the line falls between a look control and reconstruction.
+
+    Spatial and subjective controls must be off for a scene-linear decode; the controls
+    that reconstruct clipped data must not be, which is why this class asserts both
+    directions rather than just "everything is zero".
+    """
 
     def test_sharpening_is_cleared(self) -> None:
         """sharpnessAmount defaults to 0.485 and is a spatial operator. It was inert on
         decoder version 8 but is live on version 9, so it silently started altering the
-        buffer when RAW 9 became the preferred version."""
+        buffer once this decoder began requesting RAW 9 — a fresh filter reports 8, so
+        version 9 is only ever reached by asking for it."""
         _skip_unless_available()
         if not SIGMA_DNG.is_file():
             raise unittest.SkipTest(f"missing {SIGMA_DNG}")

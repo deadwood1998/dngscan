@@ -137,11 +137,16 @@ def scene_tone_metrics(
     # Samples sitting at the representable floor are clamped values, not measurements:
     # the decoder produced zero (or below one code value) and the clip above pinned them
     # to EV_REPORT_FLOOR. Letting them into the body percentiles is the black-end twin of
-    # letting reconstructed highlights define the white point. Decoders differ sharply
-    # here — measured on one Sigma fp frame, LibRaw leaves 0.001 % of pixels at the floor
-    # while Core Image's black handling leaves 1.78 %, which dragged body p1 from
-    # -6.16 EV to -11.53 EV and widened the compiled log window by 3.5 EV purely from
-    # clamping. Exclude them, but only while enough real samples remain.
+    # letting reconstructed highlights define the white point, so they are excluded while
+    # enough real samples remain.
+    #
+    # This was written when the Core Image path left 1.78 % of pixels on the floor against
+    # LibRaw's 0.001 %, and the cause was misread as Apple's black handling. It was not:
+    # CIRAWFilter's shadowBias defaults to 5.0 and had not been zeroed, and once it was
+    # (see coreimage_decode) that path leaves 0.006..0.18 %, below LibRaw's own 0.16..1.9 %.
+    # The exclusion stays because it is right for any decoder — LibRaw reaches the floor
+    # too, and a clamped sample is not evidence whoever produced it — but it is a
+    # correctness guard, not a workaround for one back end.
     floor_ev = float(EV_REPORT_FLOOR) - GRAY_EV
     above_floor = ev > (floor_ev + 1e-3)
     reliable = above_floor.copy()
