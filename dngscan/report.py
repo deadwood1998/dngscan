@@ -217,7 +217,12 @@ def print_report(
             opcodes = tuple(getattr(bundle, "scene_opcode_names", ()) or ())
             opcode_note = f"，已执行 DNG opcode: {'/'.join(opcodes)}" if opcodes else ""
             scale_mode = getattr(bundle, "scene_scale_mode", None)
-            scale_note = f"，scene 尺度={scale_mode}" if scale_mode else ""
+            align = getattr(bundle, "scene_align_factor", 1.0)
+            align_err = getattr(bundle, "scene_align_error", None)
+            if align_err:
+                scale_note = f"，曝光对齐失败（{align_err}），未对齐到 LibRaw 尺度"
+            else:
+                scale_note = f"，曝光对齐={align:.4f}×（逐文件实测，对齐到 LibRaw 尺度）"
             decoder_label = (
                 f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
                 f"{opcode_note}{scale_note}）"

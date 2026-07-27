@@ -94,6 +94,74 @@ def baseline_exposure_gain(baseline_exposure: float | None) -> float:
     return float(2.0 ** max(-8.0, min(8.0, value)))
 
 
+def raw_green_reference(
+    raw_image: Any, raw_colors: Any, black_levels: list[float], white_level: float
+) -> float:
+    """Median green photosite level, black-subtracted and white-normalised.
+
+    The one statistic both decoders can be measured against, because it is upstream of
+    both. Green because it is the least-amplified channel — the most sensitive one, so
+    white balance gives it the smallest multiplier and it normalises to 1.0 — which keeps
+    white balance out of the comparison. Note that this is a property of the applied gain,
+    not of the reported multiplier array: Fuji returns camera_whitebalance unnormalised
+    ([581, 302, 544] rather than green at 1.0), so the array must never be read for this.
+    Measuring the effective gain empirically sidesteps the whole convention question.
+    """
+    colors = np.asarray(raw_colors)
+    green = np.isin(colors, (1, 3))
+    if not np.any(green):
+        return float("nan")
+    black = float(np.mean(black_levels)) if black_levels else 0.0
+    span = max(float(white_level) - black, 1.0)
+    values = (np.asarray(raw_image, dtype=np.float32)[green] - black) / span
+    values = values[values > 0.0]
+    if values.size == 0:
+        return float("nan")
+    return float(np.median(values))
+
+
+def scene_green_gain(scene_rgb: Any, raw_green_median: float) -> float:
+    """Effective raw -> scene-linear green gain of a decoded buffer.
+
+    A gain rather than a level: a dark scene shrinks numerator and denominator together,
+    so normalising it aligns the two decoders' scales without touching how bright the
+    photograph is. That distinction is the whole point — auto exposure moves the level and
+    turns a night scene grey; this moves the ruler.
+    """
+    if not np.isfinite(raw_green_median) or raw_green_median <= 0.0:
+        return float("nan")
+    green = np.asarray(scene_rgb, dtype=np.float32)[:, :, 1].ravel()
+    green = green[green > 1e-4]
+    if green.size == 0:
+        return float("nan")
+    return float(np.median(green)) / float(raw_green_median)
+
+
+# Bounds on the Core Image alignment factor. Measured factors run 0.57..0.94 across iPhone
+# 16 Pro and Sigma fp; anything far outside that means a statistic failed rather than a
+# decoder disagreeing, and a render must not be destroyed by a bad measurement.
+COREIMAGE_ALIGN_MIN = 0.25
+COREIMAGE_ALIGN_MAX = 4.0
+
+
+def coreimage_alignment_factor(reference_gain: float, coreimage_gain: float) -> float:
+    """Scale that puts the Core Image buffer on the LibRaw path's exposure scale.
+
+    LibRaw's raw->output green gain is analytic and stable: measured 2**BaselineExposure
+    times 1.02 +/- 0.08 EV across Sigma fp, iPhone 16 Pro and Fuji X-Trans. Apple's is
+    not — 1.08 to 2.18 over the same files, varying by camera and by scene, because its
+    1.0 is an estimate of *this frame's* diffuse white. No constant can align them, which
+    is why two fitted ones (1/0.9314, then 1/1.0293) both failed; it has to be measured
+    per file.
+    """
+    if not (np.isfinite(reference_gain) and np.isfinite(coreimage_gain)):
+        return 1.0
+    if reference_gain <= 0.0 or coreimage_gain <= 0.0:
+        return 1.0
+    factor = float(reference_gain) / float(coreimage_gain)
+    return float(min(COREIMAGE_ALIGN_MAX, max(COREIMAGE_ALIGN_MIN, factor)))
+
+
 def libraw_scene_scale(
     encoded_max: float,
     highlight_mode_name: str,
@@ -431,6 +499,8 @@ def load_raw(
     scene_decoder = "libraw"
     scene_decoder_version: str | None = None
     scene_scale_mode: str | None = None
+    scene_align_factor: float = 1.0
+    scene_align_error: str | None = None
     scene_opcode_names: tuple[str, ...] = ()
     evidence_shape: tuple[int, int] | None = None
     scene_geometry_crop: tuple[float, float, float, float] | None = None
@@ -538,6 +608,49 @@ def load_raw(
             ),
         )
         scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_half(ci_float)
+        # Put the buffer on the LibRaw path's exposure scale, measured per file. The
+        # reference render is half-size on purpose: at that size LibRaw bins 2x2
+        # superpixels instead of demosaicing, so it costs ~0.2 s, and the factor it
+        # yields matches the full-resolution one to 1.3 % (0.019 EV) across four frames.
+        reference_gain = float("nan")
+        coreimage_gain = float("nan")
+        try:
+            # A fresh handle: `raw` has already had its mosaic read on this path, and
+            # LibRaw refuses postprocess afterwards (LibRawOutOfOrderCallError).
+            with rawpy.imread(str(path)) as reference_raw:
+                reference_scene = render_to_scene_rec2020(
+                    reference_raw, scene_highlight_mode, True, None,
+                    wb_postprocess_kwargs(wb_mode, daylight_wb),
+                )
+            raw_green = raw_green_reference(
+                raw_image, raw_colors, black_levels, white_level
+            )
+            # Decode the reference exactly as the LibRaw path would, via its own scale
+            # function. Normalising by the container maximum instead silently loses the
+            # WB headroom division that non-clip highlight modes apply — and this path
+            # forces "reconstruct", so that error is always live here. Measured on an
+            # iPhone frame whose largest WB multiplier is 2.981, it made the reference
+            # gain 2.98x too small and drove the factor into its guard rail.
+            reference_scale = libraw_scene_scale(
+                float(np.iinfo(reference_scene.dtype).max),
+                scene_highlight_mode,
+                daylight_wb if wb_mode == "daylight" else camera_wb,
+                baseline_exposure=shot.baseline_exposure,
+            )
+            reference_gain = scene_green_gain(
+                np.asarray(reference_scene, dtype=np.float32) / reference_scale,
+                raw_green,
+            )
+            coreimage_gain = scene_green_gain(
+                np.asarray(scene_rec2020_render, dtype=np.float32) / float(scene_scale),
+                raw_green,
+            )
+        except Exception as exc:  # noqa: BLE001 - a render must not fail over a metric
+            # Never silently: an identity factor here is indistinguishable from a working
+            # alignment in the output, which is exactly how this shipped broken once.
+            scene_align_error = f"{type(exc).__name__}: {exc}"
+        scene_align_factor = coreimage_alignment_factor(reference_gain, coreimage_gain)
+        scene_scale = float(scene_scale) / scene_align_factor
         xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
         render_scale = scene_scale
         scene_decoder = "coreimage"
@@ -587,6 +700,8 @@ def load_raw(
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
         scene_scale_mode=scene_scale_mode,
+        scene_align_factor=scene_align_factor,
+        scene_align_error=scene_align_error,
         scene_opcode_names=scene_opcode_names,
         evidence_shape=evidence_shape,
         scene_geometry_crop=scene_geometry_crop,

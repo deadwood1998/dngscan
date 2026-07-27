@@ -155,18 +155,44 @@ class CoreImageLiveTests(unittest.TestCase):
         self.assertEqual(ci_bundle.scene_decoder, "coreimage")
         self.assertEqual(ci_bundle.scene_highlight_mode, "reconstruct")
         self.assertEqual(ci_bundle.scene_rec2020_render.dtype, np.float16)
-        self.assertEqual(ci_bundle.scene_scale, 1.0)
         self.assertIn("WarpRectilinear", ci_bundle.scene_opcode_names)
         # Aggregate (geometry-free) RAW facts survive: same mosaic, same levels.
         self.assertEqual(int(ci_bundle.white_level), int(libraw.white_level))
         self.assertEqual(list(ci_bundle.black_levels), list(libraw.black_levels))
-        # Scale compensation keeps both decoders on the same exposure anchor.
-        def mid_median(bundle):
-            arr = np.asarray(bundle.scene_rec2020_render, dtype=np.float32) / float(bundle.scene_scale)
+        # The float16 buffer itself stays unscaled; scene_scale carries only the measured
+        # alignment onto the LibRaw exposure scale, so the two are each other's inverse.
+        self.assertIsNone(ci_bundle.scene_align_error)
+        self.assertNotAlmostEqual(ci_bundle.scene_align_factor, 1.0, places=3)
+        self.assertAlmostEqual(
+            ci_bundle.scene_scale, 1.0 / ci_bundle.scene_align_factor, places=6
+        )
+
+    def test_alignment_puts_both_decoders_on_one_exposure_scale(self) -> None:
+        """The whole point of the measured alignment: a body median that agrees.
+
+        Before it, the two decoders' body medians sat 0.12 EV apart on this Sigma fp
+        frame and up to 0.85 EV apart on iPhone, because LibRaw's 1.0 is sensor
+        saturation while Apple's is an estimate of *this frame's* diffuse white. The
+        bound below is well inside the visible threshold and roughly 4x the residual
+        measured at full resolution, leaving room for the half-size proxy.
+        """
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        from dngscan.raw_io import load_raw
+
+        libraw = load_raw(SIGMA_DNG, scene_half_size=True, decoder="libraw")
+        ci_bundle = load_raw(SIGMA_DNG, scene_half_size=True, decoder="coreimage")
+
+        def body_median(bundle) -> float:
+            arr = np.asarray(bundle.scene_rec2020_render, dtype=np.float32) / float(
+                bundle.scene_scale
+            )
             y = 0.2627 * arr[:, :, 0] + 0.6780 * arr[:, :, 1] + 0.0593 * arr[:, :, 2]
             return float(np.median(y[(y > 0.01) & (y < 0.5)]))
 
-        self.assertAlmostEqual(mid_median(ci_bundle) / mid_median(libraw), 1.0, delta=0.10)
+        delta_ev = float(np.log2(body_median(ci_bundle) / body_median(libraw)))
+        self.assertLess(abs(delta_ev), 0.15)
 
     def test_full_resolution_production_path_renders(self) -> None:
         """Exercise the resolution the exporter actually uses.

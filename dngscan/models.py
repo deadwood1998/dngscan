@@ -57,6 +57,12 @@ class RawBundle:
     # Which --coreimage-scale mode produced the buffer ("measured" | "unity"), so a
     # comparison between the two is visible in the report rather than implicit.
     scene_scale_mode: str | None = None
+    # Per-file scale that put the Core Image buffer on the LibRaw path's exposure scale.
+    # 1.0 on the LibRaw path and whenever the measurement could not be made.
+    scene_align_factor: float = 1.0
+    # Why the alignment fell back to identity, when it did. An unexplained 1.0 is
+    # indistinguishable from a working alignment in the output, so the reason is carried.
+    scene_align_error: str | None = None
     # DNG opcodes the decoder executed (Core Image path only). Reported, not acted on:
     # their presence is why that path cannot share LibRaw's per-pixel CFA evidence.
     scene_opcode_names: tuple[str, ...] = ()

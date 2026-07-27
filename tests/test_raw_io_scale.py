@@ -9,6 +9,8 @@ import numpy as np
 
 from dngscan.raw_io import (
     baseline_exposure_gain,
+    coreimage_alignment_factor,
+    scene_green_gain,
     libraw_scene_scale,
     libraw_wb_headroom_gain,
     scene_rec2020_to_xyz_render,
@@ -56,6 +58,41 @@ class LibRawSceneScaleTests(unittest.TestCase):
         )
         # A corrupt tag must not rewrite the exposure by an absurd amount.
         self.assertEqual(baseline_exposure_gain(99.0), 2.0 ** 8)
+
+    def test_alignment_factor_is_a_ratio_of_measured_gains(self) -> None:
+        """No fitted constant can align the decoders — Apple's scale moves with the
+        scene — so the factor is a ratio of two gains measured against the same raw
+        statistic, and it degrades to identity rather than to a guess."""
+        self.assertAlmostEqual(coreimage_alignment_factor(1.02, 2.17), 1.02 / 2.17)
+        for bad in ((float("nan"), 2.0), (1.0, float("nan")), (0.0, 2.0), (1.0, 0.0)):
+            self.assertEqual(coreimage_alignment_factor(*bad), 1.0)
+        # A failed statistic must not be able to destroy a render.
+        self.assertEqual(coreimage_alignment_factor(1000.0, 1.0), 4.0)
+        self.assertEqual(coreimage_alignment_factor(1.0, 1000.0), 0.25)
+
+    def test_green_gain_is_scale_free_in_the_scene(self) -> None:
+        """A gain, not a level: halving the scene halves both sides and leaves it fixed.
+        That is what lets the alignment move the ruler without touching how bright the
+        photograph is, which an auto-exposure normalisation could not do."""
+        scene = np.full((4, 4, 3), 0.2, dtype=np.float32)
+        self.assertAlmostEqual(scene_green_gain(scene, 0.1), 2.0, places=6)
+        self.assertAlmostEqual(scene_green_gain(scene * 0.5, 0.05), 2.0, places=6)
+        self.assertTrue(np.isnan(scene_green_gain(scene, 0.0)))
+        self.assertTrue(np.isnan(scene_green_gain(np.zeros((4, 4, 3), np.float32), 0.1)))
+
+    def test_alignment_reference_must_use_the_libraw_scale_function(self) -> None:
+        """The reference has to be decoded the way the LibRaw path decodes, not by the
+        container maximum. The Core Image path forces highlight mode "reconstruct", where
+        LibRaw divides the buffer by the largest WB multiplier to make room for
+        reconstruction; normalising by 65535 instead drops exactly that factor. Measured
+        on an iPhone frame with a 2.981 multiplier it made the reference gain 2.98x too
+        small and pushed the alignment into its guard rail, rendering 0.8 EV dark."""
+        wb = [1.5354, 1.0, 2.981, 0.0]
+        naive = 65535.0
+        correct = libraw_scene_scale(65535.0, "reconstruct", wb, baseline_exposure=None)
+        self.assertAlmostEqual(naive / correct, 2.981, places=3)
+        # And with clip, where no headroom is reserved, the two agree.
+        self.assertEqual(libraw_scene_scale(65535.0, "clip", wb, baseline_exposure=None), naive)
 
     def test_xyz_analysis_buffer_preserves_reconstruction_headroom(self) -> None:
         scale = 65535.0 / 2.0

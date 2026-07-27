@@ -230,6 +230,35 @@ scene-referred data — `baselineExposure`, `shadowBias`, `boostAmount` and
 `boostAmount` 0 as "no global tone curve, i.e. linear response", which is the property
 AgX needs. `baselineExposure` is the deliberate exception, for the reason below.
 
+**The Core Image buffer is aligned onto the LibRaw exposure scale, per file.** The two
+decoders mean different things by 1.0: LibRaw normalises to sensor saturation, an
+analytic constant, while Apple normalises to its estimate of *this frame's* diffuse
+white. Measured as the raw-to-scene green gain, LibRaw's is 2^BaselineExposure times
+1.02 ± 0.08 EV across Sigma fp, iPhone 16 Pro and Fuji X-Trans, while Apple's runs 1.08
+to 2.18 over the same files, varying by camera *and by scene*. No constant can align
+that, which is why two fitted ones (`1/0.9314`, then `1/1.0293`) both failed. It is now
+measured against the raw mosaic, which is upstream of both decoders and already loaded.
+
+Green is the statistic because it is the least-amplified channel, so white balance
+normalises it to 1.0 and stays out of the comparison — a property of the applied gain,
+not of the reported multipliers, since Fuji returns `camera_whitebalance` unnormalised
+(`[581, 302, 544]`). And it is a *gain*, not a level: a dark scene shrinks both sides of
+the ratio, so normalising it moves the ruler without touching how bright the photograph
+is. That is the difference from auto exposure, which moves the level and turns a night
+scene grey.
+
+Measured at full resolution on exported JPEGs, the two paths now agree to +0.006, +0.018,
++0.019 and +0.000 EV on four frames, against 0.12 to 0.85 EV before. The reference render
+is half-size, where LibRaw bins 2×2 superpixels instead of demosaicing, so it costs about
+0.2 s and yields a factor within 1.3 % of the full-resolution one. The report names the
+factor, and names the failure instead if the measurement could not be made — an
+unexplained 1.0 is indistinguishable from a working alignment in the output.
+
+What this does not align is the tone plan. Each buffer still compiles its own endpoints,
+and those legitimately differ: Apple keeps specular headroom LibRaw's `clip` destroyed,
+and RAW 9's denoising raises the black end. Brightness matches; the tonal distribution
+does not, and should not, since that difference is the decoder you chose.
+
 **BaselineExposure is honoured on both paths.** The DNG tag is the file telling the
 renderer how much exposure to apply on top of the raw data. Zeroing it looked safe while
 that meant a fixed per-model calibration constant — Sigma fp writes 1.0 on every frame
