@@ -71,15 +71,40 @@ def libraw_wb_headroom_gain(wb_values: list[float] | None) -> float:
     return float(max(1.0, np.max(normalized)))
 
 
+def baseline_exposure_gain(baseline_exposure: float | None) -> float:
+    """Linear gain for a DNG BaselineExposure, as a scale divisor rather than a multiply.
+
+    BaselineExposure is the file telling the renderer how much exposure it is expected to
+    apply on top of the raw data. LibRaw ignores it outright (verified: on two iPhone
+    frames whose tags differ by 2 EV, LibRaw's output ratio does not move with the tag),
+    and Core Image applies it unless overridden, so honouring it is what makes the two
+    paths agree about what a photograph's exposure is.
+
+    It is applied by dividing scene_scale, never by scaling the buffer: the gain reaches
+    5.65x on an iPhone low-light frame, which would clip everything above 0.18 in a uint16
+    buffer normalised to sensor saturation. Dividing the scale leaves the codes untouched
+    and re-interprets them, so no precision is lost and no highlight is destroyed.
+    """
+    if baseline_exposure is None:
+        return 1.0
+    value = float(baseline_exposure)
+    if not np.isfinite(value):
+        return 1.0
+    # Guard against a corrupt tag rewriting the exposure by an absurd amount.
+    return float(2.0 ** max(-8.0, min(8.0, value)))
+
+
 def libraw_scene_scale(
     encoded_max: float,
     highlight_mode_name: str,
     wb_values: list[float] | None,
+    baseline_exposure: float | None = None,
 ) -> float:
     """Decode uint16 code values into one exposure unit independent of highlight mode."""
-    if highlight_mode_name == "clip":
-        return float(encoded_max)
-    return float(encoded_max) / libraw_wb_headroom_gain(wb_values)
+    scale = float(encoded_max)
+    if highlight_mode_name != "clip":
+        scale /= libraw_wb_headroom_gain(wb_values)
+    return scale / baseline_exposure_gain(baseline_exposure)
 
 
 def scene_rec2020_to_xyz_render(scene_rec2020: Any, scene_scale: float) -> Any:
@@ -464,7 +489,10 @@ def load_raw(
                     encoded_max = float(np.iinfo(scene_rec2020_render.dtype).max)
                     applied_wb = daylight_wb if wb_mode == "daylight" else camera_wb
                     scene_scale = libraw_scene_scale(
-                        encoded_max, scene_highlight_mode, applied_wb
+                        encoded_max,
+                        scene_highlight_mode,
+                        applied_wb,
+                        baseline_exposure=shot.baseline_exposure,
                     )
                 xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
                 render_scale = scene_scale
@@ -554,6 +582,7 @@ def load_raw(
         shot_make=shot.make,
         shot_model=shot.model,
         shot_iso=shot.iso,
+        baseline_exposure=shot.baseline_exposure,
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,

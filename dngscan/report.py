@@ -236,11 +236,21 @@ def print_report(
             else f"EV 补偿={jpeg_ev:+.2f}，固定常数非自适应"
         )
         brighten_note = "全图亮度参考" if auto_ev is not None else "手动 EV / 固定锚点"
+        # BaselineExposure moves every pixel, and on some cameras it is a per-shot capture
+        # decision rather than a constant, so two frames can differ for a reason that is
+        # in the file rather than in the render settings. Name it when the file carries it.
+        baseline_exposure = getattr(bundle, "baseline_exposure", None)
+        baseline_exposure_note = (
+            f"文件 BaselineExposure={baseline_exposure:+.3f} EV（已遵从）；"
+            if baseline_exposure is not None
+            else ""
+        )
         print(
             f"JPEG 设置: scene-linear Rec.2020 起点（解码={decoder_label}）；"
             f"8-bit {output_gamut_label(output_gamut)}（TPDF 抖动）；"
             f"{wb_label}；{brighten_note}；"
             f"曝光锚定增益={bundle.exposure_gain:.3f}（{ev_note}）；"
+            f"{baseline_exposure_note}"
             f"模式={reported_mode}；{highlight_note}；"
             f"AgX 前馈={scene_transform_label(scene_transform)}（强度={scene_transform_strength:.2f}）；"
             f"成片风格={grade_label(jpeg_grade)}（强度={jpeg_grade_strength:.2f}）；"

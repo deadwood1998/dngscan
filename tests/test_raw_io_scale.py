@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from dngscan.raw_io import (
+    baseline_exposure_gain,
     libraw_scene_scale,
     libraw_wb_headroom_gain,
     scene_rec2020_to_xyz_render,
@@ -28,6 +29,33 @@ class LibRawSceneScaleTests(unittest.TestCase):
     def test_wb_gain_is_invariant_to_coefficient_normalization(self) -> None:
         self.assertAlmostEqual(libraw_wb_headroom_gain([2.0, 1.0, 4.0, 1.0]), 4.0)
         self.assertAlmostEqual(libraw_wb_headroom_gain([1.0, 0.5, 2.0, 0.5]), 4.0)
+
+    def test_baseline_exposure_divides_the_scale_rather_than_scaling_the_buffer(self) -> None:
+        """The gain reaches 5.65x on an iPhone low-light frame. Applied to a uint16 buffer
+        normalised to sensor saturation it would clip everything above 0.18, so it has to
+        arrive as a change of scale, leaving the codes untouched."""
+        self.assertAlmostEqual(baseline_exposure_gain(1.0), 2.0)
+        self.assertAlmostEqual(baseline_exposure_gain(2.4973), 5.6465, places=3)
+        self.assertAlmostEqual(
+            libraw_scene_scale(65535.0, "clip", None, baseline_exposure=1.0), 65535.0 / 2.0
+        )
+        # Composes with the highlight-mode storage scaling rather than replacing it.
+        wb = [1.48, 1.0, 2.33, 0.0]
+        self.assertAlmostEqual(
+            libraw_scene_scale(65535.0, "reconstruct", wb, baseline_exposure=1.0),
+            65535.0 / 2.33 / 2.0,
+        )
+
+    def test_absent_baseline_exposure_is_not_zero(self) -> None:
+        """A file without the tag must render unchanged; 0.0 is a real value meaning 1x."""
+        self.assertEqual(baseline_exposure_gain(None), 1.0)
+        self.assertEqual(baseline_exposure_gain(0.0), 1.0)
+        self.assertEqual(baseline_exposure_gain(float("nan")), 1.0)
+        self.assertEqual(
+            libraw_scene_scale(65535.0, "clip", None, baseline_exposure=None), 65535.0
+        )
+        # A corrupt tag must not rewrite the exposure by an absurd amount.
+        self.assertEqual(baseline_exposure_gain(99.0), 2.0 ** 8)
 
     def test_xyz_analysis_buffer_preserves_reconstruction_headroom(self) -> None:
         scale = 65535.0 / 2.0

@@ -8,10 +8,15 @@ clip percentages, SNR, noise floor, white-balance testimony — are distribution
 than pixel positions and still come from LibRaw.
 
 The decode follows Apple's own recipe for reaching linear scene-referred data (WWDC21
-"Capture and process ProRAW images"): baselineExposure, shadowBias, boostAmount and
-localToneMapAmount at 0, gamut mapping off, rendered into extendedLinearITUR_2020. Look
-controls are cleared on top of that. Highlight recovery and lens correction are enabled
-explicitly: both are part of Apple's RAW decode, not downstream rendering choices.
+"Capture and process ProRAW images"): shadowBias, boostAmount and localToneMapAmount at
+0, gamut mapping off, rendered into extendedLinearITUR_2020. Look controls are cleared on
+top of that. Highlight recovery and lens correction are enabled explicitly: both are part
+of Apple's RAW decode, not downstream rendering choices.
+
+baselineExposure is the one item of that recipe deliberately not applied. The recipe aims
+at a neutral extraction; dngscan wants the exposure the photograph was taken at, because
+Apple uses the tag to carry a per-shot capture decision rather than a fixed per-model
+constant. The LibRaw path folds the same tag into scene_scale so the two agree.
 
 The handoff is signed float16. Extended-linear Rec.2020 legitimately contains negative
 components and values above 1.0; quantising it through an unsigned sensor-white buffer
@@ -280,11 +285,22 @@ def configure_linear_filter(
     # Apple's own recipe for linear scene-referred extraction (WWDC21 "Capture and
     # process ProRAW images") is to zero baselineExposure, shadowBias, boostAmount and
     # localToneMapAmount and disable gamut mapping, then render into
-    # extendedLinearITUR_2020. All five are applied here and in _render_linear_rec2020.
+    # extendedLinearITUR_2020. Four of the five are applied here and in
+    # _render_linear_rec2020; baselineExposure is the deliberate exception, below.
     _set_amount(filt, "setBoostAmount_", None, 0.0)
     # No effect while boostAmount is 0, cleared so the pair cannot drift apart.
     _set_amount(filt, "setBoostShadowAmount_", None, 0.0)
-    _set_amount(filt, "setBaselineExposure_", None, 0.0)
+    # baselineExposure is left at the value CIRAWFilter reads from the file. Zeroing it
+    # was defensible while "exposure is dngscan's own axis" seemed to describe a fixed
+    # per-model calibration constant, which is what most vendors write — Sigma fp puts
+    # 1.0 on every frame regardless of scene. Apple instead uses the tag to carry a
+    # per-shot capture decision: 0.4973 at base ISO and exactly 2.0 more on a low-light
+    # frame the camera underexposed to protect highlights. Discarding it there does not
+    # neutralise a calibration, it throws away what the exposure of that photograph was,
+    # and it injects up to 2 EV of variance between two frames of the same subject. The
+    # tag describes the scene's exposure; --ev expresses the user's intent on top of it.
+    # Measured: the property equals the file's tag exactly, and zeroing removed precisely
+    # 2^tag (+2.497, +0.497, +1.000 EV on three files).
     # shadowBias subtracts from the shadows and defaults to 5.0, which is a black-level
     # pedestal: a display-referred operation with no place in a scene-linear buffer.
     # Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800
@@ -376,6 +392,9 @@ def configure_linear_filter(
         "highlight_recovery": highlight_recovery,
         "lens_correction": lens_correction,
         "shadow_bias": float(filt.shadowBias()) if hasattr(filt, "shadowBias") else None,
+        "baseline_exposure": (
+            float(filt.baselineExposure()) if hasattr(filt, "baselineExposure") else None
+        ),
     }
 
 
@@ -627,6 +646,7 @@ def decode_scene_rec2020(
         "highlight_recovery": cfg.get("highlight_recovery"),
         "lens_correction": cfg.get("lens_correction"),
         "shadow_bias": cfg.get("shadow_bias"),
+        "baseline_exposure": cfg.get("baseline_exposure"),
         "exposure": float(exposure),
     }
     return rgb.astype(np.float16, copy=False), info

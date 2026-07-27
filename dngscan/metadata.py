@@ -20,6 +20,12 @@ TAG_MODEL = 272
 TAG_EXIF_IFD = 34665
 TAG_ISO = 34855
 TAG_AS_SHOT_NEUTRAL = 50728
+TAG_SUB_IFDS = 330
+# DNG 1.7 §5: log2 exposure the renderer is expected to apply on top of the raw data.
+# Most vendors use it as a fixed per-model calibration constant (Sigma fp writes 1.0 on
+# every frame); Apple uses it to carry a per-shot capture decision, writing 0.4973 at
+# base ISO and exactly 2.0 more on an underexposed low-light frame.
+TAG_BASELINE_EXPOSURE = 50730
 
 _TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
 
@@ -30,6 +36,8 @@ class DngShotInfo:
     model: str | None = None
     iso: int | None = None
     as_shot_neutral: tuple[float, float, float] | None = None
+    # None when the file carries no BaselineExposure, which is not the same as 0.0.
+    baseline_exposure: float | None = None
 
 
 def _read_ifd_entries(fh, offset: int, endian: str) -> list[tuple[int, int, int, bytes]]:
@@ -85,7 +93,15 @@ def _parse_tiff_shot_info(fh, info: DngShotInfo) -> None:
         return
     (ifd0_off,) = struct.unpack(endian + "L", head[4:8])
     exif_off = None
+    sub_ifd_offsets: list[int] = []
     for tag, typ, num, raw in _read_ifd_entries(fh, ifd0_off, endian):
+        if tag == TAG_BASELINE_EXPOSURE:
+            vals = _entry_values(fh, typ, num, raw, endian)
+            if vals:
+                info.baseline_exposure = float(vals[0])
+        elif tag == TAG_SUB_IFDS:
+            vals = _entry_values(fh, typ, num, raw, endian)
+            sub_ifd_offsets = [int(v) for v in vals]
         if tag == TAG_MAKE:
             vals = _entry_values(fh, typ, num, raw, endian)
             info.make = vals[0] if vals else None
@@ -107,6 +123,17 @@ def _parse_tiff_shot_info(fh, info: DngShotInfo) -> None:
             if tag == TAG_ISO:
                 vals = _entry_values(fh, typ, num, raw, endian)
                 info.iso = int(vals[0]) if vals else None
+                break
+    # Writers may put BaselineExposure on the raw SubIFD rather than IFD0.
+    if info.baseline_exposure is None:
+        for sub_off in sub_ifd_offsets[:4]:
+            for tag, typ, num, raw in _read_ifd_entries(fh, sub_off, endian):
+                if tag == TAG_BASELINE_EXPOSURE:
+                    vals = _entry_values(fh, typ, num, raw, endian)
+                    if vals:
+                        info.baseline_exposure = float(vals[0])
+                    break
+            if info.baseline_exposure is not None:
                 break
 
 

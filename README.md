@@ -226,8 +226,30 @@ texture to the demosaic choice.
 process ProRAW images" prescribes exactly five settings for reaching the linear
 scene-referred data — `baselineExposure`, `shadowBias`, `boostAmount` and
 `localToneMapAmount` at 0, `isGamutMappingEnabled` false — rendered into
-`extendedLinearITUR_2020`. All five are applied, and the header documents `boostAmount`
-0 as "no global tone curve, i.e. linear response", which is the property AgX needs.
+`extendedLinearITUR_2020`. Four of the five are applied, and the header documents
+`boostAmount` 0 as "no global tone curve, i.e. linear response", which is the property
+AgX needs. `baselineExposure` is the deliberate exception, for the reason below.
+
+**BaselineExposure is honoured on both paths.** The DNG tag is the file telling the
+renderer how much exposure to apply on top of the raw data. Zeroing it looked safe while
+that meant a fixed per-model calibration constant — Sigma fp writes 1.0 on every frame
+regardless of scene — but Apple uses it to carry a per-shot capture decision: measured on
+an iPhone 16 Pro, 0.4973 at ISO 80 and exactly 2.0 more on an ISO 640 frame the camera
+underexposed to protect highlights. Discarding that does not neutralise a calibration, it
+throws away what the exposure of that photograph was, and it puts two frames of the same
+subject 2 EV apart for a reason that is nowhere in the render settings.
+
+LibRaw ignores the tag outright, which is verifiable: across two iPhone frames whose tags
+differ by 2 EV its output ratio does not move with them. dngscan therefore folds the gain
+into `scene_scale` on the LibRaw path and leaves Apple's property alone on the Core Image
+one. It is applied as a change of scale, never as a multiply — the gain reaches 5.65x on
+that ISO 640 frame, which in a uint16 buffer normalised to sensor saturation would clip
+everything above 0.18. Renders get brighter as a result: measured +0.54 EV on a Sigma fp
+frame and +1.17 EV on the iPhone one, less than the tag itself because the compiled
+window absorbs part of it. Use `--ev` for taste on top; the report names the tag it
+honoured. Note that the gates tuned against the previous scale now see bodies about a
+stop brighter — punch on one Sigma frame went from 0.268 to 0.627 — so their calibration
+is worth re-checking against a corpus.
 
 `shadowBias` is the one that is easy to miss: it defaults to **5.0**, subtracts from the
 shadows, and is a display-referred black pedestal with no place in a scene-linear buffer.

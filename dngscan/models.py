@@ -32,6 +32,10 @@ class RawBundle:
     shot_make: str | None = None
     shot_model: str | None = None
     shot_iso: int | None = None
+    # DNG BaselineExposure as written by the camera, or None when the file omits it. Both
+    # decoders honour it, so it is recorded to explain a brightness that came from the
+    # file rather than from render settings.
+    baseline_exposure: float | None = None
     # Half-resolution, orientation-correct RGB soft clip masks in raw/CFA space.
     # Shape is (H, W, 3), aligned to scene_rec2020_render when scene_half_size=True.
     # Full-resolution renders resize this mask to the render buffer on demand.

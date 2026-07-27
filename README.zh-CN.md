@@ -181,8 +181,24 @@ LibRaw 换成更平滑的去马赛克（VNG、PPG）并不能缩小差距，所�
 **解码遵循 Apple 自己的线性提取配方。** WWDC21《Capture and process ProRAW images》给出
 的取到线性 scene-referred 数据的做法正好是五项——`baselineExposure`、`shadowBias`、
 `boostAmount`、`localToneMapAmount` 置 0，`isGamutMappingEnabled` 置 false——并渲染到
-`extendedLinearITUR_2020`。五项都已应用；头文件把 `boostAmount` 为 0 定义为"无全局色调
-曲线，即线性响应"，这正是 AgX 需要的性质。
+`extendedLinearITUR_2020`。其中四项已应用；头文件把 `boostAmount` 为 0 定义为"无全局色调
+曲线，即线性响应"，这正是 AgX 需要的性质。`baselineExposure` 是有意的例外，理由见下。
+
+**BaselineExposure 在两条管线上都被遵从。** 这个 DNG 标签是文件在告诉渲染器：在原始数据
+之上还应当施加多少曝光。把它清零，在它表示**逐机型的固定标定常数**时看起来是安全的——
+Sigma fp 无论什么场景都写 1.0——但 Apple 用它承载**逐张的拍摄决策**：iPhone 16 Pro 实测
+ISO 80 写 0.4973，而相机为保高光而欠曝的那张 ISO 640 恰好多写 2.0。丢弃它并不是"中和掉
+一个标定"，而是丢掉了这张照片的曝光究竟是多少，并且会让同一主体的两张照片相差 2 EV，
+而原因完全不在渲染设置里。
+
+LibRaw 是彻底忽略这个标签的，这一点可验证：两张标签相差 2 EV 的 iPhone 照片，它的输出
+比值不随标签移动。因此 dngscan 在 LibRaw 路径上把增益折进 `scene_scale`，在 Core Image
+路径上不再覆盖 Apple 的属性。它以**改变尺度**而非乘缓冲的方式施加——那张 ISO 640 的增益
+达到 5.65 倍，在归一化到传感器饱和的 uint16 缓冲里会把 0.18 以上的一切削平。后果是渲染
+整体变亮：Sigma fp 实测 +0.54 EV，iPhone 那张 +1.17 EV，小于标签本身，因为编译出的窗口
+吸收了一部分。主观微调请用 `--ev`；报告会写明遵从了哪个标签值。另需注意：在旧尺度上调过
+的门控现在看到的主体约亮一档——某张 Sigma 上 punch 从 0.268 变成 0.627——它们的标定值得
+用语料重新检查。
 
 `shadowBias` 是最容易漏掉的一项：默认值 **5.0**，作用是从阴影中减去一个量，本质是
 display-referred 的黑电平基座，在 scene-linear 缓冲里没有立足之地。保留默认值会让
