@@ -6,7 +6,7 @@
 
 namespace dngscan_fast {
 
-inline constexpr int NATIVE_ABI_VERSION = 1;
+inline constexpr int NATIVE_ABI_VERSION = 2;
 inline constexpr float EPS = 1e-12f;
 
 struct CurveParams {
@@ -40,7 +40,7 @@ struct NativeAgxPlan {
   float inset[9];
   float outset[9];
   CurveParams curve;
-  float hue_keep;
+  float hue_restore;
   float view_brightness;
   float punch_strength;
 

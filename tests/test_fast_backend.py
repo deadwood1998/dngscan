@@ -36,8 +36,8 @@ def _sample_plan(**overrides) -> ToneCompressionPlan:
         tone_core="agx",
         use_c1_endpoints=True,
         punch_strength=0.0,
-        hue_keep=0.6,
-        agx_primaries="smooth",
+        hue_restore=0.6,
+        agx_primaries="base",
     )
     base.update(overrides)
     return ToneCompressionPlan(**base)
@@ -62,7 +62,7 @@ class NativeAgxParityTests(unittest.TestCase):
             os.environ["DNGSCAN_FAST"] = self._env
 
     def test_basis_colors_match_reference(self) -> None:
-        plan = _sample_plan(hue_keep=1.0)
+        plan = _sample_plan(hue_restore=1.0)
         rgb = np.asarray(
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             dtype=np.float32,
@@ -90,11 +90,19 @@ class NativeAgxParityTests(unittest.TestCase):
         rng = np.random.default_rng(11)
         rgb = rng.uniform(0.0, 1.5, size=(4096, 3)).astype(np.float32)
         for primaries in ("smooth", "base", "punchy", "muted"):
-            for hue_keep in (0.0, 0.4, 0.6, 1.0):
-                plan = _sample_plan(agx_primaries=primaries, hue_keep=hue_keep)
+            for hue_restore in (0.0, 0.4, 0.6, 1.0):
+                plan = _sample_plan(agx_primaries=primaries, hue_restore=hue_restore)
                 ref = _reference_agx_core(rgb, plan)
                 out = apply_agx_core(rgb, plan)
                 np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5, err_msg=primaries)
+
+    def test_view_brightness_both_sides_match_reference(self) -> None:
+        rgb = np.asarray([[0.02, 0.08, 0.25], [0.8, 0.45, 0.12]], dtype=np.float32)
+        for brightness in (0.64, 1.25):
+            plan = _sample_plan(view_brightness=brightness)
+            ref = _reference_agx_core(rgb, plan)
+            out = apply_agx_core(rgb, plan)
+            np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5)
 
     def test_fast_does_not_mutate_input(self) -> None:
         plan = _sample_plan()

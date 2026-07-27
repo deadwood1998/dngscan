@@ -78,6 +78,8 @@ def _bundle() -> RawBundle:
         raw_pattern=[[0, 1], [3, 2]],
         camera_white_levels=[1000.0] * 4,
         clip_masks=np.linspace(0.0, 1.0, 8 * 8 * 3, dtype=np.float16).reshape(8, 8, 3),
+        scene_scale_mode="measured",
+        scene_opcode_names=("WarpRectilinear", "GainMap"),
     )
 
 
@@ -105,11 +107,40 @@ class PreviewCacheTest(unittest.TestCase):
         np.testing.assert_array_equal(restored.bundle.clip_masks, entry.bundle.clip_masks)
         self.assertEqual(restored.analysis.labels, entry.analysis.labels)
         self.assertEqual(restored.analysis.channel_thresholds, entry.analysis.channel_thresholds)
+        self.assertEqual(restored.bundle.scene_scale_mode, "measured")
+        self.assertEqual(
+            restored.bundle.scene_opcode_names, ("WarpRectilinear", "GainMap")
+        )
         assert restored.bundle.raw_guidance is not None
         np.testing.assert_array_equal(
             restored.bundle.raw_guidance.clip_class,
             entry.bundle.raw_guidance.clip_class,
         )
+
+    def test_raw9_signed_half_proxy_round_trip(self) -> None:
+        bundle = _bundle()
+        bundle.scene_decoder = "coreimage"
+        bundle.scene_scale = 1.0
+        bundle.render_scale = 1.0
+        bundle.clip_masks = None
+        bundle.scene_rec2020_render = np.linspace(
+            -0.25, 2.5, 8 * 8 * 3, dtype=np.float16
+        ).reshape(8, 8, 3)
+        entry = build_proxy_entry(bundle, _analysis())
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "raw9.npz"
+            _write_disk_entry(cache_path, entry)
+            restored = _read_disk_entry(
+                cache_path, Path("synthetic.dng"), require_guidance=False
+            )
+
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.bundle.scene_rec2020_render.dtype, np.float16)
+        self.assertEqual(restored.bundle.scene_scale, 1.0)
+        self.assertLess(float(restored.bundle.scene_rec2020_render.min()), 0.0)
+        self.assertGreater(float(restored.bundle.scene_rec2020_render.max()), 1.0)
 
 
 if __name__ == "__main__":

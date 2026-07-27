@@ -16,7 +16,11 @@
 namespace dngscan_fast {
 namespace {
 
-constexpr float REC2020_Y[3] = {0.2627f, 0.6780f, 0.0593f};
+constexpr float AGX_OPPONENT_Y[3] = {
+    0.2658180370250449f,
+    0.59846986045365f,
+    0.1357121025213052f,
+};
 constexpr float MID_GRAY = 0.18f;
 
 constexpr float PUNCH_CHROMA_MAX = 1.5f;
@@ -87,10 +91,10 @@ inline float nan_to_num(float v, float nan_val, float posinf_val, float neginf_v
 }
 
 Rgb compress_into_gamut(const Rgb& rgb) {
-  const float input_y = dot3(REC2020_Y, rgb);
+  const float input_y = dot3(AGX_OPPONENT_Y, rgb);
   const float max_rgb = max3(rgb.r, rgb.g, rgb.b);
   const Rgb opponent{max_rgb - rgb.r, max_rgb - rgb.g, max_rgb - rgb.b};
-  const float opponent_y = dot3(REC2020_Y, opponent);
+  const float opponent_y = dot3(AGX_OPPONENT_Y, opponent);
   const float max_opponent = max3(opponent.r, opponent.g, opponent.b);
   const float y_compensate_negative = max_opponent - opponent_y + input_y;
 
@@ -103,8 +107,8 @@ Rgb compress_into_gamut(const Rgb& rgb) {
       max_offset - rgb_offset.b,
   };
   const float max_inverse = max3(opponent_offset.r, opponent_offset.g, opponent_offset.b);
-  const float y_inverse = dot3(REC2020_Y, opponent_offset);
-  float y_new = dot3(REC2020_Y, rgb_offset);
+  const float y_inverse = dot3(AGX_OPPONENT_Y, opponent_offset);
+  float y_new = dot3(AGX_OPPONENT_Y, rgb_offset);
   y_new = max_inverse - y_inverse + y_new;
 
   float ratio = 1.0f;
@@ -216,11 +220,11 @@ Rgb hsv_to_rgb(float h, float s, float v) {
   }
 }
 
-Rgb mix_hue(const Rgb& rgb_linear, float pre_hue, float keep) {
+Rgb mix_hue(const Rgb& rgb_linear, float pre_hue, float restore) {
   const float post_hue = rgb_to_hue(rgb_linear);
   float delta = post_hue - pre_hue;
   delta -= std::nearbyintf(delta);
-  const float restored = std::fmod(pre_hue + keep * delta, 1.0f);
+  const float restored = std::fmod(pre_hue + (1.0f - restore) * delta, 1.0f);
   const float maxc = max3(rgb_linear.r, rgb_linear.g, rgb_linear.b);
   const float minc = min3(rgb_linear.r, rgb_linear.g, rgb_linear.b);
   float sat = 0.0f;
@@ -294,7 +298,7 @@ Rgb process_pixel(const Rgb& input, const NativeAgxPlan& plan) {
   Rgb rgb = compress_into_gamut(input);
   Rgb inset = mat3(plan.inset, rgb);
 
-  const bool restore_hue = plan.hue_keep < 0.999f;
+  const bool restore_hue = plan.hue_restore > 1e-6f;
   float pre_hue = 0.0f;
   if (restore_hue) {
     const Rgb inset_nonneg{
@@ -307,13 +311,15 @@ Rgb process_pixel(const Rgb& input, const NativeAgxPlan& plan) {
 
   Rgb linear = apply_c1_endpoints_rgb(inset, plan.curve);
   if (std::abs(plan.view_brightness - 1.0f) > 1e-6f) {
-    linear.r = std::pow(std::max(linear.r, 0.0f), 1.0f / plan.view_brightness);
-    linear.g = std::pow(std::max(linear.g, 0.0f), 1.0f / plan.view_brightness);
-    linear.b = std::pow(std::max(linear.b, 0.0f), 1.0f / plan.view_brightness);
+    const float brightness = std::max(plan.view_brightness, EPS);
+    const float power = brightness < 1.0f ? 1.0f / std::sqrt(brightness) : 1.0f / brightness;
+    linear.r = std::pow(std::max(linear.r, 0.0f), power);
+    linear.g = std::pow(std::max(linear.g, 0.0f), power);
+    linear.b = std::pow(std::max(linear.b, 0.0f), power);
   }
 
   if (restore_hue) {
-    linear = mix_hue(linear, pre_hue, plan.hue_keep);
+    linear = mix_hue(linear, pre_hue, plan.hue_restore);
   }
 
   Rgb mapped = mat3(plan.outset, linear);

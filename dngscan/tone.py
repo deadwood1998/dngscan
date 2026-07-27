@@ -88,6 +88,33 @@ def subsample_step(pixel_count: int, max_samples: int = 800_000) -> int:
     return max(1, int(math.ceil(pixel_count / max_samples)))
 
 
+def rank_trim_reconstructed_highlights(
+    ev: Any, valid: Any, clipped_cell_pct: float
+) -> Any:
+    """Exclude a RAW-measured fraction of the brightest reconstructed samples.
+
+    Core Image applies DNG warps, so LibRaw's CFA clip mask cannot be mapped to its
+    pixels without a calibrated geometric transform. The aggregate clipped-cell rate is
+    still valid. Removing that fraction from the top of the luminance ranking restores
+    the body/tail contract without pretending that the two frames align spatially.
+    """
+    values = np.asarray(ev, dtype=np.float32)
+    keep = np.asarray(valid, dtype=bool).copy()
+    indices = np.flatnonzero(keep)
+    if indices.size == 0:
+        return keep
+    fraction = clamp_float(float(clipped_cell_pct) / 100.0, 0.0, 1.0)
+    trim_count = int(math.ceil(indices.size * fraction))
+    min_keep = max(256, indices.size // 20)
+    trim_count = min(trim_count, max(0, indices.size - min_keep))
+    if trim_count <= 0:
+        return keep
+    ranked = values[indices]
+    top = np.argpartition(ranked, ranked.size - trim_count)[-trim_count:]
+    keep[indices[top]] = False
+    return keep
+
+
 def tone_plan_sample_scene_rec2020(
     bundle: RawBundle,
     max_samples: int = 800_000,
@@ -153,6 +180,11 @@ def scene_tone_metrics(
     if getattr(bundle, "clip_masks", None) is not None:
         masks = retreat_engine.clip_masks_for_shape(bundle, bundle.scene_rec2020_render.shape[:2])
         reliable &= np.max(masks.reshape(-1, 3)[::step], axis=1) < np.float32(0.10)
+    elif getattr(bundle, "scene_decoder", "libraw") == "coreimage":
+        # RAW 9's reconstructed highlight pixels are geometrically warped relative to
+        # the CFA mosaic. Use the full-resolution RAW clipped-cell rate as a rank-domain
+        # constraint so those invented values cannot compile the global white endpoint.
+        reliable = rank_trim_reconstructed_highlights(ev, reliable, analysis.cell_union_pct)
     if int(np.count_nonzero(reliable)) < max(256, ev.size // 20):
         reliable = above_floor if int(np.count_nonzero(above_floor)) >= 256 else np.ones_like(above_floor)
     reliable_ev = ev[reliable]
@@ -240,7 +272,7 @@ def build_tone_compression_plan(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     plan_exposure_gain: float | None = None,
     scene_metrics: SceneToneMetrics | None = None,
 ) -> ToneCompressionPlan:
@@ -342,10 +374,9 @@ def build_tone_compression_plan(
 
     negative_rgb_pct = float(np.mean(np.min(rgb, axis=1) < -GAMUT_EPS) * 100.0)
     over_rgb_pct = float(np.mean(np.max(rgb, axis=1) > 1.0 + GAMUT_EPS) * 100.0)
-    # The public default follows darktable smooth geometry and preserve_hue=0.6.
-    # The three Blender-reference geometries retain Blender's 0.4 hue mix so their
-    # comparison remains a coherent alternate reference rather than a hybrid preset.
-    hue_keep = 0.4 if agx_primaries in ("base", "punchy", "muted") else 0.6
+    # The pinned darktable scene default uses Blender-like/base geometry with 60% hue
+    # restoration. Its sigmoid-like smooth preset deliberately disables hue restoration.
+    hue_restore = 0.0 if agx_primaries == "smooth" else 0.6
 
     return ToneCompressionPlan(
         target_gamut=target_gamut,
@@ -371,7 +402,7 @@ def build_tone_compression_plan(
         target_black_linear=target_black_linear,
         target_white_linear=1.0,
         agx_primaries=agx_primaries,
-        hue_keep=hue_keep,
+        hue_restore=hue_restore,
         toe_start_ev=toe_start_ev,
         shoulder_start_ev=shoulder_start_ev,
         use_c1_endpoints=True,
@@ -454,7 +485,7 @@ def build_render_plan(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
 ) -> RenderPlan:
     """Compile independent scene, tone and colour plans from an immutable capture."""
@@ -486,10 +517,10 @@ def build_render_plan(
         punch_scale=punch_scale if mode == "agx" else 0.0,
         tone_core=tone_core,
         lum_norm=lum_norm,
-        # RAW-gated rendering is deliberately tied to darktable's smooth geometry.
-        # Blender-family primaries are explicit reference variants for the full-frame
-        # AgX core only; they must not silently define the RAW evidence path.
-        agx_primaries=agx_primaries if mode == "agx" and tone_core == "agx" else "smooth",
+        # RAW-gated rendering uses the same pinned darktable scene-default geometry as
+        # full-frame AgX. RAW evidence changes permission to use that color path, not the
+        # definition of the path itself.
+        agx_primaries=agx_primaries if mode == "agx" and tone_core == "agx" else "base",
         plan_exposure_gain=plan_gain,
         scene_metrics=scene,
     )
@@ -511,7 +542,7 @@ def plan_for_mode(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
 ) -> ToneCompressionPlan:
     """Compatibility accessor for callers that only need the tone sub-plan."""

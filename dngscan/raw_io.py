@@ -8,6 +8,7 @@ from typing import Any
 from ._deps import np, rawpy
 from . import metadata as dng_metadata
 from .constants import (
+    COREIMAGE_SCALE_DEFAULT_MODE,
     DECODER_CHOICES,
     DEMOSAIC_AUTO_PREFERENCE,
     DEMOSAIC_CHOICES,
@@ -53,6 +54,34 @@ def wb_postprocess_kwargs(wb_mode: str, daylight_wb: list[float] | None) -> dict
     return {"use_camera_wb": True}
 
 
+def libraw_wb_headroom_gain(wb_values: list[float] | None) -> float:
+    """Container headroom LibRaw reserves for non-clipping highlight modes.
+
+    With blend/reconstruct, LibRaw divides the whole post-WB image by the largest
+    normalized WB multiplier so the boosted channel can be reconstructed above nominal
+    sensor white without overflowing uint16. That is storage scaling, not exposure.
+    """
+    if not wb_values:
+        return 1.0
+    values = np.asarray(wb_values[:4], dtype=np.float64)
+    values = values[np.isfinite(values) & (values > 0.0)]
+    if values.size == 0:
+        return 1.0
+    normalized = values / max(float(np.min(values)), 1e-12)
+    return float(max(1.0, np.max(normalized)))
+
+
+def libraw_scene_scale(
+    encoded_max: float,
+    highlight_mode_name: str,
+    wb_values: list[float] | None,
+) -> float:
+    """Decode uint16 code values into one exposure unit independent of highlight mode."""
+    if highlight_mode_name == "clip":
+        return float(encoded_max)
+    return float(encoded_max) / libraw_wb_headroom_gain(wb_values)
+
+
 def scene_rec2020_to_xyz_render(scene_rec2020: Any, scene_scale: float) -> Any:
     """Derive XYZ render buffer from a single Rec.2020 demosaic (same geometry as scene)."""
     from .color import rec2020_to_xyz
@@ -68,8 +97,9 @@ def scene_rec2020_to_xyz_render(scene_rec2020: Any, scene_scale: float) -> Any:
             # analysis buffer, but never materialize a full-frame float64 RGB copy.
             linear = flat[start:end].astype(np.float64) / float(scene_scale)
             xyz = rec2020_to_xyz(linear)
+            max_linear = float(np.iinfo(out.dtype).max) / float(scene_scale)
             out[start:end] = (
-                np.clip(xyz, 0.0, 1.0) * float(scene_scale)
+                np.clip(xyz, 0.0, max_linear) * float(scene_scale)
             ).astype(np.uint16)
         return out.reshape(scene.shape)
     xyz = rec2020_to_xyz(scene.reshape(-1, 3)).reshape(scene.shape)
@@ -94,6 +124,7 @@ def render_to_xyz(
         half_size=half_size,
         demosaic_algorithm=(None if half_size else demosaic),
         no_auto_bright=True,
+        adjust_maximum_thr=0.0,
         highlight_mode=rawpy_highlight_mode(highlight_mode_name),
         output_bps=16,
         user_flip=0,
@@ -146,6 +177,7 @@ def render_to_scene_rec2020(
         half_size=half_size,
         demosaic_algorithm=(None if half_size else demosaic),
         no_auto_bright=True,
+        adjust_maximum_thr=0.0,
         highlight_mode=rawpy_highlight_mode(highlight_mode_name),
         output_bps=16,
         user_flip=None,
@@ -158,6 +190,7 @@ def render_to_srgb8(raw: Any, highlight_mode_name: str = "clip") -> Any:
         output_color=rawpy.ColorSpace.sRGB,
         gamma=(2.222, 4.5),
         no_auto_bright=True,
+        adjust_maximum_thr=0.0,
         use_camera_wb=True,
         highlight_mode=rawpy_highlight_mode(highlight_mode_name),
         output_bps=8,
@@ -359,7 +392,7 @@ def load_raw(
     wb_mode: str = "camera",
     decoder: str = "libraw",
     coreimage_version: str = "auto",
-    coreimage_scale: str = "measured",
+    coreimage_scale: str = COREIMAGE_SCALE_DEFAULT_MODE,
 ) -> RawBundle:
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
@@ -377,6 +410,11 @@ def load_raw(
     evidence_shape: tuple[int, int] | None = None
     scene_geometry_crop: tuple[float, float, float, float] | None = None
     scene_geometry_corr: float | None = None
+    scene_rec2020_render: Any | None = None
+    xyz_render: Any | None = None
+    scene_scale = 1.0
+    render_scale = 1.0
+    clip_masks: Any | None = None
 
     try:
         with rawpy.imread(str(path)) as raw:
@@ -395,7 +433,6 @@ def load_raw(
 
             daylight_attr = getattr(raw, "daylight_whitebalance", None)
             daylight_wb = [float(v) for v in daylight_attr] if daylight_attr is not None else None
-            wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb)
 
             # Capture the CFA pattern BEFORE postprocess: libraw mutates raw_pattern
             # during demosaic on some sensors (X-Trans collapses 6x6 -> [[6]]), which
@@ -406,20 +443,6 @@ def load_raw(
             else:
                 raw_pattern = np.asarray(raw_pattern_arr).astype(int).tolist()
 
-            demosaic_alg = resolve_demosaic_algorithm(raw, demosaic)
-            scene_rec2020_render = render_to_scene_rec2020(
-                raw, scene_highlight_mode, scene_half_size, demosaic_alg, wb_kwargs
-            )
-            if scene_rec2020_render.ndim != 3 or scene_rec2020_render.shape[2] < 3:
-                raise RuntimeError("scene Rec.2020 render did not produce a 3-channel image")
-
-            if np.issubdtype(scene_rec2020_render.dtype, np.integer):
-                scene_scale = float(np.iinfo(scene_rec2020_render.dtype).max)
-            else:
-                scene_scale = 1.0
-            xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
-            render_scale = scene_scale
-
             black_attr = getattr(raw, "black_level_per_channel", None)
             wb_attr = getattr(raw, "camera_whitebalance", None)
             white_pc_attr = getattr(raw, "camera_white_level_per_channel", None)
@@ -428,18 +451,38 @@ def load_raw(
             camera_wb = list(wb_attr) if wb_attr is not None else []
             camera_white_levels = list(white_pc_attr) if white_pc_attr is not None else []
             color_desc = decode_color_desc(getattr(raw, "color_desc", ""))
-            clip_masks = build_clip_masks(
-                raw_image,
-                raw_colors,
-                color_desc,
-                white_level,
-                [float(x) for x in black_levels],
-                [float(x) for x in camera_white_levels],
-                orientation_flip,
-                scene_rec2020_render.shape[:2],
-                raw_pattern,
-            )
-            evidence_shape = (int(scene_rec2020_render.shape[0]), int(scene_rec2020_render.shape[1]))
+            if decoder == "libraw":
+                wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb)
+                demosaic_alg = resolve_demosaic_algorithm(raw, demosaic)
+                scene_rec2020_render = render_to_scene_rec2020(
+                    raw, scene_highlight_mode, scene_half_size, demosaic_alg, wb_kwargs
+                )
+                if scene_rec2020_render.ndim != 3 or scene_rec2020_render.shape[2] < 3:
+                    raise RuntimeError("scene Rec.2020 render did not produce a 3-channel image")
+
+                if np.issubdtype(scene_rec2020_render.dtype, np.integer):
+                    encoded_max = float(np.iinfo(scene_rec2020_render.dtype).max)
+                    applied_wb = daylight_wb if wb_mode == "daylight" else camera_wb
+                    scene_scale = libraw_scene_scale(
+                        encoded_max, scene_highlight_mode, applied_wb
+                    )
+                xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
+                render_scale = scene_scale
+                clip_masks = build_clip_masks(
+                    raw_image,
+                    raw_colors,
+                    color_desc,
+                    white_level,
+                    [float(x) for x in black_levels],
+                    [float(x) for x in camera_white_levels],
+                    orientation_flip,
+                    scene_rec2020_render.shape[:2],
+                    raw_pattern,
+                )
+                evidence_shape = (
+                    int(scene_rec2020_render.shape[0]),
+                    int(scene_rec2020_render.shape[1]),
+                )
     except FileNotFoundError:
         raise
     except Exception as exc:
@@ -466,9 +509,7 @@ def load_raw(
                 coreimage_scale
             ),
         )
-        scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_u16(
-            ci_float, scene_scale
-        )
+        scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_half(ci_float)
         xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
         render_scale = scene_scale
         scene_decoder = "coreimage"
@@ -487,6 +528,9 @@ def load_raw(
         evidence_shape = None
         scene_geometry_crop = None
 
+    if scene_rec2020_render is None or xyz_render is None:
+        raise RuntimeError("scene decoder did not produce a render buffer")
+
     return RawBundle(
         path=path,
         raw_image=raw_image,
@@ -501,7 +545,9 @@ def load_raw(
         color_desc=color_desc,
         raw_pattern=raw_pattern,
         camera_white_levels=[float(x) for x in camera_white_levels],
-        scene_highlight_mode=scene_highlight_mode,
+        # RAW 9 has one calibrated reconstruction path. LibRaw's clip/blend/gated
+        # selector does not map onto CIRAWFilter and must not be reported as if it did.
+        scene_highlight_mode=("reconstruct" if decoder == "coreimage" else scene_highlight_mode),
         orientation_flip=orientation_flip,
         wb_mode=wb_mode,
         daylight_wb=daylight_wb,

@@ -368,7 +368,7 @@ def export_ultrahdr_jpeg(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     punch_scale: float = 1.0,
 ) -> bool:
     output_gamut = "p3"
@@ -427,7 +427,7 @@ def export_srgb_jpeg(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     return_rgb: bool = False,
 ) -> Any:
     try:
@@ -463,7 +463,7 @@ def export_jpeg(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     punch_scale: float = 1.0,
     return_rgb: bool = False,
 ) -> Any:

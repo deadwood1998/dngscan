@@ -19,7 +19,7 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 2
+PREVIEW_CACHE_VERSION = 4
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
 
@@ -75,8 +75,8 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v2"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v2"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v3"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v3"
 
 
 def _cache_identity(
@@ -136,6 +136,8 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
         "shot_iso": bundle.shot_iso,
         "scene_decoder": str(getattr(bundle, "scene_decoder", "libraw") or "libraw"),
         "scene_decoder_version": getattr(bundle, "scene_decoder_version", None),
+        "scene_scale_mode": getattr(bundle, "scene_scale_mode", None),
+        "scene_opcode_names": list(getattr(bundle, "scene_opcode_names", ()) or ()),
         "evidence_shape": (
             [int(v) for v in bundle.evidence_shape]
             if getattr(bundle, "evidence_shape", None) is not None
@@ -187,6 +189,8 @@ def _bundle_from_cache(
         ),
         scene_decoder=str(metadata.get("scene_decoder", "libraw") or "libraw"),
         scene_decoder_version=metadata.get("scene_decoder_version"),
+        scene_scale_mode=metadata.get("scene_scale_mode"),
+        scene_opcode_names=tuple(metadata.get("scene_opcode_names", ()) or ()),
         evidence_shape=(
             (int(evidence_shape[0]), int(evidence_shape[1]))
             if evidence_shape is not None
@@ -368,6 +372,8 @@ class PreviewCache:
         decoder: str = "libraw",
         coreimage_version: str = "auto",
     ) -> PreviewEntry:
+        if decoder == "coreimage":
+            highlight = "reconstruct"
         key, digest = _cache_identity(path, highlight, wb, decoder, coreimage_version)
         with self.lock:
             cached = self.entries.get(key)

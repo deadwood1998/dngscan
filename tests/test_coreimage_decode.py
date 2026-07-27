@@ -13,6 +13,7 @@ from dngscan.retreat import clip_masks_for_shape, resize_clip_masks
 
 PICTURES = Path("/Users/itoshikigen/Pictures")
 SIGMA_DNG = PICTURES / "_SDI0150.DNG"
+SIGMA_VERTICAL_DNG = PICTURES / "_SDI0165.DNG"
 FUJI_RAF = PICTURES / "DSCF0614.RAF"
 
 
@@ -33,6 +34,33 @@ class CoreImageDecodeImportTests(unittest.TestCase):
 
         importlib.reload(coreimage_decode)
         self.assertIsInstance(coreimage_decode.available(), bool)
+
+    def test_signed_half_handoff_preserves_extended_range(self) -> None:
+        source = np.asarray(
+            [[[-0.25, 0.18, 2.5], [np.nan, np.inf, -np.inf]]], dtype=np.float32
+        )
+        scene, scale = coreimage_decode.scene_float_to_half(source)
+        self.assertEqual(scene.dtype, np.float16)
+        self.assertEqual(scale, 1.0)
+        self.assertAlmostEqual(float(scene[0, 0, 0]), -0.25, places=3)
+        self.assertAlmostEqual(float(scene[0, 0, 2]), 2.5, places=3)
+        self.assertEqual(float(scene[0, 1, 0]), 0.0)
+        self.assertGreater(float(scene[0, 1, 1]), 1.0)
+        self.assertLess(float(scene[0, 1, 2]), 0.0)
+
+    def test_preview_scale_targets_1280_long_edge(self) -> None:
+        class Size:
+            width = 6000
+            height = 4000
+
+        class Filter:
+            @staticmethod
+            def nativeSize():
+                return Size()
+
+        self.assertAlmostEqual(
+            coreimage_decode.preview_scale_factor(Filter()), 1280.0 / 6000.0
+        )
 
 
 class CoreImageVersionTests(unittest.TestCase):
@@ -83,6 +111,30 @@ class CoreImageLiveTests(unittest.TestCase):
         ratio = float(np.median(b[mask] / np.maximum(a[mask], 1e-8)))
         self.assertAlmostEqual(ratio, 2.0, delta=0.02)
 
+    def test_preview_decode_is_signed_half_at_proxy_resolution(self) -> None:
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        rgb, info = coreimage_decode.decode_scene_rec2020(
+            SIGMA_DNG, half_size=True, version="auto", scale_compensation=1.0
+        )
+        self.assertEqual(rgb.dtype, np.float16)
+        self.assertLessEqual(max(rgb.shape[:2]), coreimage_decode.COREIMAGE_PREVIEW_LONG_EDGE + 1)
+        self.assertGreater(float(np.max(rgb)), 1.0)
+        self.assertTrue(bool(info["highlight_recovery"]))
+        self.assertTrue(bool(info["lens_correction"]))
+
+    def test_vertical_raw9_proxy_is_already_upright(self) -> None:
+        _skip_unless_available()
+        if not SIGMA_VERTICAL_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_VERTICAL_DNG}")
+        from dngscan.raw_io import load_raw
+
+        bundle = load_raw(SIGMA_VERTICAL_DNG, scene_half_size=True, decoder="coreimage")
+        height, width = bundle.scene_rec2020_render.shape[:2]
+        self.assertGreater(height, width)
+        self.assertIn(bundle.orientation_flip, (5, 6, 7, 8))
+
     def test_separate_pipeline_drops_cfa_masks_and_scales(self) -> None:
         """Strict Core Image pipeline: no per-pixel CFA evidence, correct scale.
 
@@ -101,13 +153,14 @@ class CoreImageLiveTests(unittest.TestCase):
         self.assertIsNotNone(libraw.clip_masks)
         self.assertIsNone(ci_bundle.clip_masks)
         self.assertEqual(ci_bundle.scene_decoder, "coreimage")
+        self.assertEqual(ci_bundle.scene_highlight_mode, "reconstruct")
+        self.assertEqual(ci_bundle.scene_rec2020_render.dtype, np.float16)
+        self.assertEqual(ci_bundle.scene_scale, 1.0)
         self.assertIn("WarpRectilinear", ci_bundle.scene_opcode_names)
         # Aggregate (geometry-free) RAW facts survive: same mosaic, same levels.
         self.assertEqual(int(ci_bundle.white_level), int(libraw.white_level))
         self.assertEqual(list(ci_bundle.black_levels), list(libraw.black_levels))
         # Scale compensation keeps both decoders on the same exposure anchor.
-        import numpy as np
-
         def mid_median(bundle):
             arr = np.asarray(bundle.scene_rec2020_render, dtype=np.float32) / float(bundle.scene_scale)
             y = 0.2627 * arr[:, :, 0] + 0.6780 * arr[:, :, 1] + 0.0593 * arr[:, :, 2]
@@ -192,7 +245,7 @@ class DecoderGuardTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse_args(["photo.dng", "--jpeg", "out.jpg", "--coreimage-scale", "unity"])
 
-    def test_scale_modes_are_distinct_and_default_is_measured(self) -> None:
+    def test_scale_modes_are_distinct_and_default_is_unity(self) -> None:
         """Both alignments must be reachable, and they must actually differ: the point of
         the option is to make the fitted correction falsifiable against unity."""
         from dngscan.cli import parse_args
@@ -207,7 +260,26 @@ class DecoderGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             coreimage_decode.scale_compensation_for_mode("nope")
         args = parse_args(["photo.dng", "--jpeg", "out.jpg", "--decoder", "coreimage"])
-        self.assertEqual(args.coreimage_scale, "measured")
+        self.assertEqual(args.coreimage_scale, "unity")
+
+    def test_raw9_normalizes_libraw_only_controls(self) -> None:
+        from dngscan.cli import parse_args
+
+        args = parse_args(
+            [
+                "photo.dng",
+                "--jpeg",
+                "out.jpg",
+                "--decoder",
+                "coreimage",
+                "--highlight-mode",
+                "blend",
+                "--demosaic",
+                "dcb",
+            ]
+        )
+        self.assertEqual(args.highlight_mode, "reconstruct")
+        self.assertEqual(args.demosaic, "auto")
 
     def test_opcode_reader_is_best_effort(self) -> None:
         """Never fatal: a non-TIFF container just reports nothing."""

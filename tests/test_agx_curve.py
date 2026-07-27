@@ -2,15 +2,17 @@
 """AgX curve: inversion protection, adaptive pivot/gamma, target black, outset presets."""
 from __future__ import annotations
 
+import dataclasses
 import unittest
 
 import numpy as np
 
 from dngscan.agx import (
-    AGX_HUE_KEEP, AGX_INSET_REC2020, AGX_OUTSET_REC2020, AGX_PRIMARIES_PRESETS, MIN_SEGMENT_X,
+    AGX_HUE_RESTORE, AGX_INSET_REC2020, AGX_OUTSET_REC2020, AGX_PRIMARIES_PRESETS, MIN_SEGMENT_X,
     apply_core, apply_curve, compute_pivot_ev_offset, curve_params, formation_matrices,
-    matrices_for_preset,
+    look_brightness_power, matrices_for_preset,
 )
+from dngscan.models import Analysis, ToneCompressionPlan
 
 
 # The X-T2 greycard scene that originally collapsed the shoulder: narrow highlights,
@@ -20,6 +22,61 @@ NARROW_SCENE = dict(
     toe_power=1.23, shoulder_power=3.30,
     latitude_lo_ev=0.0, latitude_hi_ev=1.94,
 )
+
+
+def _compile_flat_plan(agx_primaries: str = "base") -> ToneCompressionPlan:
+    """Compile a real plan from a synthetic flat scene.
+
+    Anything asserting on a *default* has to come through the compiler, because the
+    compiler overrides several dataclass defaults per preset. A hand-built stub would
+    only re-assert whatever the stub itself declared.
+    """
+    from pathlib import Path
+
+    from dngscan.models import RawBundle
+    from dngscan.tone import build_tone_compression_plan, compute_exposure_gain
+
+    bundle = RawBundle(
+        path=Path("x.dng"),
+        raw_image=np.zeros((8, 8), dtype=np.uint16),
+        raw_colors=np.zeros((8, 8), dtype=np.uint8),
+        xyz_render=np.zeros((8, 8, 3), dtype=np.float32),
+        render_scale=65535.0,
+        scene_rec2020_render=np.full((8, 8, 3), 0.18, dtype=np.float32),
+        scene_scale=1.0,
+        white_level=16383,
+        black_levels=[1000.0, 1000.0, 1000.0],
+        camera_wb=[1.0, 1.0, 1.0, 0.0],
+        color_desc="RGB",
+        raw_pattern=[[0, 1], [1, 2]],
+        camera_white_levels=[16383, 16383, 16383],
+        exposure_gain=compute_exposure_gain("agx", 0.0),
+    )
+    return build_tone_compression_plan(
+        bundle, _flat_analysis(), "Rec2020", agx_primaries=agx_primaries
+    )
+
+
+def _flat_analysis() -> Analysis:
+    return Analysis(
+        channel_ids=[0, 1, 2], labels={0: "R", 1: "G", 2: "B"},
+        ceilings={0: 16383, 1: 16383, 2: 16383},
+        ceil_spike_counts={0: 0, 1: 0, 2: 0}, ceil_near_counts={0: 0, 1: 0, 2: 0},
+        ceil_spike_ok={0: True, 1: True, 2: True}, fullwell_channel_ids=[0, 1, 2],
+        fullwell_note="", saturation_levels={0: 16383, 1: 16383, 2: 16383},
+        channel_fullwell={0: 16383, 1: 16383, 2: 16383},
+        channel_thresholds={0: 16379, 1: 16379, 2: 16379},
+        fullwell=16383, threshold=16379,
+        clip_pct={0: 0.0, 1: 0.0, 2: 0.0}, cfa_cell_supported=True,
+        cell_union_pct=0.0, cell_ge2_of_clipped_pct=0.0,
+        cell_k_of_clipped_pct={}, cell_k_of_all_pct={},
+        ev_p1=-4.0, ev_raw_p1=-4.0, ev_median=0.0, ev_p99=2.0, ev_p999=2.5,
+        ev_dr_p1_p999=6.5, ev_floor_hit_pct=0.0, median_vs_gray_ev=0.0, median_y=0.18,
+        noise_floor=0.002, usable_dr_ev=8.0, snr_curves={}, snr1_dr={}, snr1_stop={},
+        gamut_out_pct={"sRGB": 0.0, "Display P3": 0.0, "Rec2020": 0.0},
+        bright_pixel_pct=0.0, survivor_channel="R", container_bits_est=14,
+        usable_dr_eff_ev=8.0,
+    )
 
 
 class _PlanStub:
@@ -32,7 +89,8 @@ class _PlanStub:
     latitude_hi_ev = 1.0
     punch_strength = 0.0
     tone_core = "agx"
-    agx_primaries = "smooth"
+    agx_primaries = "base"
+    hue_restore = 0.6
 
 
 class CurveInversionTest(unittest.TestCase):
@@ -100,6 +158,12 @@ class AdaptivePivotTest(unittest.TestCase):
         self.assertGreater(linear_slope(shifted), linear_slope(base))
 
 
+class ViewBrightnessTest(unittest.TestCase):
+    def test_darktable_piecewise_power(self) -> None:
+        self.assertAlmostEqual(look_brightness_power(1.25), 0.8)
+        self.assertAlmostEqual(look_brightness_power(0.64), 1.25)
+
+
 class TargetBlackTest(unittest.TestCase):
     def test_target_black_lifts_floor(self) -> None:
         p = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, target_black_linear=0.03)
@@ -120,10 +184,39 @@ class TargetBlackTest(unittest.TestCase):
 
 
 class OutsetPresetTest(unittest.TestCase):
-    def test_smooth_preset_matches_default_geometry(self) -> None:
-        inset, outset = matrices_for_preset("smooth")
+    def test_base_preset_matches_default_geometry(self) -> None:
+        inset, outset = matrices_for_preset("base")
         self.assertTrue(np.allclose(inset, AGX_INSET_REC2020))
         self.assertTrue(np.allclose(outset, AGX_OUTSET_REC2020))
+
+    def test_base_matrices_match_pinned_darktable_rec2020_geometry(self) -> None:
+        inset, outset = matrices_for_preset("base")
+        np.testing.assert_allclose(
+            inset,
+            np.asarray(
+                [
+                    [0.85655585, 0.09506743, 0.04837672],
+                    [0.13706229, 0.76123601, 0.10170170],
+                    [0.10984838, 0.07674446, 0.81340716],
+                ]
+            ),
+            rtol=0.0,
+            atol=2e-7,
+        )
+        np.testing.assert_allclose(
+            outset,
+            np.asarray(
+                [
+                    [1.12818374, -0.11152949, -0.01665424],
+                    [-0.13973488, 1.15638912, -0.01665424],
+                    [-0.13973488, -0.11152949, 1.25126437],
+                ]
+            ),
+            rtol=0.0,
+            atol=2e-7,
+        )
+        np.testing.assert_allclose(inset.sum(axis=1), 1.0, rtol=0.0, atol=2e-7)
+        np.testing.assert_allclose(outset.sum(axis=1), 1.0, rtol=0.0, atol=2e-7)
 
     def test_preset_purity_ordering_end_to_end(self) -> None:
         # Directional contract through the REAL pipeline path (left-multiply M @ v via
@@ -186,25 +279,36 @@ class OutsetPresetTest(unittest.TestCase):
             self.assertLess(float(out.max() - out.min()), 1e-2, msg=name)
 
 
-class HueKeepTest(unittest.TestCase):
-    def test_hue_keep_extremes_differ(self) -> None:
+class HueRestoreTest(unittest.TestCase):
+    def test_hue_restore_extremes_differ(self) -> None:
         rgb = np.asarray([[0.45, 0.08, 0.04]], dtype=np.float32)
         plan_lo = _PlanStub()
-        plan_lo.hue_keep = 0.0
+        plan_lo.hue_restore = 0.0
         plan_hi = _PlanStub()
-        plan_hi.hue_keep = 1.0
+        plan_hi.hue_restore = 1.0
         lo = apply_core(rgb, plan_lo, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
         hi = apply_core(rgb, plan_hi, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
         self.assertGreater(float(np.abs(lo - hi).max()), 1e-4)
 
-    def test_default_matches_explicit_darktable_hue_keep(self) -> None:
+    def test_compiled_default_renders_as_explicit_darktable_hue_restore(self) -> None:
+        """Compare a compiled plan against an explicit 0.6, not a stub against itself.
+
+        `_PlanStub` declares hue_restore = 0.6 of its own, so stub-vs-stub would pass
+        whatever the shipped default became. Driving one side through the compiler makes
+        the assertion depend on the value that actually renders.
+        """
         rgb = np.asarray([[0.45, 0.08, 0.04]], dtype=np.float32)
-        plan = _PlanStub()
-        plan_06 = _PlanStub()
-        plan_06.hue_keep = 0.6
-        a = apply_core(rgb, plan, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
-        b = apply_core(rgb, plan_06, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
+        compiled = _compile_flat_plan(agx_primaries="base")
+        explicit = dataclasses.replace(compiled, hue_restore=0.6)
+        inset, outset = formation_matrices(compiled)
+        a = apply_core(rgb, compiled, inset, outset)
+        b = apply_core(rgb, explicit, inset, outset)
         self.assertTrue(np.array_equal(a, b))
+        # And a different restore really does move the result, so equality means something.
+        other = dataclasses.replace(compiled, hue_restore=0.0)
+        self.assertGreater(
+            float(np.abs(apply_core(rgb, other, inset, outset) - a).max()), 1e-6
+        )
 
 
 class LookOverrideTest(unittest.TestCase):
@@ -212,18 +316,18 @@ class LookOverrideTest(unittest.TestCase):
         from dngscan import look as look_engine
 
         field = look_engine.LOOK_FIELDS["optic_warm_cyan"]
-        self.assertIsNone(field.agx_hue_keep)
+        self.assertIsNone(field.agx_hue_restore)
         optic = look_engine.agx_plan_overrides("optic_warm_cyan")
-        self.assertAlmostEqual(optic["hue_keep"], 0.52)
+        self.assertAlmostEqual(optic["hue_restore"], 0.52)
         self.assertEqual(look_engine.agx_plan_overrides("does_not_exist"), {})
 
         import dataclasses
 
-        faded = dataclasses.replace(field, agx_hue_keep=0.6, agx_target_black=0.025)
+        faded = dataclasses.replace(field, agx_hue_restore=0.6, agx_target_black=0.025)
         look_engine.LOOK_FIELDS["_test_faded"] = faded
         try:
             overrides = look_engine.agx_plan_overrides("_test_faded")
-            self.assertAlmostEqual(overrides["hue_keep"], 0.6)
+            self.assertAlmostEqual(overrides["hue_restore"], 0.6)
             self.assertAlmostEqual(overrides["target_black_linear"], 0.025)
         finally:
             del look_engine.LOOK_FIELDS["_test_faded"]
@@ -239,9 +343,50 @@ class PivotAutomationTest(unittest.TestCase):
         self.assertEqual(compute_pivot_ev_offset(0.5, -8.0, 4.0), 0.0)
 
 
-class HueKeepAnchorTest(unittest.TestCase):
-    def test_default_matches_darktable(self) -> None:
-        self.assertEqual(AGX_HUE_KEEP, 0.6)
+class HueRestoreAnchorTest(unittest.TestCase):
+    """Pin hue_restore at every layer that can decide it.
+
+    Three places carry the value and only one reaches a normal render, so a test on the
+    wrong one reads like a guard without being one. `_plan_hue_restore` prefers
+    `plan.hue_restore`, falls back to `1 - plan.hue_keep` for pre-rename objects, and
+    only then reaches `AGX_HUE_RESTORE` — which a real `ToneCompressionPlan` never does.
+    Setting the module constant to 0.61 leaves all 112 golden cases byte-identical, so
+    asserting on it alone would let the shipped default drift unnoticed.
+    """
+
+    def test_dataclass_default_is_darktable_restore(self) -> None:
+        self.assertEqual(ToneCompressionPlan.hue_restore, 0.6)
+
+    def test_compiled_plans_carry_the_per_preset_value(self) -> None:
+        """The compiler overrides the dataclass default per preset, so pin that too:
+        pinned darktable restores 60 % on its scene default and disables restoration
+        entirely on the sigmoid-like smooth geometry."""
+        for primaries, expected in (
+            ("base", 0.6),
+            ("punchy", 0.6),
+            ("muted", 0.6),
+            ("smooth", 0.0),
+        ):
+            with self.subTest(primaries=primaries):
+                plan = _compile_flat_plan(agx_primaries=primaries)
+                self.assertEqual(plan.agx_primaries, primaries)
+                self.assertAlmostEqual(plan.hue_restore, expected, places=9)
+
+    def test_constant_is_only_the_pre_rename_fallback(self) -> None:
+        """Objects predating the rename still resolve, and only they see the constant."""
+        from dngscan.agx import _plan_hue_restore
+
+        class _NoField:
+            pass
+
+        class _OldKeep:
+            hue_keep = 0.25
+
+        self.assertEqual(AGX_HUE_RESTORE, 0.6)
+        self.assertAlmostEqual(_plan_hue_restore(_NoField()), AGX_HUE_RESTORE, places=9)
+        # The rename inverted the meaning, so a legacy 0.25 "keep" is 0.75 "restore".
+        self.assertAlmostEqual(_plan_hue_restore(_OldKeep()), 0.75, places=9)
+        self.assertAlmostEqual(_plan_hue_restore(_compile_flat_plan()), 0.6, places=9)
 
 
 class TonePlanPivotTest(unittest.TestCase):

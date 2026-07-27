@@ -99,13 +99,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--ev",
         default="0",
-        help="手动曝光补偿（档），或 auto=按全图中位亮度计算 18%% 灰参考值（高光保护；仅显式指定时应用）",
+        help="手动曝光补偿（档），或 auto=按可靠 scene body 中位计算 18%% 灰参考（高光保护；仅显式指定时应用）",
     )
     parser.add_argument(
         "--highlight-mode",
         choices=("clip", "blend", "reconstruct"),
         default="clip",
-        help="JPEG 导出缓存的高光处理: clip=硬剪切；blend=libraw 高光混合；reconstruct=libraw 默认高光重建",
+        help="仅 LibRaw：高光处理 clip/blend/reconstruct；RAW 9 固定使用 Apple 高光重建",
     )
     parser.add_argument(
         "--grade",
@@ -151,8 +151,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--agx-primaries",
         choices=AGX_PRIMARIES_CLI_CHOICES,
-        default="smooth",
-        help="仅 tone-core=agx 的 AgX 高光原色几何：smooth=darktable 默认；base/punchy/muted=Blender 参考组。gated 固定使用 darktable smooth；别名 agx_blender_strong、agx_dt_smooth 等",
+        default="base",
+        help="仅 tone-core=agx 的 AgX 原色几何：base=固定版本 darktable scene 默认；smooth=darktable smooth；punchy/muted=纯度变化参考",
     )
     parser.add_argument(
         "--tone-core",
@@ -176,7 +176,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--demosaic",
         choices=DEMOSAIC_CHOICES,
         default="auto",
-        help="去马赛克插值算法（画质，非降噪；本工具不做任何降噪。仅全分辨率导出生效): auto=自动选最佳可用(DHT优先，非Bayer走原生)；其余为手动指定",
+        help="仅 LibRaw：去马赛克插值算法。RAW 9 使用 Apple 的 CoreML 去马赛克+降噪模型",
     )
     parser.add_argument(
         "--decoder",
@@ -195,9 +195,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=COREIMAGE_SCALE_CHOICES,
         default=None,
         help=(
-            "仅 --decoder coreimage：两条管线的曝光锚点对齐方式。"
-            f"measured=实测中位比 1/{COREIMAGE_SCALE_MEASURED_RATIO:.4f}（默认）；"
-            "unity=不补偿，主张两者本就一致。修正量(0.04EV)小于逐片离散(0.94~1.12)，两者供对比"
+            "仅 --decoder coreimage：scene-linear 固定缩放。"
+            "unity=不补偿（默认）；"
+            f"measured=保留旧版实测中位比 1/{COREIMAGE_SCALE_MEASURED_RATIO:.4f}，仅供复现旧 A/B"
         ),
     )
     parser.add_argument(
@@ -244,6 +244,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "（Core Image 执行 DNG opcode，几何与 LibRaw 不可对齐）。"
             "请改用 --tone-core agx/lum/neutral，或改回 --decoder libraw"
         )
+    if args.decoder == "coreimage":
+        # CIRAWFilter exposes one calibrated reconstruction path, not LibRaw's three
+        # highlight policies. Keep cache keys and reports honest about what was run.
+        args.highlight_mode = "reconstruct"
+        args.demosaic = "auto"
     return args
 
 

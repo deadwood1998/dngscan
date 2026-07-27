@@ -217,7 +217,7 @@ def print_report(
             opcodes = tuple(getattr(bundle, "scene_opcode_names", ()) or ())
             opcode_note = f"，已执行 DNG opcode: {'/'.join(opcodes)}" if opcodes else ""
             scale_mode = getattr(bundle, "scene_scale_mode", None)
-            scale_note = f"，曝光锚点对齐={scale_mode}" if scale_mode else ""
+            scale_note = f"，scene 尺度={scale_mode}" if scale_mode else ""
             decoder_label = (
                 f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
                 f"{opcode_note}{scale_note}）"
@@ -247,11 +247,15 @@ def print_report(
             f"质量={jpeg_quality}；"
             f"ICC={'已嵌入' if jpeg_icc_embedded else '未嵌入'}"
         )
-        anchored = analysis.median_vs_gray_ev + math.log2(max(bundle.exposure_gain, EPS))
-        print(
-            f"中灰锚定校验: 锚定后画面中位亮度相对 18% 灰 {anchored:+.2f} EV"
-            + ("（暗调场景，符合拍摄意图即可）" if anchored < -1.0 and auto_ev is None else "")
-        )
+        if auto_ev is not None:
+            anchored = auto_ev.anchored_median_ev
+            print(f"亮度参考校验: 可靠 scene body 中位相对 18% 灰 {anchored:+.2f} EV")
+        else:
+            anchored = analysis.median_vs_gray_ev + math.log2(max(bundle.exposure_gain, EPS))
+            print(
+                f"RAW 统计校验: CFA 中位亮度相对 18% 灰 {anchored:+.2f} EV"
+                + ("（暗调场景，符合拍摄意图即可）" if anchored < -1.0 else "")
+            )
         if auto_ev is not None:
             limit_note = (
                 f"；高光限制，参考目标 {auto_ev.ev_median_target:+.2f} EV"
@@ -311,13 +315,13 @@ def jpeg_tone_plan_cn(
         extras = []
         if abs(plan.pivot_ev_offset) > 1e-3:
             extras.append(f"pivot={plan.pivot_ev_offset:+.2f}EV")
-        if abs(plan.hue_keep - 0.6) > 1e-3:
-            extras.append(f"hue_keep={plan.hue_keep:.2f}")
+        if abs(plan.hue_restore - 0.6) > 1e-3:
+            extras.append(f"hue_restore={plan.hue_restore:.2f}")
         if plan.target_black_linear > 1e-4:
             extras.append(f"lift黑={plan.target_black_linear:.3f}")
         if plan.target_white_linear < 1.0 - 1e-4:
             extras.append(f"褪白={plan.target_white_linear:.3f}")
-        if getattr(plan, "agx_primaries", "smooth") != "smooth":
+        if getattr(plan, "agx_primaries", "base") != "base":
             extras.append(f"primaries={plan.agx_primaries}")
         extra_text = ("；" + "，".join(extras)) if extras else ""
         return (

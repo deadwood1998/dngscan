@@ -227,7 +227,7 @@ def estimate_ev_headroom(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: dg.RenderAdjustments | None = None,
 ) -> dict[str, float | str]:
     if analysis is None:
@@ -359,7 +359,7 @@ def parse_tone_core(params: dict) -> tuple[str, str]:
 
 
 def parse_agx_primaries(params: dict) -> str:
-    value = str(params.get("agxPrimaries", params.get("agx_primaries", "smooth")))
+    value = str(params.get("agxPrimaries", params.get("agx_primaries", "base")))
     resolved = dg.agx_engine.resolve_agx_primaries(value)
     if resolved not in dg.agx_engine.AGX_PRIMARIES_PRESETS:
         raise ValueError(f"未知 AgX 基调：{value}")
@@ -402,13 +402,15 @@ def export_preview_jpeg(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     cached: PreviewEntry | None = None,
     adjustments: dg.RenderAdjustments | None = None,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
 ) -> dict:
     dg.require_dependencies()
+    if decoder == "coreimage":
+        highlight = "reconstruct"
     if cached is None:
         cached = PREVIEW_STORE.get(
             inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
@@ -474,6 +476,8 @@ def run_preview(params: dict) -> dict:
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    if decoder == "coreimage":
+        highlight = "reconstruct"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
@@ -534,6 +538,8 @@ def prepare_preview(params: dict) -> dict:
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    if decoder == "coreimage":
+        highlight = "reconstruct"
     tone_core, _ = parse_tone_core(params)
     # Do not compete with the full-resolution export worker for memory bandwidth.
     with RENDER_LOCK:
@@ -554,13 +560,13 @@ def export_suffix_parts(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
 ) -> str:
     """Build the filename stem suffix for GUI JPEG/PNG exports."""
     parts = [tone_core]
     if tone_core == "lum" and lum_norm != "y":
         parts.append(lum_norm)
-    if tone_core == "agx" and agx_primaries != "smooth":
+    if tone_core == "agx" and agx_primaries != "base":
         parts.append(agx_primaries)
     if highlight != "clip":
         parts.append(highlight)
@@ -593,6 +599,9 @@ def run_export(params: dict) -> dict:
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    if decoder == "coreimage":
+        highlight = "reconstruct"
+        demosaic = "auto"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)

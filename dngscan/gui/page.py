@@ -99,7 +99,7 @@ button.preview:disabled{opacity:.5;cursor:default}
         <button type="button" data-ev="0"><span class="m">0.00</span></button>
         <button type="button" data-ev="0.50"><span class="m">+0.50</span></button>
         <button type="button" data-ev="1.00"><span class="m">+1.00</span></button>
-        <button type="button" id="evReferenceBtn" title="将全图中位亮度对齐 18% 灰，并限制高光溢出。"><span class="m">亮度参考</span></button>
+        <button type="button" id="evReferenceBtn" title="将可靠主体中位对齐 18% 灰，并限制高光溢出。"><span class="m">亮度参考</span></button>
       </div>
     </div>
   </div>
@@ -156,10 +156,10 @@ button.preview:disabled{opacity:.5;cursor:default}
     <div id="agxPrimariesBlock" style="flex:1;min-width:150px">
       <label>AgX 色彩路径</label>
       <select id="agxPrimaries" title="控制饱和高光如何向白色收敛。">
-        <option value="smooth" selected>darktable · 默认</option>
-        <option value="base">Blender Base</option>
-        <option value="punchy">Blender Punchy</option>
-        <option value="muted">Blender Muted</option>
+        <option value="base" selected>darktable · 默认</option>
+        <option value="smooth">平滑收色</option>
+        <option value="punchy">纯度增强</option>
+        <option value="muted">纯度柔和</option>
       </select>
     </div>
   </div>
@@ -214,7 +214,7 @@ GRADE_OPTIONS
   <div class="row">
     <div style="flex:1;min-width:160px">
       <label>高光</label>
-      <select id="highlight" title="决定 RAW 剪切区域的颜色恢复方式。">
+      <select id="highlight" title="LibRaw 的高光恢复方式；RAW 9 固定使用 Apple 重建。">
         <option value="clip">保持剪切 · 原始</option>
         <option value="blend">通道混合 · 温和</option>
         <option value="reconstruct">邻域重建 · 完整</option>
@@ -229,7 +229,7 @@ GRADE_OPTIONS
     </div>
     <div style="flex:1;min-width:170px">
       <label>去马赛克</label>
-      <select id="demosaic" title="仅影响全尺寸细节，不包含降噪。">
+      <select id="demosaic" title="仅 LibRaw；RAW 9 使用 Apple 的 CoreML 去马赛克与降噪模型。">
         <option value="auto">自动 · DHT</option>
         <option value="dht">DHT</option>
         <option value="dcb">DCB</option>
@@ -241,9 +241,9 @@ GRADE_OPTIONS
     </div>
     <div style="flex:1;min-width:170px" id="decoderBlock">
       <label>解码器</label>
-      <select id="decoder" title="scene-linear RGB 来源。证据层始终来自 LibRaw。Core Image 为可选旁路，不是画质升级。">
+      <select id="decoder" title="scene-linear RGB 来源；CFA 统计始终由 LibRaw 读取。">
         <option value="libraw">LibRaw · 默认</option>
-        <option value="coreimage">Core Image · 可选</option>
+        <option value="coreimage">Apple RAW · 9 优先</option>
       </select>
     </div>
     <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
@@ -323,7 +323,8 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
-const STORE_KEY="dngscan.settings.v7";
+const STORE_KEY="dngscan.settings.v8";
+const V7_STORE_KEY="dngscan.settings.v7";
 const V6_STORE_KEY="dngscan.settings.v6";
 const V5_STORE_KEY="dngscan.settings.v5";
 const LEGACY_STORE_KEY="dngscan.settings.v4";
@@ -406,24 +407,42 @@ function applyJobEv(j){
 function updateDecoderUi(){
   const block=$("#decoderBlock");
   const ver=$("#coreimageVersionBlock");
+  const highlight=$("#highlight");
+  const demosaic=$("#demosaic");
   if(!COREIMAGE_AVAILABLE){
     $("#decoder").value="libraw";
     block.classList.add("dim");
     $("#decoder").disabled=true;
     ver.style.display="none";
+    highlight.disabled=false;
+    demosaic.disabled=false;
     return;
   }
   block.classList.remove("dim");
   $("#decoder").disabled=false;
-  ver.style.display=$("#decoder").value==="coreimage"?"block":"none";
-  if($("#decoder").value==="coreimage" && $("#wb").value!=="camera"){
+  const raw9=$("#decoder").value==="coreimage";
+  ver.style.display=raw9?"block":"none";
+  if(raw9){
+    if(!highlight.disabled)highlight.dataset.librawValue=highlight.value;
+    if(!demosaic.disabled)demosaic.dataset.librawValue=demosaic.value;
+    highlight.value="reconstruct";
+    demosaic.value="auto";
+    highlight.disabled=true;
+    demosaic.disabled=true;
+  }else{
+    highlight.disabled=false;
+    demosaic.disabled=false;
+    if(highlight.dataset.librawValue){highlight.value=highlight.dataset.librawValue;delete highlight.dataset.librawValue;}
+    if(demosaic.dataset.librawValue){demosaic.value=demosaic.dataset.librawValue;delete demosaic.dataset.librawValue;}
+  }
+  if(raw9 && $("#wb").value!=="camera"){
     $("#wb").value="camera";
   }
 }
 function saveSettings(){
   try{localStorage.setItem(STORE_KEY,JSON.stringify({
     input:$("#input").value,ev:$("#ev").value,quality:$("#quality").value,
-    highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,
+    highlight:$("#highlight").dataset.librawValue||$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").dataset.librawValue||$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
     chroma:$("#chroma").value,format:$("#format").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
@@ -438,13 +457,17 @@ function restoreSettings(){
   let s={};let migrated=false;
   try{
     const current=localStorage.getItem(STORE_KEY);
+    const v7=localStorage.getItem(V7_STORE_KEY);
     const v6=localStorage.getItem(V6_STORE_KEY);
     const v5=localStorage.getItem(V5_STORE_KEY);
-    s=JSON.parse(current||v6||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
-    // v4's stock pair was gated + base. Move that old default to the new
-    // darktable baseline while retaining every other stored preference.
-    if(!current&&!v6&&!v5&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
-      s.toneCore="agx";s.agxPrimaries="smooth";migrated=true;
+    s=JSON.parse(current||v7||v6||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
+    // v7 and earlier labelled smooth as the default. The pinned darktable scene
+    // default is base, so move stored old defaults to the corrected baseline.
+    if(!current&&s.agxPrimaries==="smooth"){
+      s.agxPrimaries="base";migrated=true;
+    }
+    if(!current&&!v7&&!v6&&!v5&&s.toneCore==="gated"&&s.agxPrimaries==="base"){
+      s.toneCore="agx";migrated=true;
     }
   }catch(e){}
   if(s.input)$("#input").value=s.input;

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from dngscan.auto_ev import (
@@ -13,6 +14,8 @@ from dngscan.auto_ev import (
     parse_ev_value,
     render_sample_linear_output,
     resolve_export_ev,
+    anchored_scene_body_ev,
+    scene_body_align_ev,
 )
 from dngscan._deps import np
 from dngscan.models import Analysis, RawBundle, ToneCompressionPlan
@@ -91,6 +94,12 @@ def test_median_align_ev_neutral():
     assert abs(anchored_median_ev("agx", analysis, ev)) < 1e-4
 
 
+def test_decoded_scene_body_reference_uses_plan_metric():
+    plan = SimpleNamespace(scene=SimpleNamespace(body_ev_p50=-1.75))
+    assert scene_body_align_ev(plan) == 1.75
+    assert anchored_scene_body_ev(plan, 1.25) == -0.5
+
+
 def test_resolve_export_ev_manual():
     bundle = RawBundle(
         path=__file__,
@@ -163,28 +172,37 @@ def test_render_sample_output_does_not_mutate_bundle_gain():
 def test_compute_auto_ev_boost_only_high_key():
     analysis = _minimal_analysis(+1.5)
     bundle = _minimal_bundle()
-    with patch("dngscan.auto_ev.max_safe_ev", return_value=3.0):
+    plan = SimpleNamespace(scene=SimpleNamespace(body_ev_p50=1.5))
+    with patch("dngscan.auto_ev.build_render_plan", return_value=plan), patch(
+        "dngscan.auto_ev.max_safe_ev", return_value=3.0
+    ) as safe:
         result = compute_auto_ev(bundle, analysis, "p3")
     assert result.ev_median_target < 0
     assert result.ev == 0.0
     assert result.ev_boost == 0.0
     assert result.highlight_limited is False
+    assert safe.call_args.kwargs["tone_plan"] is plan
 
 
 def test_compute_auto_ev_caps_upward_boost():
     analysis = _minimal_analysis(-2.0)
     bundle = _minimal_bundle()
-    with patch("dngscan.auto_ev.max_safe_ev", return_value=0.5):
+    plan = SimpleNamespace(scene=SimpleNamespace(body_ev_p50=-2.0))
+    with patch("dngscan.auto_ev.build_render_plan", return_value=plan), patch(
+        "dngscan.auto_ev.max_safe_ev", return_value=0.5
+    ) as safe:
         result = compute_auto_ev(bundle, analysis, "p3")
     assert result.ev == 0.5
     assert result.highlight_limited is True
     assert result.ev_median_target > 0.5
+    assert safe.call_args.kwargs["tone_plan"] is plan
 
 
 class AutoEvTest(unittest.TestCase):
     test_parse_ev_auto_token = staticmethod(test_parse_ev_auto_token)
     test_median_align_ev_agx = staticmethod(test_median_align_ev_agx)
     test_median_align_ev_neutral = staticmethod(test_median_align_ev_neutral)
+    test_decoded_scene_body_reference_uses_plan_metric = staticmethod(test_decoded_scene_body_reference_uses_plan_metric)
     test_resolve_export_ev_manual = staticmethod(test_resolve_export_ev_manual)
     test_render_sample_output_does_not_mutate_bundle_gain = staticmethod(test_render_sample_output_does_not_mutate_bundle_gain)
     test_compute_auto_ev_boost_only_high_key = staticmethod(test_compute_auto_ev_boost_only_high_key)

@@ -125,17 +125,17 @@ class LookOverrideC1InteractionTest(unittest.TestCase):
         self.assertGreater(float(full[-1]), float(milky[-1]))
         self.assertLess(float(milky[-1]), 0.92)
 
-    def test_hue_keep_override_changes_agx_core_output(self) -> None:
+    def test_hue_restore_override_changes_agx_core_output(self) -> None:
         from dngscan.agx import AGX_INSET_REC2020, AGX_OUTSET_REC2020, apply_core
 
         plan = _plan()
-        low_keep = ToneCompressionPlan(**{**plan.__dict__, "hue_keep": 0.0})
-        high_keep = ToneCompressionPlan(**{**plan.__dict__, "hue_keep": 1.0})
+        low_restore = ToneCompressionPlan(**{**plan.__dict__, "hue_restore": 0.0})
+        high_restore = ToneCompressionPlan(**{**plan.__dict__, "hue_restore": 1.0})
         # A near-primary saturated stimulus maximizes the per-channel "notorious six"
-        # skew that hue_keep controls, so the override's effect is unambiguous.
+        # skew that hue restore controls, so the override's effect is unambiguous.
         rgb = np.asarray([[0.80, 0.04, 0.02]], dtype=np.float32)
-        a = apply_core(rgb, low_keep, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
-        b = apply_core(rgb, high_keep, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
+        a = apply_core(rgb, low_restore, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
+        b = apply_core(rgb, high_restore, AGX_INSET_REC2020, AGX_OUTSET_REC2020)
         self.assertGreater(float(np.max(np.abs(a - b))), 1e-3)
 
 

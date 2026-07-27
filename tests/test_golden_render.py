@@ -88,7 +88,7 @@ class GoldenRenderTest(unittest.TestCase):
                     "srgb",
                     plan,
                     tone_core=case.tone_core,
-                    agx_primaries=case.agx_primaries if case.tone_core == "agx" else "smooth",
+                    agx_primaries=case.agx_primaries if case.tone_core == "agx" else "base",
                 ).reshape(expected.shape)
                 if np.array_equal(actual, expected):
                     continue

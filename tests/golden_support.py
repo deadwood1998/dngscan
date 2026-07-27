@@ -424,7 +424,7 @@ def fixed_tone_plan(scene: GoldenScene, tone_core: str, agx_primaries: str) -> T
             latitude_hi_ev=1.5,
             punch_strength=0.0,
             view_brightness=1.12,
-            agx_primaries=agx_primaries if tone_core == "agx" else "smooth",
+            agx_primaries=agx_primaries if tone_core == "agx" else "base",
         )
     if scene.scene_id == "high_key":
         return ToneCompressionPlan(
@@ -436,7 +436,7 @@ def fixed_tone_plan(scene: GoldenScene, tone_core: str, agx_primaries: str) -> T
             toe_power=1.4,
             shoulder_power=3.0,
             punch_strength=0.15,
-            agx_primaries=agx_primaries if tone_core == "agx" else "smooth",
+            agx_primaries=agx_primaries if tone_core == "agx" else "base",
         )
     if scene.scene_id == "staggered_clip":
         return ToneCompressionPlan(
@@ -449,7 +449,7 @@ def fixed_tone_plan(scene: GoldenScene, tone_core: str, agx_primaries: str) -> T
             shoulder_power=3.2,
             latitude_hi_ev=2.0,
             punch_strength=0.1,
-            agx_primaries=agx_primaries if tone_core == "agx" else "smooth",
+            agx_primaries=agx_primaries if tone_core == "agx" else "base",
         )
     return ToneCompressionPlan(
         **common,
@@ -461,8 +461,8 @@ def fixed_tone_plan(scene: GoldenScene, tone_core: str, agx_primaries: str) -> T
         shoulder_power=2.9,
         latitude_hi_ev=1.0 if scene.scene_id == "daylight_wide_dr" else 0.5,
         punch_strength=0.2 if scene.scene_id == "daylight_wide_dr" else 0.0,
-        hue_keep=0.6,
-        agx_primaries=agx_primaries if tone_core == "agx" else "smooth",
+        hue_restore=0.6,
+        agx_primaries=agx_primaries if tone_core == "agx" else "base",
     )
 
 
@@ -474,7 +474,7 @@ def render_plan_for_case(scene: GoldenScene, case: GoldenCase) -> RenderPlan | T
             "agx",
             "srgb",
             tone_core=case.tone_core,
-            agx_primaries=case.agx_primaries if case.tone_core == "agx" else "smooth",
+            agx_primaries=case.agx_primaries if case.tone_core == "agx" else "base",
         )
     tone = fixed_tone_plan(scene, case.tone_core, case.agx_primaries)
     if scene.bundle.clip_masks is not None or case.tone_core == "gated":

@@ -60,7 +60,7 @@ dngscan_fast::NativeAgxPlan plan_from_py(const py::object& obj) {
   copy_matrix9(obj.attr("inset"), plan.inset);
   copy_matrix9(obj.attr("outset"), plan.outset);
   plan.curve = curve_from_py(obj.attr("curve"));
-  plan.hue_keep = read_float(obj, "hue_keep");
+  plan.hue_restore = read_float(obj, "hue_restore");
   plan.view_brightness = read_float(obj, "view_brightness");
   plan.punch_strength = read_float(obj, "punch_strength");
   copy_matrix9(obj.attr("rec2020_to_xyz"), plan.rec2020_to_xyz);

@@ -120,14 +120,12 @@ DECODER_CHOICES = ("libraw", "coreimage")
 
 COREIMAGE_VERSION_CHOICES = ("auto", "9", "8", "7")
 
-# How the Core Image buffer is aligned to LibRaw's exposure anchor. "measured" applies
-# the fitted midtone ratio; "unity" asserts the two agree without correction. The fitted
-# correction is smaller than its own per-frame scatter, so both are offered for A/B.
+# Optional legacy alignment of the Core Image buffer to LibRaw's exposure anchor.
+# Current signed-float RAW 9 decoding agrees with LibRaw around the scene body without a
+# useful fixed correction; keep "measured" only so older A/B commands remain reproducible.
 COREIMAGE_SCALE_CHOICES = ("measured", "unity")
-COREIMAGE_SCALE_DEFAULT_MODE = "measured"
-# Median CI/LibRaw midtone ratio over four Sigma fp frames, macOS 27.0, measured after
-# shadowBias was zeroed. Per-frame spread 0.94..1.12, so the 1.0293 correction (0.04 EV)
-# is an order of magnitude smaller than the scatter it is drawn from.
+COREIMAGE_SCALE_DEFAULT_MODE = "unity"
+# Legacy median ratio retained for explicit --coreimage-scale measured runs.
 COREIMAGE_SCALE_MEASURED_RATIO = 1.0293
 
 
@@ -166,4 +164,3 @@ OKLAB_M2_INV = np.linalg.inv(OKLAB_M2).astype(np.float64) if np is not None and 
 
 
 CHROMA_CHOICES = ("444", "422", "420")
-

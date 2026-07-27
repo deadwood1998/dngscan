@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Optional Core Image (CIRAWFilter / RAW 9) scene-linear Rec.2020 decoder.
+"""Core Image RAW 9 scene-linear Rec.2020 decoder.
 
 A separate pipeline rather than a LibRaw back end: Core Image executes the file's DNG
 opcodes, so its frame is a warp of LibRaw's and per-pixel CFA evidence cannot be carried
@@ -10,15 +10,19 @@ than pixel positions and still come from LibRaw.
 The decode follows Apple's own recipe for reaching linear scene-referred data (WWDC21
 "Capture and process ProRAW images"): baselineExposure, shadowBias, boostAmount and
 localToneMapAmount at 0, gamut mapping off, rendered into extendedLinearITUR_2020. Look
-controls are cleared on top of that, but reconstruction is not — highlightRecovery stays
-at Apple's default of on, because it repairs clipped channels rather than expressing a
-taste, and disabling it returns magenta highlights.
+controls are cleared on top of that. Highlight recovery and lens correction are enabled
+explicitly: both are part of Apple's RAW decode, not downstream rendering choices.
+
+The handoff is signed float16. Extended-linear Rec.2020 legitimately contains negative
+components and values above 1.0; quantising it through an unsigned sensor-white buffer
+would destroy both before AgX sees them.
 
 Importing this module must not raise when Quartz/PyObjC is absent.
 """
 from __future__ import annotations
 
 import struct
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -28,24 +32,20 @@ from .constants import (
     COREIMAGE_SCALE_MEASURED_RATIO,
 )
 
-# A scalar gain that puts the same scene radiance at the same number on both decoders,
-# because their 1.0 means different things: LibRaw normalises to the sensor's saturation
-# white level, Apple to its own diffuse white. dngscan anchors --ev and the midgray
-# headroom model to a fixed value, so without this the same --ev is two exposures.
-#
-# It is an empirical fit, not a spec-derived number, and it is now small enough to be
-# worth doubting. Re-derived after shadowBias was zeroed (the old 1/0.9314 was mostly
-# compensating for that subtraction darkening the buffer), the median CI/LibRaw midtone
-# ratio over four Sigma fp frames is 1.0293 — a 0.04 EV correction against a per-frame
-# spread of 0.94..1.12. The correction is an order of magnitude smaller than the scatter
-# it is drawn from, so "unity" is offered as a first-class alternative: it asserts that
-# the two pipelines agree on their own, which the current evidence cannot distinguish
-# from the fitted value. Pick with --coreimage-scale and compare.
+# Current signed-float measurements do not support a fixed decoder correction. Reliable
+# body medians on three Sigma fp frames differ by +0.017..+0.143 EV, with scene-dependent
+# direction and highlight tails; unity therefore preserves each decoder's native scale.
+# The old empirical 1/1.0293 fit remains available only to reproduce earlier A/B renders.
 COREIMAGE_SCALE_MODES = {
     "measured": 1.0 / COREIMAGE_SCALE_MEASURED_RATIO,
     "unity": 1.0,
 }
 COREIMAGE_SCALE_COMPENSATION = COREIMAGE_SCALE_MODES[COREIMAGE_SCALE_DEFAULT_MODE]
+COREIMAGE_PREVIEW_LONG_EDGE = 1280
+COREIMAGE_EXPORT_MEMORY_LIMIT_MB = 1024
+
+_CONTEXTS: dict[bool, Any] = {}
+_CONTEXT_LOCK = threading.Lock()
 
 
 def describe_scale_compensation(gain: float) -> str:
@@ -56,7 +56,7 @@ def describe_scale_compensation(gain: float) -> str:
     can tell which one produced a given buffer.
     """
     if abs(float(gain) - 1.0) <= 1e-9:
-        return "unity: no compensation applied (pipelines asserted to agree unaided)"
+        return "unity: native scene-linear scale (no fixed decoder correction)"
     return (
         f"measured 2026-07 Sigma fp; CI/LibRaw median ratio "
         f"{1.0 / float(gain):.4f} (per-frame spread 0.94..1.12)"
@@ -228,6 +228,38 @@ def _set_amount(filt: Any, setter: str, supported_pred: str | None, value: float
     return True
 
 
+def _set_bool(filt: Any, setter: str, supported_pred: str | None, value: bool) -> bool:
+    """Set a CIRAW boolean when the control exists; return whether it was written."""
+    if supported_pred is not None:
+        pred = getattr(filt, supported_pred, None)
+        if callable(pred) and not bool(pred()):
+            return False
+    fn = getattr(filt, setter, None)
+    if not callable(fn):
+        return False
+    fn(bool(value))
+    return True
+
+
+def preview_scale_factor(
+    filt: Any, *, long_edge: int = COREIMAGE_PREVIEW_LONG_EDGE
+) -> float:
+    """Choose a decode-time scale that is no larger than the displayed proxy."""
+    native_size = getattr(filt, "nativeSize", None)
+    if not callable(native_size):
+        return 0.5
+    try:
+        size = native_size()
+        width = float(size.width)
+        height = float(size.height)
+        longest = max(width, height)
+        if longest <= 0.0:
+            return 0.5
+        return float(min(1.0, float(max(1, int(long_edge))) / longest))
+    except (AttributeError, TypeError, ValueError):
+        return 0.5
+
+
 def configure_linear_filter(
     filt: Any,
     *,
@@ -239,8 +271,8 @@ def configure_linear_filter(
 
     Not "zero everything": that rule came from the LibRaw path and produces a worse
     decode here, not a purer one. Apple's own five settings for reaching linear data are
-    applied, look controls are cleared on top, and reconstruction (highlight recovery) is
-    deliberately left at Apple's default of on.
+    applied, look controls are cleared on top, and decode-time reconstruction/correction
+    controls are enabled explicitly.
 
     Returns a small dict describing what was applied (for reports/tests).
     """
@@ -303,16 +335,33 @@ def configure_linear_filter(
     if hasattr(filt, "setGamutMappingEnabled_"):
         filt.setGamutMappingEnabled_(False)
     # Highlight recovery is reconstruction, not taste, so unlike the subjective controls
-    # above it is left at Apple's default of on. Disabling it does not yield a "purer"
+    # above it is explicitly enabled. Disabling it does not yield a "purer"
     # decode, it yields a wrong one: clipped highlights come back with green pinned far
     # below red and blue (measured near-white mean R 1.933 / G 0.681 / B 1.816, green the
     # largest channel in 0 % of them), which renders as magenta highlight cores. With
     # recovery on the same pixels average 1.981 / 1.980 / 1.980 and the specular headroom
     # survives intact (p99.995 2.08, max 2.22), so it is strictly better than the LibRaw
     # path's clip-to-common-white, which buys neutral highlights by discarding roll-off.
+    _set_bool(
+        filt,
+        "setHighlightRecoveryEnabled_",
+        "isHighlightRecoverySupported",
+        True,
+    )
+    # RAW 9 executes the DNG opcode/lens model as part of the camera-calibrated decode.
+    # Keep this deterministic instead of relying on CIRAWFilter's current default.
+    _set_bool(
+        filt,
+        "setLensCorrectionEnabled_",
+        "isLensCorrectionSupported",
+        True,
+    )
     highlight_recovery = None
     if hasattr(filt, "isHighlightRecoveryEnabled"):
         highlight_recovery = bool(filt.isHighlightRecoveryEnabled())
+    lens_correction = None
+    if hasattr(filt, "isLensCorrectionEnabled"):
+        lens_correction = bool(filt.isLensCorrectionEnabled())
     filt.setScaleFactor_(float(scale_factor))
 
     color_nr = float(filt.colorNoiseReductionAmount()) if hasattr(filt, "colorNoiseReductionAmount") else None
@@ -325,12 +374,31 @@ def configure_linear_filter(
             float(filt.sharpnessAmount()) if hasattr(filt, "sharpnessAmount") else None
         ),
         "highlight_recovery": highlight_recovery,
+        "lens_correction": lens_correction,
         "shadow_bias": float(filt.shadowBias()) if hasattr(filt, "shadowBias") else None,
     }
 
 
-def _render_linear_rec2020(filt: Any) -> np.ndarray:
-    """Render filter output to float32 HxWx3 extended-linear Rec.2020 (direct rect, no flip)."""
+def _render_context(Quartz: Any, *, interactive: bool) -> Any:
+    """Reuse one CIContext per workload, following Apple's RAW 9 guidance."""
+    with _CONTEXT_LOCK:
+        cached = _CONTEXTS.get(bool(interactive))
+        if cached is not None:
+            return cached
+        options: dict[Any, Any] = {
+            Quartz.kCIContextCacheIntermediates: bool(interactive),
+        }
+        if not interactive and hasattr(Quartz, "kCIContextMemoryLimit"):
+            options[Quartz.kCIContextMemoryLimit] = COREIMAGE_EXPORT_MEMORY_LIMIT_MB
+        ctx = Quartz.CIContext.contextWithOptions_(options)
+        if ctx is None:
+            raise RuntimeError("CIContext.contextWithOptions_ returned None")
+        _CONTEXTS[bool(interactive)] = ctx
+        return ctx
+
+
+def _render_linear_rec2020(filt: Any, *, interactive: bool) -> np.ndarray:
+    """Render signed float16 HxWx3 extended-linear Rec.2020 (direct rect, no flip)."""
     Quartz = _require_quartz()
     image = filt.outputImage()
     if image is None:
@@ -343,14 +411,12 @@ def _render_linear_rec2020(filt: Any) -> np.ndarray:
 
     origin_x = float(extent.origin.x)
     origin_y = float(extent.origin.y)
-    ctx = Quartz.CIContext.contextWithOptions_(None)
-    if ctx is None:
-        raise RuntimeError("CIContext.contextWithOptions_ returned None")
+    ctx = _render_context(Quartz, interactive=interactive)
     color_space = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceExtendedLinearITUR_2020)
     if color_space is None:
         raise RuntimeError("kCGColorSpaceExtendedLinearITUR_2020 is unavailable")
 
-    row_bytes = width * 16  # RGBA float32
+    row_bytes = width * 8  # RGBA float16
     buf = bytearray(height * row_bytes)
     bounds = Quartz.CGRectMake(origin_x, origin_y, width, height)
     # Direct top-left sampling: do not vertically flip the bitmap. The intuitive
@@ -360,10 +426,10 @@ def _render_linear_rec2020(filt: Any) -> np.ndarray:
         buf,
         row_bytes,
         bounds,
-        Quartz.kCIFormatRGBAf,
+        Quartz.kCIFormatRGBAh,
         color_space,
     )
-    rgba = np.frombuffer(memoryview(buf), dtype=np.float32).reshape(height, width, 4)
+    rgba = np.frombuffer(memoryview(buf), dtype=np.float16).reshape(height, width, 4)
     return np.ascontiguousarray(rgba[:, :, :3])
 
 
@@ -373,11 +439,11 @@ def _resize_rgb(image: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
         return image
     from PIL import Image
 
-    out = np.empty((target_h, target_w, image.shape[2]), dtype=np.float32)
+    out = np.empty((target_h, target_w, image.shape[2]), dtype=np.float16)
     for idx in range(image.shape[2]):
         im = Image.fromarray(image[:, :, idx].astype(np.float32, copy=False), mode="F")
         im = im.resize((target_w, target_h), Image.Resampling.BILINEAR)
-        out[:, :, idx] = np.asarray(im, dtype=np.float32)
+        out[:, :, idx] = np.asarray(im, dtype=np.float32).astype(np.float16)
     return out
 
 
@@ -525,7 +591,7 @@ def decode_scene_rec2020(
     exposure: float = 0.0,
     scale_compensation: float = COREIMAGE_SCALE_COMPENSATION,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Decode to float32 HxWx3 linear Rec.2020 (extended range possible).
+    """Decode to signed float16 HxWx3 linear Rec.2020.
 
     Subjective CIRAW controls are zeroed. Scale compensation brings units in line
     with the LibRaw pipeline. Optional ``target_shape`` resamples after render.
@@ -534,13 +600,13 @@ def decode_scene_rec2020(
     offered = supported_versions(path)
     resolved = resolve_decoder_version(version, offered)
     filt = _open_filter(path)
-    scale_factor = 0.5 if half_size else 1.0
+    scale_factor = preview_scale_factor(filt) if half_size else 1.0
     cfg = configure_linear_filter(
         filt, version=resolved, scale_factor=scale_factor, exposure=float(exposure)
     )
-    rgb = _render_linear_rec2020(filt)
+    rgb = _render_linear_rec2020(filt, interactive=bool(half_size))
     if abs(float(scale_compensation) - 1.0) > 1e-12:
-        rgb = rgb * np.float32(scale_compensation)
+        rgb = (rgb.astype(np.float32) * np.float32(scale_compensation)).astype(np.float16)
     extent = (int(rgb.shape[0]), int(rgb.shape[1]))
     if target_shape is not None and tuple(target_shape) != extent:
         rgb = _resize_rgb(rgb, (int(target_shape[0]), int(target_shape[1])))
@@ -559,43 +625,25 @@ def decode_scene_rec2020(
         "color_noise_cleared": cfg["color_noise_cleared"],
         "sharpness_amount": cfg.get("sharpness_amount"),
         "highlight_recovery": cfg.get("highlight_recovery"),
+        "lens_correction": cfg.get("lens_correction"),
         "shadow_bias": cfg.get("shadow_bias"),
         "exposure": float(exposure),
     }
-    return rgb.astype(np.float32, copy=False), info
-
-
-# Quantisation headroom for the Core Image buffer. LibRaw's 1.0 is sensor saturation,
-# and the pipeline anchors that at +3.00 EV (0.18 * 2**MIDGRAY_HEADROOM_STOPS), which is
-# also the white endpoint's lower bound. Apple's 1.0 is diffuse white instead and real
-# specular detail lives above it (measured p99.995 2.15 and peak 2.83 on a Sigma fp
-# frame, so the 4.0 allowance below is never reached in practice), so
-# clipping at 1.0 does not merely lose those pixels — it caps the reliable tail at
-# +3.00 EV and prevents the compiled white endpoint from ever rising above its floor.
-# Allocating headroom keeps that detail; the cost is a coarser quantisation step, still
-# finer than the 14-bit sensor data underneath (allowance 4.0 -> 6.1e-5 linear).
-COREIMAGE_MAX_HEADROOM = 4.0
+    return rgb.astype(np.float16, copy=False), info
 
 
 def scene_headroom(rgb: np.ndarray, *, percentile: float = 99.995) -> float:
-    """Headroom to reserve above diffuse white, ignoring single-pixel outliers."""
+    """Diagnostic scene headroom above diffuse white; does not rescale the handoff."""
     arr = np.asarray(rgb, dtype=np.float32)
     if arr.size == 0:
         return 1.0
     top = float(np.percentile(arr, percentile))
-    return float(min(COREIMAGE_MAX_HEADROOM, max(1.0, top)))
+    return float(max(1.0, top))
 
 
-def scene_float_to_u16(
-    rgb: np.ndarray, scene_scale: float = 65535.0
-) -> tuple[np.ndarray, float]:
-    """Quantise linear float Rec.2020 into the pipeline's uint16 + scene_scale pair.
-
-    Returns the buffer and the scene_scale that reproduces it, so that
-    ``buffer / scene_scale`` recovers the original linear values including any headroom
-    above diffuse white. Callers must use the returned scale, not the requested one."""
+def scene_float_to_half(rgb: np.ndarray) -> tuple[np.ndarray, float]:
+    """Preserve Core Image's signed extended-linear values in a compact handoff."""
     linear = np.asarray(rgb, dtype=np.float32)
-    headroom = scene_headroom(linear)
-    scale = float(scene_scale) / headroom
-    buffer = np.clip(linear * scale, 0.0, float(scene_scale)).astype(np.uint16)
-    return buffer, scale
+    limit = float(np.finfo(np.float16).max)
+    finite = np.nan_to_num(linear, nan=0.0, posinf=limit, neginf=-limit)
+    return np.clip(finite, -limit, limit).astype(np.float16), 1.0

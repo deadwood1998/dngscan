@@ -5,13 +5,15 @@
 The `agx` tone-mapping mode in `dngscan.core` ports portions of the AgX view-transform
 implementation from darktable:
 
-- https://github.com/darktable-org/darktable/blob/master/src/iop/agx.c
-- https://github.com/darktable-org/darktable/blob/master/data/kernels/agx.cl
+- https://github.com/darktable-org/darktable/blob/cf5e698c1a5afac52de785c3bf63fcbcb71707d3/src/iop/agx.c
+- https://github.com/darktable-org/darktable/blob/cf5e698c1a5afac52de785c3bf63fcbcb71707d3/data/kernels/agx.cl
 
 darktable is licensed under GPL-3.0-or-later. Because this project incorporates that
 code, the combined work is distributed under **GPL-3.0-or-later** as well.
 Reference copies of `agx.c` and `agx.cl` are included under `dngscan_assets/` with
-their original GPL notices intact.
+their original GPL notices intact. The exact upstream commit is recorded in
+`dngscan_assets/README.md` so changes in darktable `master` cannot silently redefine
+dngscan's rendering baseline.
 
 The AgX inset/outset primaries derive from Troy Sobotka's AgX family of view
 transforms. Optional Blender-reference geometries follow the published construction

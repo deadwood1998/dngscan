@@ -130,9 +130,9 @@ availability check and fallback logic.
 `neutral` tone cores: an alternate *interpretation* of the capture, not a quality
 upgrade and never the default. It uses `CIRAWFilter` (RAW 9 where the file offers it,
 otherwise the highest supported version — some Fujifilm RAF files stop at 8 and are not
-labelled 9), rendered into linear Rec.2020 with the look controls cleared but the
-reconstruction ones left alone — the exact split is worked out below — so it hands AgX
-the same working space the LibRaw path does.
+labelled 9), rendered as signed RGBA half-float in extended-linear Rec.2020. Negative
+color components and values above diffuse white therefore reach AgX unchanged. Look
+controls are cleared; highlight recovery and lens correction are enabled explicitly.
 
 It is a **separate pipeline, not a LibRaw back end.** Core Image executes the DNG
 opcodes a file carries; on a Sigma fp DNG that means a per-plane `WarpRectilinear` plus
@@ -143,54 +143,50 @@ the image. Consequently this path has no per-pixel CFA evidence: `--tone-core ga
 refused, clip retreat does not run, and `--highlight-mode` does not apply because Core
 Image performs its own highlight recovery. Aggregate RAW facts (levels, clipping
 percentages, SNR, noise floor, white-balance testimony) are distributions rather than
-pixel positions, so they remain valid and still come from LibRaw. The report names the
-decoder, its version, and the opcodes that were executed.
+pixel positions, so they remain valid and still come from LibRaw. For tone planning,
+the measured clipped-cell percentage removes the same fraction from the top of RAW 9's
+luminance rank: reconstructed pixels still describe highlight topology, but cannot set
+the global white endpoint. The report names the decoder, its version, and the opcodes
+that were executed.
 
-The two decoders disagree on what 1.0 means — LibRaw normalises to the sensor's
-saturation white level, Apple to its own diffuse white — so a scalar gain puts the same
-scene radiance at the same number and keeps `--ev` meaning one thing on both paths.
-`--coreimage-scale` chooses it: `measured` (default) applies the fitted `1/1.0293`,
-`unity` applies none. The fit is a 0.04 EV correction drawn from a per-frame spread of
-0.94–1.12, so it is an order of magnitude smaller than its own scatter and `unity` — the
-claim that the pipelines agree unaided — is not currently distinguishable from it on the
-available evidence. Both are offered so the question can be settled by rendering rather
-than by argument; on one ISO 12800 frame `measured` landed nearer the LibRaw reference
-(median luma 0.4452 against 0.4530, reference 0.4411), a 0.025 EV difference touching
-79 % of pixels. The report names the mode that produced a render.
+The signed-float RAW 9 handoff changed the scale conclusion. Across three Sigma fp
+frames, the RAW 9 / LibRaw reliable-body luminance ratios were 1.088, 1.104, and 1.012
+(+0.122, +0.143, and +0.017 EV). That is small, scene-dependent, and not evidence for a
+single decoder correction. `--coreimage-scale unity` is therefore the default: EV 0 is
+the decoder's native scene-linear result. The old fitted `1/1.0293` remains available as
+`measured` only to reproduce earlier A/B renders; it is not part of the current exposure
+model.
 
-Beyond alignment the paths differ mainly in camera interpretation — warmer skin and a
-different highlight rendering on the Sigma fp samples. Three behavioural differences
-follow from the decoders themselves rather than from taste, and are worth knowing before
-reading an A/B:
+Two luminance conventions appear in these comparisons and they must not be quoted
+interchangeably. The *reliable body* median is scene-linear, measured before the tone
+curve and after excluding RAW-clipped samples; the *final output* median is measured on
+the rendered image, where AgX has already compressed both ends. On `_SDI0150` the same
+pair of decoders differs by +0.123 EV on the first and +0.02–0.03 EV on the second — the
+tone curve absorbs most of a scene-linear offset, so the two figures are roughly 5x
+apart. Both are correct answers to different questions; state which one a number is.
 
-- **`--ev auto` can choose a different exposure on each path.** Apple keeps detail above
-  diffuse white, so the reference's highlight growth budget sees more near-white pixels
-  and stops the boost earlier. On one ISO 2500 frame the LibRaw path took +0.73 EV and
-  the Core Image path +0.44 EV. Compare at a fixed `--ev` when the decoder itself is the
-  question.
-- **Apple's buffer carries genuine specular headroom**, which shows up as a systematically
-  wider compiled window. Across four Sigma fp frames the black endpoints agree to within
-  0.14 EV and the median EV to within 0.04 (except on a near-dark ISO 25600 frame, where
-  the estimator itself is noisy and the gap reaches 0.33). The white endpoints do not:
-  LibRaw sat on its +3.00 EV floor on three of the four — `clip` had destroyed everything
-  above the white level, so there was nothing left to measure — while Core Image compiled
-  +3.69, +3.75, +3.96 and +3.71 from real data. Both are behaving correctly; the buffers
-  genuinely differ.
-- **So a fixed `--ev` is not enough to isolate the decoder.** The wider window means the
-  compiled dynamic range runs 0.5–1.0 stops longer on the Core Image path, and an A/B at
-  matched exposure still compares two different tone plans. Some of the extra brightness
-  in a side-by-side comes from there rather than from the decode. `tools/decode_ab.py`
-  separates the two by rendering each buffer through each plan and attributing the
-  difference; it is a diagnostic and deliberately makes ugly pictures, since a plan
-  compiled from one buffer misplaces the other's endpoints. On one ISO 12800 frame it
-  showed the native comparison hiding as much as it revealed: pure-white pixels differed
-  by 0.00 % natively, yet the Core Image buffer alone contributed +1.49 % and its own
-  wider plan cancelled exactly that much.
+Beyond alignment the paths differ mainly in camera interpretation — color separation,
+noise reconstruction, and highlight rendering on the Sigma fp samples. Three behavioural
+differences follow from the decoders themselves rather than from taste:
 
-The tone analysis itself needs no adaptation for this. The worry that denoising would
-narrow the distribution and drag the percentile-derived endpoints did not survive
-measurement: the black endpoints track each other closely, and only the white end — the
-end where one buffer really does hold more information — moves.
+- **The brightness-reference button can choose a different EV on each path.** It reads
+  the reliable body median from the selected decoder after the selected scene transform,
+  rather than reusing LibRaw's CFA histogram as a brightness proxy. It then searches the
+  final output for highlight safety with one fixed compiled plan. This makes the button
+  useful across decoders without turning EV 0 into hidden auto exposure. Compare at a
+  fixed `--ev` when the decoder itself is the question.
+- **Apple's buffer carries specular values above diffuse white, but reconstruction is not
+  radiometry.** The full RAW 9 tail remains available to classify broad highlights versus
+  sparse emitters. The global white endpoint uses only the reliable rank after subtracting
+  the full-resolution CFA clipped-cell fraction. This keeps Apple's smooth reconstruction
+  while preventing it from claiming sensor headroom that was already lost.
+- **A fixed `--ev` still does not isolate the decoder.** The buffers can compile slightly
+  different plans, and Core Image also executes a different geometry. `tools/decode_ab.py`
+  renders each buffer through each plan to separate decode and plan effects. On the current
+  SD-card checks, an ISO 3200 frame differed by +0.006 EV at median output and a bright
+  ISO 100 frame by -0.020 EV; a near-dark ISO 25600 frame differed by -0.413 EV, almost
+  entirely in the RAW 9 decode. The last case is why this remains an alternate path rather
+  than a silent replacement for LibRaw.
 
 **RAW 9 denoises by construction.** Apple describes it as a tiled CoreML model that
 fuses demosaic *with* denoise (WWDC26 session 305), so there is no unprocessed mode to
@@ -242,10 +238,10 @@ Shadow loss that looks like the CoreML denoiser eating detail is mostly this sub
 
 **Clearing controls stops at reconstruction.** "Zero every control" is otherwise a rule
 inherited from the LibRaw path, and applying it wholesale to a decoder built on different
-assumptions produces a worse decode, not a purer one. Two settings are therefore left
-where Apple puts them, each for a measured reason:
+assumptions produces a worse decode, not a purer one. Reconstruction controls are set
+explicitly so an OS default change cannot silently alter the contract:
 
-- **`highlightRecoveryEnabled` stays on** (Apple's default). It reconstructs clipped
+- **`highlightRecoveryEnabled` is explicitly on.** It reconstructs clipped
   channels, which is the same job `--highlight-mode reconstruct` does on the LibRaw side,
   not a look control. Disabling it returns clipped highlights with green pinned far below
   red and blue — near-white mean R 1.933 / G 0.681 / B 1.816, green the largest channel
@@ -255,10 +251,21 @@ where Apple puts them, each for a measured reason:
   specular headroom survives (p99.995 2.08, max 2.22). That makes it strictly better than
   the LibRaw path's clip-to-common-white, which buys neutral highlights by throwing the
   roll-off away.
+- **`lensCorrectionEnabled` is explicitly on.** RAW 9 and the file's DNG opcodes form one
+  calibrated camera decode. This is also why LibRaw's pixel masks cannot be reused.
 - **`gamutMappingEnabled` stays off.** It is an output-referred clamp and belongs after
   the view transform. Enabling it cut p99.995 from 2.08 to 1.07, zeroed every negative
   component — real scene colours outside Rec.2020 — and changed 14 % of pixels. AgX does
   its own gamut work downstream, so the handoff stays scene-referred.
+
+The pixel handoff follows Apple's example as closely as the Python bridge allows:
+`RGBAh`, extended-linear Rec.2020, signed half-float, no percentile normalisation and no
+unsigned clamp. Preview asks `CIRAWFilter.scaleFactor` for a 1280-pixel long edge instead
+of decoding a 6 MP intermediate and shrinking it later. The interactive `CIContext` is
+reused with `cacheIntermediates=true`; full export uses a separate reused context with
+intermediate caching disabled and a 1024 MB memory target. On a 24 MP Sigma fp sample,
+RAW 9 decode measured 1.24 s at 1280 px and 2.08 s at 6000x4000; the complete full-size
+decode, analysis, plan and render took about 5.1 s before JPEG encoding.
 
 `extendedDynamicRangeAmount` is left at Apple's default of 0: raising it to 1.0 does
 expose more separation at the very top (range 0.11 → 1.74 across the topmost pixels), but
@@ -328,6 +335,13 @@ LibRaw's three choices affect the appearance after reconstruction:
 I generally use `reconstruct` for photographs and `clip` when inspecting the sensor or
 the algorithm itself. The saved RAW clipping evidence is unchanged in every case.
 
+LibRaw stores `blend` and `reconstruct` darker in uint16 by exactly the normalized peak
+white-balance multiplier, reserving container codes for reconstructed values above
+nominal white. dngscan records that reserve in `scene_scale` instead of treating it as
+an exposure change. On the Sigma fp sample (`max WB = 2.33`, or 1.22 EV), clip and
+reconstruct now agree in the reliable body within 0.03 EV while reconstruct keeps its
+extra highlight range.
+
 ## Tone: exposure and curve construction
 
 ### Fixed exposure anchor
@@ -339,12 +353,13 @@ AgX, a bright scene remains bright, and content-adaptive exposure does not reord
 relationship between photographs.
 
 The GUI's **brightness reference**, also available as `--ev auto`, is an explicitly
-requested alternate reading. It tries to place the global median at 18% gray while
-respecting a budget for newly created highlight clipping. Lights already clipped in the
-CFA do not consume that budget; they were emitters in the scene already. Only areas that
-still contained information but are pushed into the display ceiling limit the increase.
-The global median can still be misled by a background, so this remains a reference and
-not the default exposure.
+requested alternate reading. It tries to place the reliable scene-body median at 18% gray while
+respecting a budget for newly created highlight clipping. The median comes from the
+selected decoder's reliable scene body after the selected scene transform; RAW-clipped
+samples do not define it. The highlight search renders that same fixed plan at candidate
+EVs, so the target cannot move while it is being measured. A dominant background can
+still mislead any full-frame statistic, so this remains a reference and not the default
+exposure.
 
 ### Scene statistics are not simple min/max
 
@@ -415,9 +430,21 @@ bare per-channel curves, such as pure red moving toward orange-yellow and pure b
 toward cyan as they brighten; the inset rotation carries some Abney-style perceptual hue
 compensation as well.
 
-dngscan defaults to darktable's `smooth` primaries. `base`, `punchy`, and `muted` remain
-as geometric references from the wider AgX ecosystem; they do not participate in RAW
-analysis or change the exposure algorithm.
+dngscan pins this math to darktable commit `cf5e698c1a5afac52de785c3bf63fcbcb71707d3`.
+Its scene-referred default is the `base` geometry with hue restore at 0.6, so that is now
+dngscan's default as well. Matrix construction follows darktable's transposed storage
+order and its D50 ICC profile connection space; using unadapted D65 Rec.2020 coordinates
+or reversing the product changes the color path and can break neutral-axis preservation.
+`smooth`, `punchy`, and `muted` remain explicit geometric comparisons. They do not alter
+RAW analysis or exposure.
+
+Hue restore is a per-preset value rather than one global default: the compiler writes 0.6
+for `base`, `punchy` and `muted`, and 0.0 for `smooth`, whose sigmoid-like geometry
+disables restoration upstream. Three places can name the number — the
+`ToneCompressionPlan` dataclass default, that per-preset write in the compiler, and the
+`AGX_HUE_RESTORE` fallback that only pre-rename plan objects ever reach — so tests pin
+all three. Asserting on the constant alone proves nothing: changing it leaves every
+golden render byte-identical.
 
 AgX pays for this behavior through the same structure. The inset removes purity before
 the curve, and content largely earns it back through per-channel expansion in the toe.
@@ -561,7 +588,7 @@ server.
 On macOS the cache defaults to `~/Library/Caches/dngscan/preview-v1`, is limited to
 768 MB, and evicts older entries automatically.
 
-I normally start at EV 0 with `AgX`, `smooth` primaries, camera WB, and highlight
+I normally start at EV 0 with `AgX`, `base` primaries, camera WB, and highlight
 reconstruction, then adjust from the photograph itself. Quality 100 and 4:4:4 are the
 default output settings.
 

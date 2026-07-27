@@ -14,19 +14,23 @@ except Exception:  # pragma: no cover - handled by dngscan.core import checks
 
 EPS = 1e-12
 
-# Rec.2020 work-profile chromaticities (dngscan's pipe working space = darktable work profile).
+# Linear Rec.2020 as represented by darktable's ICC profile. LittleCMS adapts its
+# D65 primaries to the D50 PCS before darktable constructs the AgX custom primaries.
+# These values were read from that profile at the pinned upstream revision documented
+# in dngscan_assets/README.md; using the unadapted D65 coordinates produces different
+# formation matrices even though the RGB buffer itself remains linear Rec.2020.
 _WORK_PRIMARIES_XY = (
-    (0.708, 0.292),
-    (0.170, 0.797),
-    (0.131, 0.046),
+    (0.7084870354494747, 0.29354694789182006),
+    (0.19020836048704062, 0.7753681035836013),
+    (0.12924758043987472, 0.04714454388899011),
 )
-_WORK_WHITE_XY = (0.3127, 0.3290)
+_WORK_WHITE_XY = (0.345702914918791, 0.3585385966799326)
 _XYZ_TO_REC2020 = (
     np.array(
         [
-            [1.7167, -0.3557, -0.2534],
-            [-0.6667, 1.6165, 0.0158],
-            [0.0176, -0.0428, 0.9421],
+            [1.64723243, -0.39361249, -0.23596681],
+            [-0.68261733, 1.64761237, 0.01281035],
+            [0.02968148, -0.06294926, 1.25388577],
         ],
         dtype=np.float64,
     )
@@ -34,10 +38,9 @@ _XYZ_TO_REC2020 = (
     else None
 )
 
-# Fraction of per-channel hue shift kept after the curve. darktable's default
-# preserve-hue setting is 0.6; Blender's 0.4 remains attached to the explicit
-# Blender-reference primary presets in the compiled render plan.
-AGX_HUE_KEEP = 0.6
+# Fraction of the pre-curve hue restored after the curve. This follows darktable's
+# public parameter exactly: 0 keeps the per-channel curve shift, 1 restores input hue.
+AGX_HUE_RESTORE = 0.6
 
 # Internal y-axis encoding the curve was originally parameterized with. Kept as the
 # reference for the contrast (derivative) compensation when the adaptive gamma moves
@@ -131,10 +134,10 @@ AGX_PRIMARIES_CLI_CHOICES = tuple(AGX_PRIMARIES_PRESETS.keys()) + tuple(AGX_PRIM
 
 def resolve_agx_primaries(name: str) -> str:
     """Map CLI/GUI preset name (including aliases) to a canonical AgX primaries key."""
-    key = (name or "smooth").strip().lower()
+    key = (name or "base").strip().lower()
     resolved = AGX_PRIMARIES_ALIASES.get(key, key)
     if resolved not in AGX_PRIMARIES_PRESETS:
-        return "smooth"
+        return "base"
     return resolved
 
 
@@ -193,7 +196,11 @@ def _formation_matrices_cached(spec: PrimariesGeometry) -> tuple[Any, Any]:
     inset_xy = tuple(
         _rotate_and_scale_primary(i, 1.0 - spec.inset[i], spec.rotation[i]) for i in range(3)
     )
-    inset = _rgb_to_xyz_from_primaries_xy(inset_xy) @ _XYZ_TO_REC2020
+    # darktable stores matrices transposed. Its
+    #   dt_colormatrix_mul(custom_to_xyz_T, xyz_to_base_T)
+    # therefore applies xyz_to_base @ custom_to_xyz in column-vector notation.
+    # Reversing this order fails to preserve the neutral axis.
+    inset = _XYZ_TO_REC2020 @ _rgb_to_xyz_from_primaries_xy(inset_xy)
     outset_xy = tuple(
         _rotate_and_scale_primary(
             i,
@@ -202,25 +209,24 @@ def _formation_matrices_cached(spec: PrimariesGeometry) -> tuple[Any, Any]:
         )
         for i in range(3)
     )
-    tmp = _rgb_to_xyz_from_primaries_xy(outset_xy) @ _XYZ_TO_REC2020
+    tmp = _XYZ_TO_REC2020 @ _rgb_to_xyz_from_primaries_xy(outset_xy)
     return inset, np.linalg.inv(tmp)
 
 
 def matrices_for_preset(preset_name: str) -> tuple[Any, Any]:
-    spec = AGX_PRIMARIES_PRESETS.get(preset_name, _SMOOTH_GEOMETRY)
+    spec = AGX_PRIMARIES_PRESETS.get(preset_name, _BLENDER_GEOMETRY)
     return _formation_matrices_cached(spec)
 
 
-# darktable smooth matrices are the public default. Blender-base remains an explicit
-# reference preset, not the fallback for a missing/invalid caller choice.
+# Pinned darktable's scene-referred default uses the Blender-like Rec.2020 geometry.
 AGX_INSET_REC2020, AGX_OUTSET_REC2020 = (
-    matrices_for_preset("smooth") if np is not None else (None, None)
+    matrices_for_preset("base") if np is not None else (None, None)
 )
 
 
 def formation_matrices(plan: Any) -> tuple[Any, Any]:
     """Inset/outset for one tone plan's primaries preset."""
-    return matrices_for_preset(str(getattr(plan, "agx_primaries", "smooth")))
+    return matrices_for_preset(str(getattr(plan, "agx_primaries", "base")))
 
 
 def compute_pivot_ev_offset(body_ev_p50: float, black_ev: float, white_ev: float) -> float:
@@ -547,27 +553,35 @@ def apply_curve(x: Any, params: dict[str, float | bool]) -> Any:
 
 
 def compress_into_gamut(rgb: Any) -> Any:
-    # Rec.2020 luminance weights: this gamut compression runs on Rec.2020 data (pre-inset),
-    # so preserving Rec.2020 Y keeps the luminance it protects consistent with the working space.
-    coeff = np.asarray([0.2627, 0.6780, 0.0593], dtype=np.float32)
-    input_y = coeff[0] * rgb[:, 0] + coeff[1] * rgb[:, 1] + coeff[2] * rgb[:, 2]
-    max_rgb = np.max(rgb, axis=1)
-    opponent = max_rgb[:, None] - rgb
-    opponent_y = coeff[0] * opponent[:, 0] + coeff[1] * opponent[:, 1] + coeff[2] * opponent[:, 2]
-    max_opponent = np.max(opponent, axis=1)
-    y_compensate_negative = max_opponent - opponent_y + input_y
-    offset = np.maximum(-np.min(rgb, axis=1), 0.0)
-    rgb_offset = rgb + offset[:, None]
-    max_offset = np.max(rgb_offset, axis=1)
-    opponent_offset = max_offset[:, None] - rgb_offset
-    max_inverse = np.max(opponent_offset, axis=1)
-    y_inverse = coeff[0] * opponent_offset[:, 0] + coeff[1] * opponent_offset[:, 1] + coeff[2] * opponent_offset[:, 2]
-    y_new = coeff[0] * rgb_offset[:, 0] + coeff[1] * rgb_offset[:, 1] + coeff[2] * rgb_offset[:, 2]
-    y_new = max_inverse - y_inverse + y_new
-    ratio = np.ones_like(y_new)
-    mask = (y_new > y_compensate_negative) & (y_new > EPS)
-    ratio[mask] = y_compensate_negative[mask] / y_new[mask]
-    return rgb_offset * ratio[:, None]
+    # AgX opponent-luminance constants from the pinned darktable implementation. They
+    # intentionally differ from standard Rec.2020 Y and belong only to this negative-RGB
+    # guard; scene analysis and the luminance core continue to use true Rec.2020 Y.
+    coeff = np.asarray(
+        [0.2658180370250449, 0.59846986045365, 0.1357121025213052],
+        dtype=np.float32,
+    )
+    # Malformed NaN/Inf inputs are sanitized by the caller after this reference step;
+    # suppress only the expected IEEE invalid-operation warnings so the Python and C++
+    # fallback contracts can be tested without polluting normal command output.
+    with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+        input_y = coeff[0] * rgb[:, 0] + coeff[1] * rgb[:, 1] + coeff[2] * rgb[:, 2]
+        max_rgb = np.max(rgb, axis=1)
+        opponent = max_rgb[:, None] - rgb
+        opponent_y = coeff[0] * opponent[:, 0] + coeff[1] * opponent[:, 1] + coeff[2] * opponent[:, 2]
+        max_opponent = np.max(opponent, axis=1)
+        y_compensate_negative = max_opponent - opponent_y + input_y
+        offset = np.maximum(-np.min(rgb, axis=1), 0.0)
+        rgb_offset = rgb + offset[:, None]
+        max_offset = np.max(rgb_offset, axis=1)
+        opponent_offset = max_offset[:, None] - rgb_offset
+        max_inverse = np.max(opponent_offset, axis=1)
+        y_inverse = coeff[0] * opponent_offset[:, 0] + coeff[1] * opponent_offset[:, 1] + coeff[2] * opponent_offset[:, 2]
+        y_new = coeff[0] * rgb_offset[:, 0] + coeff[1] * rgb_offset[:, 1] + coeff[2] * rgb_offset[:, 2]
+        y_new = max_inverse - y_inverse + y_new
+        ratio = np.ones_like(y_new)
+        mask = (y_new > y_compensate_negative) & (y_new > EPS)
+        ratio[mask] = y_compensate_negative[mask] / y_new[mask]
+        return rgb_offset * ratio[:, None]
 
 
 def _rgb_to_hsv(rgb: Any) -> Any:
@@ -609,21 +623,38 @@ def _hsv_to_rgb(hsv: Any) -> Any:
     return out
 
 
-def _mix_hue(rgb_linear: Any, pre_hue: Any, keep: float) -> Any:
-    """Lerp the post-curve hue back toward the pre-formation hue along the shortest arc,
-    keeping `keep` of the per-channel shift (Blender AgX's mix_percent hack)."""
+def _mix_hue(rgb_linear: Any, pre_hue: Any, restore: float) -> Any:
+    """Restore a fraction of pre-curve hue along the shortest arc.
+
+    darktable semantics: 0 keeps processed hue, 1 restores pre-curve hue.
+    """
     hsv = _rgb_to_hsv(rgb_linear)
     delta = hsv[:, 0] - pre_hue
     delta -= np.rint(delta)
-    hsv[:, 0] = (pre_hue + np.float32(keep) * delta) % 1.0
+    hsv[:, 0] = (pre_hue + np.float32(1.0 - restore) * delta) % 1.0
     return _hsv_to_rgb(hsv)
+
+
+def look_brightness_power(brightness: float) -> float:
+    """darktable's UI-brightness to display-power conversion."""
+    value = max(EPS, float(brightness))
+    return 1.0 / math.sqrt(value) if value < 1.0 else 1.0 / value
+
+
+def _plan_hue_restore(plan: Any) -> float:
+    if hasattr(plan, "hue_restore"):
+        return _clamp_float(float(plan.hue_restore), 0.0, 1.0)
+    # Compatibility for external callers compiled against the old, inverse parameter.
+    if hasattr(plan, "hue_keep"):
+        return 1.0 - _clamp_float(float(plan.hue_keep), 0.0, 1.0)
+    return AGX_HUE_RESTORE
 
 
 def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: Any) -> Any:
     """AgX's shared formation order in the Rec.2020 working space:
 
     guard rail -> inset (rotation+attenuation) -> log2 window -> sigmoid ->
-    linearize -> hue mix (plan.hue_keep of per-channel shift) -> outset in LINEAR light.
+    linearize -> hue restore (darktable semantics) -> outset in LINEAR light.
 
     Deviations from the reference, all deliberate: the endpoint-normalized log2 window
     and C1 sigmoid parameters come from the scene plan while EV=0 remains the calibrated
@@ -631,11 +662,11 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
     the legacy branch retains optional diagonal-pivot gamma. Call formation_matrices(plan)
     for preset-specific inset/outset before invoking this function.
     """
-    hue_keep = _clamp_float(float(getattr(plan, "hue_keep", AGX_HUE_KEEP)), 0.0, 1.0)
+    hue_restore = _plan_hue_restore(plan)
     outset = outset_matrix
     rgb = compress_into_gamut(rgb_rec2020.astype(np.float32, copy=False))
     inset = _apply_matrix3(rgb, inset_matrix)
-    pre_hue = _rgb_to_hsv(np.maximum(inset, 0.0))[:, 0] if hue_keep < 0.999 else None
+    pre_hue = _rgb_to_hsv(np.maximum(inset, 0.0))[:, 0] if hue_restore > 1e-6 else None
     if bool(getattr(plan, "use_c1_endpoints", False)):
         # The DRT derives endpoints from luminance-only scene measurements but maps each
         # AgX-inset channel through the same endpoint-normalized C1 curve, preserving
@@ -661,13 +692,13 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
         curved = apply_curve(log_encoded, params)
         brightness = max(EPS, float(getattr(plan, "view_brightness", 1.0)))
         if abs(brightness - 1.0) > 1e-6:
-            curved = np.power(np.maximum(curved, 0.0), 1.0 / brightness)
+            curved = np.power(np.maximum(curved, 0.0), look_brightness_power(brightness))
         linear = np.power(np.maximum(curved, 0.0), float(params["gamma"]))
     brightness = max(EPS, float(getattr(plan, "view_brightness", 1.0)))
     if bool(getattr(plan, "use_c1_endpoints", False)) and abs(brightness - 1.0) > 1e-6:
         # Mirrors darktable's display-referred "brightness" look control. It raises
         # only the interior of the curve, preserving true black and target white.
-        linear = np.power(np.maximum(linear, 0.0), 1.0 / brightness)
+        linear = np.power(np.maximum(linear, 0.0), look_brightness_power(brightness))
     if pre_hue is not None:
-        linear = _mix_hue(linear, pre_hue, hue_keep)
+        linear = _mix_hue(linear, pre_hue, hue_restore)
     return _apply_matrix3(linear, outset).astype(np.float32)

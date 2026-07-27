@@ -16,7 +16,7 @@ from dngscan.render import apply_agx_core
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "roi_regression.json"
 
 
-def _plan(tone_core: str = "gated", agx_primaries: str = "smooth") -> ToneCompressionPlan:
+def _plan(tone_core: str = "gated", agx_primaries: str = "base") -> ToneCompressionPlan:
     return ToneCompressionPlan(
         target_gamut="Rec2020",
         luma_p1=0.01,

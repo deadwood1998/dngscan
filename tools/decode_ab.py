@@ -3,13 +3,11 @@
 """Attribute a decoder A/B to the decode or to the tone plan it produced.
 
 Comparing --decoder libraw against --decoder coreimage at a fixed --ev does not isolate
-the decoder. Each buffer compiles its own RenderPlan, and those plans differ materially:
-across four Sigma fp frames the black endpoints agreed to within 0.14 EV but LibRaw sat
-on its +3.00 EV white floor on three of the four, because `clip` had destroyed what it
-would otherwise have measured, while Core Image compiled +3.69..+3.96 from real specular
-headroom. The compiled dynamic range therefore runs 0.5-1.0 stops longer on the Core
-Image path. A side-by-side at matched exposure still shows two different tone plans, so
-"RAW 9 looks brighter/flatter" cannot be attributed without holding the plan fixed.
+the decoder. Each buffer compiles its own RenderPlan, and Core Image also executes DNG
+geometry and highlight reconstruction. RAW 9's reconstructed tail is constrained by the
+full-resolution CFA clipped-cell rate before it can set the white endpoint, but the two
+plans can still differ. A side-by-side at matched exposure therefore needs both the
+buffer and the plan attributed separately.
 
 This tool runs the 2x2: each buffer rendered through each plan.
 

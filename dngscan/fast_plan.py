@@ -12,7 +12,7 @@ from . import drt as drt_engine
 from .constants import OKLAB_M1, OKLAB_M1_INV, OKLAB_M2, OKLAB_M2_INV, RGB_TO_XYZ, XYZ_TO_RGB
 from .models import ToneCompressionPlan
 
-NATIVE_ABI_VERSION = 1
+NATIVE_ABI_VERSION = 2
 
 # Compiled plans are tiny, but every distinct scene compiles a distinct plan, so an
 # unbounded dict grows for the lifetime of a GUI server session. FIFO-evict beyond this.
@@ -35,7 +35,7 @@ def _plan_cache_key(plan: ToneCompressionPlan) -> tuple[Any, ...]:
         _flat_matrix(inset),
         _flat_matrix(outset),
         _curve_key(curve),
-        float(plan.hue_keep),
+        float(plan.hue_restore),
         float(plan.view_brightness),
         float(plan.punch_strength),
         _flat_matrix(RGB_TO_XYZ["Rec2020"]),
@@ -73,7 +73,7 @@ def _build_native_plan(plan: ToneCompressionPlan) -> Any:
         inset=_flat_matrix(inset),
         outset=_flat_matrix(outset),
         curve=SimpleNamespace(**curve_py),
-        hue_keep=float(plan.hue_keep),
+        hue_restore=float(plan.hue_restore),
         view_brightness=max(1e-12, float(plan.view_brightness)),
         punch_strength=float(plan.punch_strength),
         rec2020_to_xyz=_flat_matrix(RGB_TO_XYZ["Rec2020"]),

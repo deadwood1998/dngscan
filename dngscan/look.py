@@ -60,10 +60,10 @@ class LookField:
     magenta_chroma_scale: float = 1.0
     # Optional AgX-core overrides carried by the look (applied to the tone plan before
     # the curve runs, unlike the Oklab field above which is post-AgX):
-    #   agx_hue_keep — fraction of per-channel hue skew kept (None = plan default);
+    #   agx_hue_restore — fraction of pre-curve hue restored (None = plan default);
     #   agx_target_black — linear output floor, >0 lifts blacks for faded film looks;
     #   agx_target_white — linear output ceiling, <1 fades whites (milky/print top).
-    agx_hue_keep: float | None = None
+    agx_hue_restore: float | None = None
     agx_target_black: float | None = None
     agx_target_white: float | None = None
 
@@ -141,10 +141,11 @@ _load_json_fields()
 LOOK_CHOICES = ("none",) + tuple(LOOK_FIELDS)
 
 # Per-look AgX-core defaults when LookField leaves agx_* unset (JSON-measured fields
-# win when explicitly set). hue_keep preserves more per-channel skew (sunset/orange);
+# win when explicitly set). Lower hue_restore preserves more per-channel skew
+# (sunset/orange);
 # target_black lifts the curve floor for faded film sims.
 AGX_LOOK_DEFAULTS: dict[str, dict[str, float]] = {
-    "optic_warm_cyan": {"agx_hue_keep": 0.52},
+    "optic_warm_cyan": {"agx_hue_restore": 0.52},
 }
 
 
@@ -161,22 +162,22 @@ def _look_agx_scalar(look: str, key: str) -> float | None:
 
 
 def agx_plan_overrides(
-    look: str, strength: float = 1.0, base_hue_keep: float = 0.6
+    look: str, strength: float = 1.0, base_hue_restore: float = 0.6
 ) -> dict[str, float]:
-    """AgX-core overrides carried by a look (hue keep, faded target black).
+    """AgX-core overrides carried by a look (hue restore, faded target black).
 
     Returned keys match ToneCompressionPlan field names so callers can apply them with
-    dataclasses.replace. Strength scales hue-keep from the caller's compiled primary
+    dataclasses.replace. Strength scales hue restore from the caller's compiled primary
     preset, so gradeStrength < 1 eases back toward that base AgX."""
     if look == "none":
         return {}
     s = max(0.0, min(1.5, float(strength)))
     out: dict[str, float] = {}
-    hue = _look_agx_scalar(look, "agx_hue_keep")
+    hue = _look_agx_scalar(look, "agx_hue_restore")
     if hue is not None:
-        base = float(min(1.0, max(0.0, base_hue_keep)))
+        base = float(min(1.0, max(0.0, base_hue_restore)))
         target = float(min(1.0, max(0.0, hue)))
-        out["hue_keep"] = base + s * (target - base)
+        out["hue_restore"] = base + s * (target - base)
     black = _look_agx_scalar(look, "agx_target_black")
     if black is not None:
         out["target_black_linear"] = s * float(min(0.15, max(0.0, black)))

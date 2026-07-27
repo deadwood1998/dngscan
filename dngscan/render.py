@@ -134,10 +134,10 @@ def agx_compress_into_gamut(rgb: Any) -> Any:
 def plan_with_look_overrides(
     plan: ToneCompressionPlan | RenderPlan, look: str, look_strength: float = 1.0
 ) -> ToneCompressionPlan | RenderPlan:
-    """Apply a chromatic look's AgX-core overrides (hue keep, faded target black) to the
+    """Apply a chromatic look's AgX-core overrides (hue restore, faded target black) to the
     tone plan. Identity when the look carries none, so renders stay byte-identical."""
     tone = plan.tone if isinstance(plan, RenderPlan) else plan
-    overrides = look_engine.agx_plan_overrides(look, look_strength, float(tone.hue_keep))
+    overrides = look_engine.agx_plan_overrides(look, look_strength, float(tone.hue_restore))
     if not overrides:
         return plan
     adjusted = replace(tone, **overrides)
@@ -301,7 +301,7 @@ def render_output_linear(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
 ) -> Any:
     if look != "none" and display_filter != "none":
         raise ValueError("色度 look 与输出滤镜不能同时启用")
@@ -345,7 +345,7 @@ def render_output_u8(
     scene_transform_strength: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
 ) -> Any:
     if look != "none" and display_filter != "none":
         raise ValueError("色度 look 与输出滤镜不能同时启用")

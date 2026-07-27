@@ -153,16 +153,16 @@ class ToneCompressionPlan:
     # Optional manual pivot offset. The automatic compiler keeps this at zero until a
     # constrained C1 solver can move local contrast without moving the EV=0 anchor.
     pivot_ev_offset: float = 0.0
-    # Fraction of per-channel AgX hue skew kept after the curve. Default 0.6 follows
-    # darktable; explicit Blender-reference primary plans use 0.4.
-    hue_keep: float = 0.6
+    # Fraction of the pre-curve hue restored after the curve. darktable semantics:
+    # 0 keeps the per-channel curve shift; 1 fully restores the recorded input hue.
+    hue_restore: float = 0.6
     # Linear output floor of the curve; >0 lifts blacks for faded film looks.
     target_black_linear: float = 0.0
     # Linear output ceiling of the curve (darktable target_white); <1 converges the
     # shoulder to a faded, sub-display-white top for milky/print-style looks.
     target_white_linear: float = 1.0
-    # AgX primaries preset (base/punchy/muted/smooth); darktable smooth is the default.
-    agx_primaries: str = "smooth"
+    # AgX primaries preset (base/punchy/muted/smooth); pinned darktable uses base.
+    agx_primaries: str = "base"
     # The endpoint-normalized C1 DRT keeps the calibrated scene EV=0 pivot fixed while
     # re-scaling only its black/white bounds. These values share that scene-relative EV
     # domain; `shoulder_start_ev` is the requested linear latitude above the pivot.

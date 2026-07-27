@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Full-frame EV reference: median → 18% gray with highlight safety."""
+"""Decoded-scene brightness reference with final-output highlight safety."""
 from __future__ import annotations
 
 import math
@@ -41,6 +41,16 @@ def median_align_ev(mode: str, analysis: Analysis) -> float:
 def anchored_median_ev(mode: str, analysis: Analysis, ev: float) -> float:
     gain = compute_exposure_gain(mode, ev)
     return float(analysis.median_vs_gray_ev + math.log2(max(gain, EPS)))
+
+
+def scene_body_align_ev(plan: RenderPlan) -> float:
+    """EV that places the decoder-specific reliable scene body median at 18% gray."""
+    return float(-plan.scene.body_ev_p50)
+
+
+def anchored_scene_body_ev(plan: RenderPlan, ev: float) -> float:
+    """Reliable scene body median, in EV relative to 18% gray, after a manual EV."""
+    return float(plan.scene.body_ev_p50 + float(ev))
 
 
 def output_highlight_stats(rgb_linear: Any, gamut: str) -> tuple[float, float, float, float]:
@@ -98,7 +108,7 @@ def render_sample_linear_output(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     sample_masks: Any | None = None,
     sample_raw_guidance: Any | None = None,
     adjustments: RenderAdjustments | None = None,
@@ -163,12 +173,34 @@ def max_safe_ev(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
+    tone_plan: RenderPlan | None = None,
 ) -> float:
     """Largest EV (>= from_ev) whose preview-scale output stays below highlight thresholds."""
     if np is None:
         return float(from_ev)
+    if tone_plan is None and analysis is not None:
+        from .grade import RENDER_MODE
+
+        reference_bundle = replace(
+            bundle,
+            exposure_gain=compute_exposure_gain(exposure_mode_for_tone_core(tone_core), 0.0),
+        )
+        tone_plan = build_render_plan(
+            reference_bundle,
+            analysis,
+            RENDER_MODE,
+            gamut,
+            scene_transform,
+            scene_transform_strength,
+            punch_scale,
+            tone_core,
+            lum_norm,
+            agx_primaries=agx_primaries,
+            adjustments=adjustments,
+        )
+
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = max(1, int(math.ceil(flat.shape[0] / max_samples)))
     sample_rgb = flat[::step, :3]
@@ -191,6 +223,7 @@ def max_safe_ev(
             gamut,
             ev,
             sample_rgb,
+            tone_plan=tone_plan,
             look=look,
             look_strength=look_strength,
             display_filter=display_filter,
@@ -213,6 +246,7 @@ def max_safe_ev(
         gamut,
         from_ev,
         sample_rgb,
+        tone_plan=tone_plan,
         look=look,
         look_strength=look_strength,
         display_filter=display_filter,
@@ -263,17 +297,36 @@ def compute_auto_ev(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
 ) -> AutoEvResult:
-    """Boost toward 18% gray median when scene is dark; never darken high-key captures.
+    """Reference the reliable decoded scene body to 18% gray without changing EV 0.
 
-    Highlight cap limits upward boost only. Scenes already at or above the anchor
-    (negative median_align target) stay at baseline_ev — auto does not gray-world
-    snow/high-key into mid gray.
+    The body statistic is measured after the selected decoder and scene transform, while
+    excluding unreliable RAW-clipped highlights. This makes the optional reference
+    decoder-independent without introducing a hidden fixed correction. Highlight safety
+    limits upward boost only; high-key scenes are never darkened toward gray.
     """
-    exposure_mode = exposure_mode_for_tone_core(tone_core)
-    target = median_align_ev(exposure_mode, analysis)
+    from .grade import RENDER_MODE
+
+    reference_bundle = replace(
+        bundle,
+        exposure_gain=compute_exposure_gain(exposure_mode_for_tone_core(tone_core), 0.0),
+    )
+    reference_plan = build_render_plan(
+        reference_bundle,
+        analysis,
+        RENDER_MODE,
+        gamut,
+        scene_transform,
+        scene_transform_strength,
+        punch_scale,
+        tone_core,
+        lum_norm,
+        agx_primaries=agx_primaries,
+        adjustments=adjustments,
+    )
+    target = scene_body_align_ev(reference_plan)
     cap = max_safe_ev(
         bundle,
         analysis,
@@ -290,6 +343,7 @@ def compute_auto_ev(
         lum_norm=lum_norm,
         agx_primaries=agx_primaries,
         adjustments=adjustments,
+        tone_plan=reference_plan,
     )
     boost_target = max(target, baseline_ev)
     ev = min(boost_target, cap)
@@ -300,7 +354,7 @@ def compute_auto_ev(
         ev_boost=float(ev - baseline_ev),
         highlight_limited=limited,
         highlight_cap_ev=float(cap),
-        anchored_median_ev=anchored_median_ev(exposure_mode, analysis, ev),
+        anchored_median_ev=anchored_scene_body_ev(reference_plan, ev),
     )
 
 
@@ -318,7 +372,7 @@ def resolve_export_ev(
     punch_scale: float = 1.0,
     tone_core: str = "agx",
     lum_norm: str = "y",
-    agx_primaries: str = "smooth",
+    agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
 ) -> tuple[float, AutoEvResult | None]:
     if not is_ev_auto(ev):
@@ -346,11 +400,11 @@ def resolve_export_ev(
 def auto_ev_overlay_lines(result: AutoEvResult) -> list[str]:
     lines = [f"全图亮度参考 {result.ev_boost:+.2f} EV"]
     if result.ev_median_target < -1e-6 and result.ev_boost < 1e-6:
-        lines.append("全图中灰已高于锚定 · 保持 EV 0")
+        lines.append("可靠主体已高于锚定 · 保持 EV 0")
     elif result.highlight_limited:
         lines.append(
             f"参考目标 {result.ev_median_target:+.2f} · 高光限制至 {result.ev:+.2f}"
         )
     else:
-        lines.append(f"全图中灰参考 18% ({result.anchored_median_ev:+.2f} EV)")
+        lines.append(f"可靠主体参考 18% ({result.anchored_median_ev:+.2f} EV)")
     return lines
