@@ -52,6 +52,12 @@ from dngscan.tone import build_render_plan
 
 LUMA_REC2020 = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
 
+# Display luma below which a pixel's saturation is noise rather than colour. Calibrated
+# on a mostly-black ISO-high neon frame (33 % of it renders fully black): at this floor
+# the sign of the LibRaw/RAW 9 saturation difference stops depending on how much black
+# the frame contains, and it still holds if the floor is raised to 0.30. See _stats.
+SATURATION_LUMA_FLOOR = 0.15
+
 
 def _stats(rgb_u8: np.ndarray) -> dict[str, float]:
     """Distribution summary that survives a change of frame geometry."""
@@ -60,11 +66,22 @@ def _stats(rgb_u8: np.ndarray) -> dict[str, float]:
     largest = arr.max(axis=2)
     smallest = arr.min(axis=2)
     saturation = np.where(largest > 1e-6, (largest - smallest) / np.maximum(largest, 1e-6), 0.0)
+    # Saturation is only meaningful where there is signal. Near black the ratio is driven
+    # by chroma noise, so on a dark frame a whole-image median compares noise rather than
+    # colour — and it inverts the answer. On a neon frame the unmasked median read LibRaw
+    # 0.580 against RAW 9's 0.385, which attributed -0.333 to the decode and looked like
+    # the ML path desaturating the scene; above the floor the same pair reads 0.333
+    # against 0.492, attributing +0.148, and the rendered images agree with the second
+    # reading. The unmasked number was measuring RAW 9 removing LibRaw's chroma noise.
+    # Coverage is reported alongside so a threshold that leaves few pixels is visible.
+    lit = luma > SATURATION_LUMA_FLOOR
+    lit_pct = float(100.0 * np.count_nonzero(lit) / luma.size)
     return {
         "luma_p1": float(np.percentile(luma, 1)),
         "luma_p50": float(np.median(luma)),
         "luma_p99": float(np.percentile(luma, 99)),
-        "sat_p50": float(np.median(saturation)),
+        "sat_p50": float(np.median(saturation[lit])) if np.any(lit) else float("nan"),
+        "sat_coverage_pct": lit_pct,
         "black_pct": float(100.0 * np.count_nonzero(luma < 1.0 / 255.0) / luma.size),
         "white_pct": float(100.0 * np.count_nonzero(luma > 254.0 / 255.0) / luma.size),
     }
@@ -154,7 +171,8 @@ def main(argv: list[str]) -> int:
         print(
             f"  {key}  缓冲={buf:9s} 计划={plan:9s} "
             f"亮度 p1/p50/p99={s['luma_p1']:.4f}/{s['luma_p50']:.4f}/{s['luma_p99']:.4f} "
-            f"饱和={s['sat_p50']:.4f} 纯黑={s['black_pct']:5.2f}% 纯白={s['white_pct']:5.2f}%   {note}"
+            f"饱和={s['sat_p50']:.4f}(亮部{s['sat_coverage_pct']:4.1f}%) "
+            f"纯黑={s['black_pct']:5.2f}% 纯白={s['white_pct']:5.2f}%   {note}"
         )
 
     # Attributing on median luma alone is misleading: the plan's effect is concentrated
@@ -166,7 +184,7 @@ def main(argv: list[str]) -> int:
     rows = (
         ("中间调 luma p50", "luma_p50", "ev"),
         ("高光   luma p99", "luma_p99", "ev"),
-        ("饱和   sat p50", "sat_p50", "abs"),
+        ("饱和 sat p50(亮部)", "sat_p50", "abs"),
         ("纯白像素 %", "white_pct", "abs"),
     )
     print(f"  {'统计量':18s} {'原生 A→B':>11s} {'解码 A→C':>11s} {'计划 A→D':>11s} {'交互残差':>11s}")
