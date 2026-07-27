@@ -259,6 +259,31 @@ and those legitimately differ: Apple keeps specular headroom LibRaw's `clip` des
 and RAW 9's denoising raises the black end. Brightness matches; the tonal distribution
 does not, and should not, since that difference is the decoder you chose.
 
+*Why the layering is this way.* A render's brightness is the product of three things: the
+scene radiance relative to the exposure the photographer chose, the decoder's scale
+convention, and the render's own decisions. The first is the photograph — a night scene
+must stay dark — and the third is intent. Only the middle term is noise, and it is the
+one that made EV 0 mean different things on different devices. Separating it is what lets
+cross-device consistency and faithfulness coexist, and it is also why this is not the
+content-adaptive normalisation this tool otherwise refuses: an auto exposure moves the
+*level* and greys out a night scene, while this normalises a *gain* and leaves every
+level where the capture put it.
+
+That also settles where the step belongs. darktable's scene-referred order is exposure
+first, then the view transform, and dngscan has always applied an exposure gain before
+AgX — but it was a fixed constant (`0.18 * 2**3`), so the pre-transform stage did no
+device normalisation at all and the scene-adaptation lived entirely in the endpoint
+compilation afterwards. Measuring the decoder's scale in that pre-transform stage is what
+puts the pipeline on darktable's ordering in substance rather than only in sequence.
+
+One residual asymmetry is worth knowing before trusting a preview. The Core Image preview
+decodes to a 1280 px proxy while the LibRaw preview bins 2×2 superpixels, so the two see
+different amounts of noise and can compile slightly different black endpoints than their
+own exports. Measured across three frames the Core Image preview-to-export black shift
+was −0.01, −0.22 and +0.01 EV, against −0.05, +0.02 and −0.04 EV on the LibRaw path: the
+same order of magnitude except on a noisy frame, where the proxy's averaged-away noise
+reads as a cleaner shadow than the export will produce.
+
 **BaselineExposure is honoured on both paths.** The DNG tag is the file telling the
 renderer how much exposure to apply on top of the raw data. Zeroing it looked safe while
 that meant a fixed per-model calibration constant — Sigma fp writes 1.0 on every frame
