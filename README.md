@@ -194,15 +194,29 @@ ask for: the reconstruction is the decoder. Note that `luminanceNoiseReductionAm
 0 therefore does not mean "no denoising" — it selects the least-smoothed end of a
 calibrated range over a model that always runs.
 
-dngscan clears the exposed look controls anyway, including `sharpnessAmount`, which
-defaults to 0.485, is inert on version 8 and live on version 9. One control is set
-against Apple's documentation rather than with it: WWDC26 states that
-`colorNoiseReductionAmount`, `detailAmount` and `moireReductionAmount` have no effect on
-RAW 9, and `isColorNoiseReductionSupported` duly reports false — but measurement here
-disagrees, with those three behaving as aliases of one internal control whose 0.5 default
-changes 93.6 % of pixels. Trusting the flag would leave half-strength denoising on, so it
-is cleared unconditionally; zero is the minimum under either reading. The discrepancy is
-unresolved and worth re-testing on a later macOS build.
+dngscan clears the exposed look controls anyway, including `sharpnessAmount`, which is
+inert on version 8, live on version 9, and whose default is file- and version-dependent
+(0.485 and 0.954 both seen). Measured at full resolution against Apple's own defaults,
+only three of the exposed controls do anything on version 9, and the configuration is
+already at or near the most detailed end the API can reach:
+
+| control | change vs the settings used here |
+| --- | --- |
+| `colorNoiseReductionAmount`, `detailAmount` | none — 0.00 % of pixels over 0 / 0.5 / 1.0 |
+| `sharpnessAmount` at Apple's default | +5.9 % high-frequency energy |
+| `luminanceNoiseReductionAmount` at its 0.043 default | −3.1 %; at 1.0, −59.8 % |
+| `moireReductionAmount` forced to 0 | −59.8 % |
+
+Two of those are worth reading twice. The first row corrects an earlier claim in this
+file that the three behaved as aliases of one internal control changing 93.6 % of pixels:
+re-measured, they do not, and Apple's documentation is right about them. And
+`moireReductionAmount` is deliberately left at Apple's 0.55 rather than cleared — its
+zero is the control's *smoothest* end, not "off", so forcing it would cost as much detail
+as full luminance denoising. That leaves `sharpnessAmount` as the only detail still on the
+table, and it is spatial sharpening, which has no place in a scene-referred buffer.
+
+So the softness that remains in a RAW 9 render is the model, not a switch left on. There
+is nothing further to turn off.
 
 Even so the residual difference remains large, and how large depends on the scene.
 Measured as the median local standard deviation over 8×8 tiles in the darkest 30 % of the

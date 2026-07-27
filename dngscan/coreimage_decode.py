@@ -312,6 +312,8 @@ def configure_linear_filter(
     _set_amount(filt, "setExposure_", None, float(exposure))
     # 0 is the least-smoothed end of a calibrated range, not "denoising off": RAW 9 fuses
     # denoise into the demosaic model, so it always runs. Nothing here can turn it off.
+    # Measured, zero is the right end to ask for — Apple's 0.043 default already costs
+    # 3.1 % of high-frequency energy and 1.0 costs 59.8 %.
     _set_amount(filt, "setLuminanceNoiseReductionAmount_", "isLuminanceNoiseReductionSupported", 0.0)
     color_nr_cleared = _set_amount(
         filt, "setColorNoiseReductionAmount_", "isColorNoiseReductionSupported", 0.0
@@ -319,28 +321,35 @@ def configure_linear_filter(
     # RAW 9 is a tiled CoreML model that fuses demosaic WITH denoise (WWDC26 session
     # 305), so denoising is architectural rather than a stage that can be switched off.
     #
-    # This is set against Apple's documentation, not with it, and the conflict is
-    # unresolved. WWDC26 states that colorNoiseReductionAmount, detailAmount and
-    # moireReductionAmount have no effect on RAW 9, and isColorNoiseReductionSupported
-    # duly reports False — which gates the call above. Measurement here disagrees: the
-    # three behave as aliases of one internal control on version 9, since setting any of
-    # them to 1.0 gives bit-identical output differing from all-zero on 93.6 % of pixels.
-    # The default is 0.5, so trusting the flag would leave half-strength denoising on.
-    # Clear it unconditionally; zero is the minimum under either reading. Worth re-testing
-    # on a later macOS build, since one of the two readings is wrong.
+    # An earlier revision of this comment claimed colorNoiseReductionAmount, detailAmount
+    # and moireReductionAmount act as aliases of one internal control, contradicting
+    # Apple's documentation. Re-measured on the current configuration at full resolution,
+    # that is wrong and the documentation is right for two of the three: sweeping colorNR
+    # or detail over 0 / 0.5 / 1.0 changes exactly 0.00 % of pixels. The unconditional
+    # clear below is therefore inert, and kept only so a future build that revives the
+    # control cannot reintroduce its 0.5 default unnoticed.
     if not color_nr_cleared:
         color_nr_cleared = _set_amount(filt, "setColorNoiseReductionAmount_", None, 0.0)
     _set_amount(filt, "setDetailAmount_", "isDetailSupported", 0.0)
     _set_amount(filt, "setContrastAmount_", "isContrastSupported", 0.0)
-    # Sharpening defaults to 0.485 and is a spatial operator, so leaving it on made the
-    # buffer no longer a plain scene-linear decode. It was inert on decoder version 8
-    # (measured: setting 0 vs 1 changed nothing) but is live on version 9, so it only
-    # started mattering once this module began requesting RAW 9 — a fresh filter still
-    # reports version 8, so 9 is never reached without asking. Moire reduction is zero by
-    # default on both, cleared here so a future default change cannot slip through.
+    # Sharpening is a spatial operator, so leaving it on would make the buffer no longer a
+    # plain scene-linear decode. It is inert on decoder version 8 (measured: 0 vs 1 changed
+    # nothing) and live on version 9, so it only started mattering once this module began
+    # requesting RAW 9 — a fresh filter reports version 8, so 9 is never reached without
+    # asking. Its default is file- and version-dependent (0.485 and 0.954 seen), which is
+    # its own reason not to leave it alone. Clearing it costs 5.9 % of high-frequency
+    # energy against Apple's default, the price of keeping display-referred sharpening out
+    # of a scene-referred buffer.
     sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
     if not sharpness_cleared:
         sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", None, 0.0)
+    # Moire reduction is deliberately NOT cleared, which is the opposite of how it reads.
+    # isMoireReductionSupported returns False on version 9 so the call below is skipped
+    # anyway, but were it forced to 0 the buffer would lose 59.8 % of its high-frequency
+    # energy — the control's zero is its *smoothest* end, not "off", and its default of
+    # 0.55 is on a plateau where 0.5 and 1.0 render identically. Leaving Apple's default is
+    # the sharper choice; the guarded call stays so an SDK that starts reporting support
+    # keeps the value pinned somewhere known rather than drifting.
     _set_amount(filt, "setMoireReductionAmount_", "isMoireReductionSupported", 0.0)
     _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
     # Gamut mapping is an output-referred clamp and belongs after the view transform, not

@@ -157,12 +157,25 @@ CoreML 模型（WWDC26 session 305），所以不存在"未处理模式"可以�
 也因此 `luminanceNoiseReductionAmount` 为 0 **并不等于"不降噪"**——它只是在一个始终运行
 的模型上选中了标定范围里最不平滑的一端。
 
-dngscan 仍会清零暴露出来的 look 类控制项，包括默认 0.485、在版本 8 上无效而在版本 9 上
-生效的 `sharpnessAmount`。有一项是**逆着 Apple 的文档**设的：WWDC26 明确说
-`colorNoiseReductionAmount`、`detailAmount`、`moireReductionAmount` 在 RAW 9 上无效，
-`isColorNoiseReductionSupported` 也确实报 false——但本机实测与之矛盾：这三者表现得像同一个
-内部控制的别名，其 0.5 的默认值会改变 93.6% 的像素。信任那个标志就会留着半强度降噪，
-所以这里无条件清零；按两种解读，0 都是下界。这个矛盾尚未澄清，值得在后续 macOS 版本上复测。
+dngscan 仍会清零暴露出来的 look 类控制项，包括 `sharpnessAmount`——它在版本 8 上无效、
+版本 9 上生效，默认值随文件与版本而变（见过 0.485 和 0.954）。在全分辨率下逐项对着
+Apple 默认值实测，版本 9 上真正起作用的只有三项，而当前配置已经处在 API 所能达到的
+**最锐一端**：
+
+| 控制项 | 相对本文所用设置的变化 |
+| --- | --- |
+| `colorNoiseReductionAmount`、`detailAmount` | 无——0/0.5/1.0 全程改变 0.00% 像素 |
+| `sharpnessAmount` 取 Apple 默认 | 高频能量 +5.9% |
+| `luminanceNoiseReductionAmount` 取默认 0.043 | −3.1%；取 1.0 则 −59.8% |
+| `moireReductionAmount` 强制为 0 | −59.8% |
+
+其中两行值得重读。第一行**订正了本文此前的一个论断**——先前写的是"这三者表现得像同一个
+内部控制的别名，0.5 的默认值会改变 93.6% 的像素"；重测后不成立，在这两项上 Apple 的文档
+是对的。而 `moireReductionAmount` 是**有意保留** Apple 的 0.55 而非清零：它的零点是这个
+控制**最平滑**的一端而不是"关闭"，强行清零付出的细节代价与满强度亮度降噪相当。于是唯一
+还能拿到的只剩 `sharpnessAmount`，而那是空间锐化，不该出现在 scene-referred 缓冲里。
+
+所以 RAW 9 渲染里残留的柔化来自模型本身，不是某个没关掉的开关。没有可以再关的东西了。
 
 即便如此，残余差异依然很大，而且差多少取决于场景。以画面最暗 30% 区域内 8×8 块局部标准差
 的中位数为度量，两条路径都固定 `--ev 0`：

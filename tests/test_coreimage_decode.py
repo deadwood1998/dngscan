@@ -345,6 +345,29 @@ class SubjectiveControlTests(unittest.TestCase):
         self.assertAlmostEqual(float(info["sharpness_amount"]), 0.0, places=6)
         self.assertTrue(info["color_noise_cleared"])
 
+    def test_moire_reduction_is_left_at_apples_default(self) -> None:
+        """The one look-adjacent control deliberately not cleared.
+
+        moireReductionAmount reads like something to zero, and isMoireReductionSupported
+        returns False on version 9 so the guarded call skips it anyway. Forcing it would
+        be actively harmful: measured at full resolution, 0 costs 59.8 % of the buffer's
+        high-frequency energy, because the control's zero is its smoothest end rather
+        than "off", and 0.5 and 1.0 render identically on the plateau its default sits on.
+        """
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+        from Foundation import NSURL
+        import Quartz
+
+        filt = Quartz.CIRAWFilter.alloc().initWithImageURL_(
+            NSURL.fileURLWithPath_(str(SIGMA_DNG))
+        )
+        default = float(filt.moireReductionAmount())
+        coreimage_decode.configure_linear_filter(filt, version="9", scale_factor=0.1)
+        self.assertAlmostEqual(float(filt.moireReductionAmount()), default, places=6)
+        self.assertGreater(default, 0.0)
+
     def test_highlight_recovery_stays_on_and_keeps_clipped_highlights_neutral(
         self,
     ) -> None:
