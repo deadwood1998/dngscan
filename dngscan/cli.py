@@ -25,9 +25,10 @@ from .raw_io import load_raw
 from .report import csv_row, print_report, write_csv
 from .scene_transform import SCENE_TRANSFORM_CHOICES
 from .models import RenderAdjustments
+from .scene_scale import with_intent_exposure
 from .tone import (
-    LUM_NORM_CHOICES, TONE_CORE_CHOICES, apply_render_adjustments, compute_exposure_gain,
-    exposure_mode_for_tone_core, build_render_plan,
+    LUM_NORM_CHOICES, TONE_CORE_CHOICES, apply_render_adjustments,
+    build_render_plan,
 )
 
 
@@ -344,8 +345,8 @@ def main(argv: list[str]) -> int:
         else:
             resolved_ev = float(ev_input)
 
-        bundle.exposure_gain = compute_exposure_gain(
-            exposure_mode_for_tone_core(args.tone_core), resolved_ev
+        bundle = with_intent_exposure(
+            bundle, user_ev=resolved_ev, tone_core=args.tone_core
         )
         if out_path is not None:
             plot_dashboard(bundle, analysis, y, ev, out_path, auto_ev=auto_ev_result)

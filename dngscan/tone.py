@@ -80,8 +80,25 @@ def compute_exposure_gain(mode: str, ev: float) -> float:
     return 0.18 * (2.0 ** MIDGRAY_HEADROOM_STOPS) * manual
 
 
-def scene_rec2020_to_float(values: Any, scene_scale: float, gain: float = 1.0) -> Any:
-    scale = float(scene_scale)
+def scene_rec2020_to_float(
+    values: Any,
+    scene_scale: float,
+    gain: float = 1.0,
+    *,
+    contract: Any | None = None,
+) -> Any:
+    """Convert stored decoder RGB to intent-scene float32.
+
+    Prefer passing ``contract`` (:class:`~dngscan.models.SceneScaleContract`) so
+    callers do not have to reassemble ``storage_scale`` and ``total_render_gain``.
+    The legacy ``scene_scale`` / ``gain`` pair remains for migration callers and
+    must stay bit-identical to the contract path.
+    """
+    if contract is not None:
+        scale = float(contract.storage_scale)
+        gain = float(contract.total_render_gain)
+    else:
+        scale = float(scene_scale)
     if not np.isfinite(scale) or scale <= 0.0:
         scale = 1.0
     # A float decoder can legitimately carry scene_scale below one (for example when an

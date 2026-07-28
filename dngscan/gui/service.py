@@ -8,7 +8,6 @@ import math
 import multiprocessing as mp
 import threading
 from queue import Empty
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -450,9 +449,8 @@ def export_preview_jpeg(
             inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
         )
 
-    proxy_bundle = replace(
-        cached.bundle,
-        exposure_gain=dg.compute_exposure_gain(dg.exposure_mode_for_tone_core(tone_core), ev),
+    proxy_bundle = dg.with_intent_exposure(
+        cached.bundle, user_ev=ev, tone_core=tone_core
     )
     with RENDER_LOCK:
         render_plan = dg.build_render_plan(
@@ -688,7 +686,7 @@ def run_export(params: dict) -> dict:
             adjustments=adjustments,
         )
         ev = auto_ev_result.ev
-    bundle.exposure_gain = dg.compute_exposure_gain(dg.exposure_mode_for_tone_core(tone_core), ev)
+    bundle = dg.with_intent_exposure(bundle, user_ev=ev, tone_core=tone_core)
     render_plan = dg.build_render_plan(
         bundle,
         analysis,
@@ -719,7 +717,8 @@ def run_export(params: dict) -> dict:
     )
     jpg_path = outdir / f"{inp.stem}_{suffix}.jpg"
     with RENDER_LOCK:
-        bundle.exposure_gain = dg.compute_exposure_gain(dg.exposure_mode_for_tone_core(tone_core), ev)
+        # Intent exposure already applied via with_intent_exposure above; do not
+        # mutate a shared bundle in place under the lock.
         icc_profile = dg.output_icc_profile_bytes(gamut)
         export_result = dg.export_jpeg(
             path=inp,

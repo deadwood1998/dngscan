@@ -23,6 +23,9 @@ class RawBundle:
     camera_white_levels: list[float]
     scene_highlight_mode: str = "clip"
     orientation_flip: int = 0
+    # Migration field: intent exposure as fixed_midgray × user_ev. Prefer
+    # SceneScaleContract / with_intent_exposure(); do not mutate in place across
+    # concurrent preview/export work.
     exposure_gain: float = 1.0
     wb_mode: str = "camera"
     daylight_wb: list[float] | None = None
@@ -55,7 +58,8 @@ class RawBundle:
     scene_decoder: str = "libraw"
     scene_decoder_version: str | None = None
     # Which Core Image scale policy produced the buffer: aligned (per-file decoded-green
-    # comparison), unity (Apple-native), or measured (legacy fixed Sigma-fp fit).
+    # comparison → calibration_confidence=relative), unity (Apple-native /
+    # decoder-native), or measured (legacy fixed Sigma-fp fit, also relative).
     scene_scale_mode: str | None = None
     # Per-file scalar used only by the aligned policy. It compares two decoded green
     # medians; it is not an absolute sensor calibration or content-adaptive auto exposure.
@@ -284,3 +288,38 @@ class AutoEvResult:
     highlight_limited: bool
     highlight_cap_ev: float
     anchored_median_ev: float
+
+
+@dataclass(frozen=True)
+class SceneScaleContract:
+    """Immutable factors that turn stored decoder RGB into intent-scene RGB.
+
+    Phase 1 expresses the existing product
+    ``stored / storage_scale * total_render_gain`` without reordering multiplies.
+    See ``dngscan.scene_scale`` for the compatibility constructor.
+    """
+
+    storage_scale: float
+    decoder_calibration_gain: float = 1.0
+    baseline_render_gain: float = 1.0
+    fixed_midgray_gain: float = 1.0
+    user_ev_gain: float = 1.0
+    baseline_baked_in: bool = False
+    scale_mode: str = "libraw"
+    # calibrated: fixed file recipe; relative: per-file decoder comparison;
+    # decoder-native: Apple/unity handoff without LibRaw alignment.
+    calibration_confidence: str = "relative"
+
+    @property
+    def total_render_gain(self) -> float:
+        return float(
+            self.decoder_calibration_gain
+            * self.baseline_render_gain
+            * self.fixed_midgray_gain
+            * self.user_ev_gain
+        )
+
+    @property
+    def legacy_exposure_gain(self) -> float:
+        """Product historically stored on ``RawBundle.exposure_gain``."""
+        return float(self.fixed_midgray_gain * self.user_ev_gain)

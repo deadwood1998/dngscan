@@ -2,6 +2,7 @@
 
 > 状态：实现规格，供 Cursor 按阶段执行  
 > **Phase 0：已落地**（`tests/sdr_freeze/` + `tests/test_sdr_freeze.py` + `tools/regen_sdr_freeze.py`）  
+> **Phase 1：已落地**（`SceneScaleContract` + `dngscan/scene_scale.py` + `tests/test_scene_scale_contract.py`）  
 > 范围：独立 HDR DRT、RAW9/LibRaw scene 契约、RGB gain map 及验证  
 > 不在本轮范围：视频 HDR、HEIF/AVIF、改变现有 SDR 成片、重新设计 RAW 解码器
 

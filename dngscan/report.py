@@ -224,7 +224,8 @@ def print_report(
                     scale_note = f"，逐文件尺度对齐失败（{align_err}），已回退 1×"
                 else:
                     scale_note = (
-                        f"，尺度对齐={align:.4f}×（逐文件解码绿色中位比；非自动曝光）"
+                        f"，尺度对齐={align:.4f}×（逐文件解码绿色中位比；"
+                        "confidence=relative，非自动曝光/非绝对辐射标定）"
                     )
             elif scale_mode == "measured":
                 scale_note = "，尺度=旧版 Sigma fp 固定实测倍率（仅供复现）"
