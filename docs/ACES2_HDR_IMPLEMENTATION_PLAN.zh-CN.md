@@ -7,7 +7,9 @@
 > **Phase 3：已落地**（`hdr_tone.py` / `hdr_evidence.py` + HDR dataclasses）
 > **Phase 4：已落地**（`hdr_render.py` dual-rendition bridge）
 > **Phase 5：已落地**（RGB Apple gain-map writer；拒绝 L008 回落）
-> **Phase 6：已落地**（CLI `--hdr-drt` / capacity 上限 / look 拦截；GUI capacity 校验）  
+> **Phase 6：已落地**（CLI `--hdr-drt` / capacity 上限 / look 拦截；GUI capacity 校验）
+> **Phase 7：骨架已落地**（`aces2_hdr.h/.cpp` 占位；原生核未接入，NumPy 仍为唯一语义）
+> **Phase 8：文档已更新**（README 中英说明 dual-rendition；样张视觉门仍待人工验收）  
 > 范围：独立 HDR DRT、RAW9/LibRaw scene 契约、RGB gain map 及验证  
 > 不在本轮范围：视频 HDR、HEIF/AVIF、改变现有 SDR 成片、重新设计 RAW 解码器
 

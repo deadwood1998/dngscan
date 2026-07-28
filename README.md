@@ -56,11 +56,14 @@ the color of its original light.
 ```text
 RAW / DNG
   |
-  +-- Capture
+  +-- Capture evidence (always read before demosaic through LibRaw)
   |     black / white level
   |     per-channel CFA clipping and headroom
   |     noise confidence and usable dynamic range
-  |     demosaic, highlight handling, camera interpretation
+  |
+  +-- Scene decoder (independent choice)
+  |     LibRaw: demosaic + selected highlight mode + spatial CFA masks
+  |     Core Image: RAW 9 reconstruction + DNG opcodes, aggregate CFA evidence only
   |
 scene-linear Rec.2020
   |
@@ -86,6 +89,33 @@ display dynamic range. Color geometry controls hue paths, chroma compression, an
 path to white. Capture supplies evidence without directly deciding taste. When one
 stage changes the image, its reason should remain identifiable.
 
+### Architecture contract
+
+The decoder and tone core are two orthogonal choices. `libraw` / `coreimage` decide how
+RAW becomes scene-linear pixels; `agx` / `gated` / `lum` / `neutral` decide how those
+pixels become display-linear values. RAW 9 is not a fifth tone curve, and `neutral` is
+not another decoder.
+
+Several invariants are intended to survive future changes:
+
+- The original CFA, levels, clipping rates, and noise statistics always come from
+  LibRaw before demosaic. Only the LibRaw scene frame can carry those facts as spatial
+  masks. Core Image executes different geometry, so it receives aggregate evidence but
+  never borrowed per-pixel masks.
+- Both decoders hand off scene-linear Rec.2020. Negative components and values above
+  diffuse white remain valid until the DRT; output-gamut fitting happens after tone and
+  optional looks, not inside capture.
+- DNG [`BaselineExposure`](https://developer.apple.com/documentation/coreimage/cirawfilter/baselineexposure)
+  is file-authored baseline rendering compensation. It is not
+  shutter/aperture/ISO, an absolute sensor calibration, or content-adaptive auto
+  exposure. The explicit `--ev` adjustment comes after it.
+- Scene luminance compiles tone endpoints and toe/shoulder behavior. RAW clipping and
+  output-gamut pressure compile color permissions. A color metric must not move the
+  black/white endpoints, and a tone percentile must not pretend to restore lost CFA
+  color.
+- `agx` with darktable `base` primaries is the production default. `lum` and `neutral`
+  are controlled comparisons; `gated` is the LibRaw-only RAW-evidence experiment.
+
 ## Capture: where the RAW evidence comes from
 
 ### Black, white, and per-channel clipping
@@ -98,11 +128,13 @@ are never collapsed into one scalar for all R/G/B, so clipping is a threshold ma
 indexed by CFA color. If no channel has a reliable pile, the report labels full well as
 a metadata fallback rather than presenting the estimate as a measurement.
 
-This affects more than the clip percentage in a report. Spatial clip maps, 2x2 cell
-metrics, highlight classes, and render-time clip masks use the same thresholds. If a
-camera's green channel reaches full well before red, the rest of the pipeline should
-know that green information was lost first rather than treating all three channels as
-simultaneously clipped.
+This affects more than the clip percentage in a report. Hard clip percentages, 2x2 cell
+metrics, highlight classes, and diagnostic clip maps use the same per-channel threshold
+map. The render-time **soft headroom mask** is related but intentionally not identical:
+it ramps from 0 at 95% to 1 at 99% of each channel's black-subtracted full well, so color
+can retreat before interpolation reaches a hard discontinuity. If green reaches full
+well before red, both the hard statistics and the soft permission map preserve that
+channel distinction.
 
 Highlight reconstruction can create continuous luminance and plausible color, but it
 cannot recover signal the sensor never recorded. Clipping evidence is saved before
@@ -126,13 +158,18 @@ availability check and fallback logic.
 
 ### Optional Core Image pipeline
 
-`--decoder coreimage` is a fifth control path in the same spirit as the `lum` /
-`neutral` tone cores: an alternate *interpretation* of the capture, not a quality
-upgrade and never the default. It uses `CIRAWFilter` (RAW 9 where the file offers it,
-otherwise the highest supported version — some Fujifilm RAF files stop at 8 and are not
-labelled 9), rendered as signed RGBA half-float in extended-linear Rec.2020. Negative
+`--decoder coreimage` is an alternate capture decoder, independent of the selected tone
+core. It is not a quality upgrade and is never the default. Before decoding, dngscan asks
+that file's `CIRAWFilter.supportedDecoderVersions()` whether RAW 9 is actually available;
+a camera-name list is not treated as proof. If the file stops at RAW 8 or 7, the GUI asks
+before using the older decoder and the CLI prints a warning. Explicit
+`--coreimage-version 9` refuses the file instead of silently downgrading. The decoded
+frame is signed RGBA half-float in extended-linear Rec.2020. Negative
 color components and values above diffuse white therefore reach AgX unchanged. Look
-controls are cleared; highlight recovery and lens correction are enabled explicitly.
+controls are configured for a neutral linear handoff (with RAW 9's moire value deliberately
+left at Apple's detail-preserving default); highlight recovery and lens correction are
+enabled explicitly. The configuration follows Apple's separation of the linear RAW recipe
+from its editable render recipe in [WWDC21 session 10160](https://developer.apple.com/videos/play/wwdc2021/10160/).
 
 It is a **separate pipeline, not a LibRaw back end.** Core Image executes the DNG
 opcodes a file carries; on a Sigma fp DNG that means a per-plane `WarpRectilinear` plus
@@ -145,17 +182,24 @@ Image performs its own highlight recovery. Aggregate RAW facts (levels, clipping
 percentages, SNR, noise floor, white-balance testimony) are distributions rather than
 pixel positions, so they remain valid and still come from LibRaw. For tone planning,
 the measured clipped-cell percentage removes the same fraction from the top of RAW 9's
-luminance rank: reconstructed pixels still describe highlight topology, but cannot set
-the global white endpoint. The report names the decoder, its version, and the opcodes
-that were executed.
+luminance rank. This is an aggregate comparison heuristic, not a claim that a particular
+RAW 9 pixel maps to a particular CFA site: reconstructed pixels still describe highlight
+topology, but cannot set the global white endpoint. The report names the decoder, its
+version, and the opcodes that were executed.
 
-The signed-float RAW 9 handoff changed the scale conclusion. Across three Sigma fp
-frames, the RAW 9 / LibRaw reliable-body luminance ratios were 1.088, 1.104, and 1.012
-(+0.122, +0.143, and +0.017 EV). That is small, scene-dependent, and not evidence for a
-single decoder correction. `--coreimage-scale unity` is therefore the default: EV 0 is
-the decoder's native scene-linear result. The old fitted `1/1.0293` remains available as
-`measured` only to reproduce earlier A/B renders; it is not part of the current exposure
-model.
+Core Image and LibRaw do not expose the same scene unit, and a single fitted correction
+did not generalize across cameras or scenes. The default is therefore
+`--coreimage-scale aligned`: dngscan makes a cheap half-size LibRaw reconstruction of the
+same file and applies the ratio of the two decoded green-channel medians as one scalar.
+The RAW-green term used by an earlier explanation cancels algebraically; this is a
+per-file decoder A/B ruler, not an absolute sensor calibration. It does not target 18%
+gray or alter within-frame light ratios, but decoder color, geometry, and reconstruction
+can influence the statistic.
+
+`--coreimage-scale unity` bypasses that comparison and preserves Core Image's native
+units. `measured` applies the old fixed `1/1.0293` Sigma-fp fit only to reproduce earlier
+A/B renders. These modes are mutually exclusive in effect; the fixed multiplier is not
+followed by an alignment that cancels it.
 
 Two luminance conventions appear in these comparisons and they must not be quoted
 interchangeably. The *reliable body* median is scene-linear, measured before the tone
@@ -189,7 +233,7 @@ differences follow from the decoders themselves rather than from taste:
   than a silent replacement for LibRaw.
 
 **RAW 9 denoises by construction.** Apple describes it as a tiled CoreML model that
-fuses demosaic *with* denoise (WWDC26 session 305), so there is no unprocessed mode to
+fuses demosaic *with* denoise ([WWDC26 session 305](https://developer.apple.com/videos/play/wwdc2026/305/)), so there is no unprocessed mode to
 ask for: the reconstruction is the decoder. Note that `luminanceNoiseReductionAmount` at
 0 therefore does not mean "no denoising" — it selects the least-smoothed end of a
 calibrated range over a model that always runs.
@@ -236,59 +280,37 @@ PPG) does not close the gap, so this is the model rather than interpolation choi
 Worth weighing against this tool's position that it performs no denoising and leaves
 texture to the demosaic choice.
 
-**The decode follows Apple's own linear-extraction recipe.** WWDC21's "Capture and
-process ProRAW images" prescribes exactly five settings for reaching the linear
-scene-referred data — `baselineExposure`, `shadowBias`, `boostAmount` and
-`localToneMapAmount` at 0, `isGamutMappingEnabled` false — rendered into
-`extendedLinearITUR_2020`. Four of the five are applied, and the header documents
-`boostAmount` 0 as "no global tone curve, i.e. linear response", which is the property
-AgX needs. `baselineExposure` is the deliberate exception, for the reason below.
+**The decode follows Apple's linear-extraction structure, with one explicit policy
+choice.** `shadowBias`, `boostAmount`, and `localToneMapAmount` are zeroed, gamut mapping
+is disabled, and the result is rendered into `extendedLinearITUR_2020`. dngscan leaves
+the file's `baselineExposure` in place instead of forcing it to zero, because it is part
+of the authored DNG/ProRAW rendering recipe; the LibRaw path applies the same metadata
+gain through `scene_scale`. This is separate from CIRAWFilter's `exposure`, which remains
+zero until dngscan applies the user's EV in the common scene pipeline.
 
-**The Core Image buffer is aligned onto the LibRaw exposure scale, per file.** The two
-decoders mean different things by 1.0: LibRaw normalises to sensor saturation, an
-analytic constant, while Apple normalises to its estimate of *this frame's* diffuse
-white. Measured as the raw-to-scene green gain, LibRaw's is 2^BaselineExposure times
-1.02 ± 0.08 EV across Sigma fp, iPhone 16 Pro and Fuji X-Trans, while Apple's runs 1.08
-to 2.18 over the same files, varying by camera *and by scene*. No constant can align
-that, which is why two fitted ones (`1/0.9314`, then `1/1.0293`) both failed. It is now
-measured against the raw mosaic, which is upstream of both decoders and already loaded.
+**Aligned mode is a practical per-file decoder comparison.** The half-size LibRaw
+reference uses the same white balance, highlight reconstruction, and storage-scale
+contract as the main LibRaw path. Its decoded green median is divided by RAW 9's decoded
+green median, then that one scalar is applied to the Core Image frame. The old RAW-mosaic
+normalizer contributed the same term to numerator and denominator and therefore did
+nothing; describing the result as a raw-to-scene sensor gain was incorrect.
 
-Green is the statistic because it is the least-amplified channel, so white balance
-normalises it to 1.0 and stays out of the comparison — a property of the applied gain,
-not of the reported multipliers, since Fuji returns `camera_whitebalance` unnormalised
-(`[581, 302, 544]`). And it is a *gain*, not a level: a dark scene shrinks both sides of
-the ratio, so normalising it moves the ruler without touching how bright the photograph
-is. That is the difference from auto exposure, which moves the level and turns a night
-scene grey.
+The half-size reference is cheap and has tracked the full-resolution factor within about
+0.02 EV in the current samples. The report names the factor, or names the failure and
+falls back to identity if the statistic is invalid or implausible. The operation aligns
+neither geometry nor tone plans: each buffer still compiles its own endpoints, and RAW 9
+retains its own reconstruction, color separation, and noise behavior. Use `unity` when
+those native scale differences are themselves part of the comparison.
 
-Measured at full resolution on exported JPEGs, the two paths now agree to +0.006, +0.018,
-+0.019 and +0.000 EV on four frames, against 0.12 to 0.85 EV before. The reference render
-is half-size, where LibRaw bins 2×2 superpixels instead of demosaicing, so it costs about
-0.2 s and yields a factor within 1.3 % of the full-resolution one. The report names the
-factor, and names the failure instead if the measurement could not be made — an
-unexplained 1.0 is indistinguishable from a working alignment in the output.
+This scalar is intentionally narrower than auto exposure. It has no external target and
+cannot reorder light levels inside the photograph; a night scene remains a night scene.
+It can still be content-sensitive because the two decoders do not produce identical
+colors or geometry, which is why the README calls it an A/B ruler rather than physical
+calibration.
 
-What this does not align is the tone plan. Each buffer still compiles its own endpoints,
-and those legitimately differ: Apple keeps specular headroom LibRaw's `clip` destroyed,
-and RAW 9's denoising raises the black end. Brightness matches; the tonal distribution
-does not, and should not, since that difference is the decoder you chose.
-
-*Why the layering is this way.* A render's brightness is the product of three things: the
-scene radiance relative to the exposure the photographer chose, the decoder's scale
-convention, and the render's own decisions. The first is the photograph — a night scene
-must stay dark — and the third is intent. Only the middle term is noise, and it is the
-one that made EV 0 mean different things on different devices. Separating it is what lets
-cross-device consistency and faithfulness coexist, and it is also why this is not the
-content-adaptive normalisation this tool otherwise refuses: an auto exposure moves the
-*level* and greys out a night scene, while this normalises a *gain* and leaves every
-level where the capture put it.
-
-That also settles where the step belongs. darktable's scene-referred order is exposure
-first, then the view transform, and dngscan has always applied an exposure gain before
-AgX — but it was a fixed constant (`0.18 * 2**3`), so the pre-transform stage did no
-device normalisation at all and the scene-adaptation lived entirely in the endpoint
-compilation afterwards. Measuring the decoder's scale in that pre-transform stage is what
-puts the pipeline on darktable's ordering in substance rather than only in sequence.
+The alignment belongs at the capture handoff, before the common fixed exposure anchor and
+DRT. It changes how a decoder unit is interpreted; it does not compile or reshape the
+tone curve. Keeping it there prevents decoder comparison policy from leaking into AgX.
 
 One residual asymmetry is worth knowing before trusting a preview. The Core Image preview
 decodes to a 1280 px proxy while the LibRaw preview bins 2×2 superpixels, so the two see
@@ -298,26 +320,14 @@ was −0.01, −0.22 and +0.01 EV, against −0.05, +0.02 and −0.04 EV on the 
 same order of magnitude except on a noisy frame, where the proxy's averaged-away noise
 reads as a cleaner shadow than the export will produce.
 
-**BaselineExposure is honoured on both paths.** The DNG tag is the file telling the
-renderer how much exposure to apply on top of the raw data. Zeroing it looked safe while
-that meant a fixed per-model calibration constant — Sigma fp writes 1.0 on every frame
-regardless of scene — but Apple uses it to carry a per-shot capture decision: measured on
-an iPhone 16 Pro, 0.4973 at ISO 80 and exactly 2.0 more on an ISO 640 frame the camera
-underexposed to protect highlights. Discarding that does not neutralise a calibration, it
-throws away what the exposure of that photograph was, and it puts two frames of the same
-subject 2 EV apart for a reason that is nowhere in the render settings.
-
-LibRaw ignores the tag outright, which is verifiable: across two iPhone frames whose tags
-differ by 2 EV its output ratio does not move with them. dngscan therefore folds the gain
-into `scene_scale` on the LibRaw path and leaves Apple's property alone on the Core Image
-one. It is applied as a change of scale, never as a multiply — the gain reaches 5.65x on
-that ISO 640 frame, which in a uint16 buffer normalised to sensor saturation would clip
-everything above 0.18. Renders get brighter as a result: measured +0.54 EV on a Sigma fp
-frame and +1.17 EV on the iPhone one, less than the tag itself because the compiled
-window absorbs part of it. Use `--ev` for taste on top; the report names the tag it
-honoured. Note that the gates tuned against the previous scale now see bodies about a
-stop brighter — punch on one Sigma frame went from 0.268 to 0.627 — so their calibration
-is worth re-checking against a corpus.
+**BaselineExposure is honoured on both paths.** Apple defines it as baseline exposure to
+apply during RAW rendering; its default can vary with camera settings, and ProRAW can
+write a per-image recipe based on scene dynamic range. It is not the physical capture
+exposure described by shutter/aperture/ISO, nor a command to normalize image content.
+LibRaw does not apply the tag, so dngscan folds its gain into `scene_scale`; Core Image
+keeps CIRAWFilter's file-derived value. Changing the scale rather than multiplying the
+uint16 buffer preserves headroom and precision. Use `--ev` for subjective adjustment on
+top; the report names the file value it honoured.
 
 `shadowBias` is the one that is easy to miss: it defaults to **5.0**, subtracts from the
 shadows, and is a display-referred black pedestal with no place in a scene-linear buffer.
@@ -436,11 +446,12 @@ extra highlight range.
 
 ### Fixed exposure anchor
 
-The pipeline uses scene-linear `0.18` as nominal middle gray. Its exposure baseline is
-a fixed camera constant plus manual EV, not an operation that forces every image median
-to 18% gray. Constant scaling preserves scene intent: a dark scene remains dark before
-AgX, a bright scene remains bright, and content-adaptive exposure does not reorder the
-relationship between photographs.
+The pipeline uses scene-linear `0.18` as nominal middle gray. Its current render anchor
+is one global fixed scalar, `0.18 * 2^3`, followed by manual EV; it is not yet a
+per-camera calibration and it never forces an image median to 18% gray. DNG
+`BaselineExposure`, when present, is honoured earlier as part of the file recipe.
+Constant scaling preserves scene intent: a dark scene remains dark before AgX, a bright
+scene remains bright, and content-adaptive exposure does not reorder photographs.
 
 The GUI's **brightness reference**, also available as `--ev auto`, is an explicitly
 requested alternate reading. It tries to place the reliable scene-body median at 18% gray while
@@ -453,22 +464,24 @@ exposure.
 
 ### Scene statistics are not simple min/max
 
-The tone plan separates the reliable body from the highlight tail. Body statistics
-exclude CFA-clipped and low-confidence areas and estimate black, pivot, contrast, and
-the useful mid-frequency range. The tail only reserves space for the shoulder. Sparse
-emitters and large bright surfaces are also different: letting a few lamps define white
-EV makes the highlights harsh while the rest of the image remains dark.
+The tone plan separates the reliable body from the highlight tail. On LibRaw, body
+statistics exclude spatial CFA-clipped samples. On Core Image, they use the aggregate
+rank-trim described above; SNR constrains the black end and gated color permission, but
+is not a second body mask. The tail only reserves space for the shoulder. Sparse emitters
+and large bright surfaces are also different: letting a few lamps define white EV makes
+the highlights harsh while the rest of the image remains dark.
 
 The controls in the tone plan therefore have different evidence:
 
 - `black point` and `toe` follow the noise floor, usable shadows, and target display black.
 - `white point` and `shoulder` follow the reliable luminance tail, display headroom, and emitter topology.
-- `pivot` and `contrast` follow the subject midtones rather than a few extreme pixels.
+- `pivot` is currently fixed at calibrated EV 0 and `contrast` at 3.0. Subject/body
+  statistics do not move either one; bounded GUI adjustments are explicit biases.
 - `view brightness` raises only the curve interior while preserving true black and the target white endpoint.
 
 ### The four GUI tone adjustments
 
-The GUI does not expose the automatic pivot, black EV, or white EV directly. Instead,
+The GUI does not expose the calibrated pivot or compiled black/white EV directly. Instead,
 it adds four bounded biases to the compiled tone plan. The center **Auto** value is the
 analysed result, not another preset. With all four at zero, the original render plan is
 used directly and the output is unchanged.
@@ -476,7 +489,7 @@ used directly and the output is unchanged.
 | Control | Move left | Move right | What stays fixed |
 | --- | --- | --- | --- |
 | **Midtone brightness** | Makes the subject darker and more restrained | Raises the subject and visible shadows | Scene exposure, black point, and white point |
-| **Midtone contrast** | Softens midtone separation | Increases separation across the automatic pivot | The pivot position itself |
+| **Midtone contrast** | Softens midtone separation | Increases separation across the calibrated pivot | The pivot position itself |
 | **Shadow transition** | Deepens the toe and reaches black sooner | Opens the toe and reveals more shadow separation | Black point; it cannot create low-SNR information |
 | **Highlight transition** | Makes the shoulder more direct and highlights more forceful | Softens the shoulder and preserves bright detail earlier | White point and RAW clipping position |
 
@@ -484,7 +497,7 @@ used directly and the output is unchanged.
 scene-linear signal, changes where content enters the shoulder, and consumes highlight
 headroom. Midtone brightness reshapes only the display-referred curve interior while
 true black and target white remain fixed. **Midtone contrast** is not another brightness
-control either: it changes slope around the automatic pivot, separating values within
+control either: it changes slope around the calibrated pivot, separating values within
 the subject instead of moving the subject as a whole.
 
 In practice, set subject placement with **midtone brightness**, shape it with **midtone
@@ -546,15 +559,16 @@ and `lum` exist to separate and inspect these effects, not to reject AgX.
 
 ### Four compression cores
 
-All four share the same exposure anchor, CFA evidence, and delivery safeguards so they
-can be compared at the same EV:
+All four share the same exposure anchor and delivery safeguards so they can be compared
+at the same EV. They do **not** all receive the same spatial CFA evidence: masks exist on
+LibRaw only, and each core consumes the available evidence differently.
 
 | Core | Underlying difference |
 | --- | --- |
 | `agx` | Complete inset -> per-channel C1 curve -> hue path -> outset. The default render. |
-| `gated` | Computes both AgX-color and luminance-preserving candidates, then mixes them per pixel from RAW clipping, headroom, and noise confidence. |
+| `gated` | LibRaw-only experiment: computes AgX-color and luminance-preserving candidates, then mixes them per pixel from RAW clipping, headroom, and noise confidence. |
 | `lum` | Applies the same scene-compiled C1 curve to a luminance norm while preserving RGB ratios; no AgX inset/outset. |
-| `neutral` | A fixed conventional shoulder without scene-compiled AgX geometry. |
+| `neutral` | Fixed Y-ratio diagnostic curve without scene-compiled endpoints or AgX geometry; not a production baseline. |
 
 `gated` is not another exposure curve. It first normalizes the AgX candidate to the same
 Rec.2020 luminance as the lum candidate, then chooses how much chromatic path to mix.
@@ -567,12 +581,20 @@ saturated colors can look neon because they do not retreat toward white as AgX c
 do. The `y`, `max`, and `power` norms trade colorimetric luminance, loudest-channel
 protection, and a compromise between the two.
 
+`neutral` goes further by holding the tone window fixed as well. It is useful for
+isolating scene-plan and AgX-geometry effects, but ratio preservation can drive a
+narrowband saturated highlight directly against the sRGB/P3 boundary. The final gamut
+fit prevents invalid output; it does not make that path equivalent to AgX's gradual
+path-to-white.
+
 ### RAW clip retreat, punch, and gamut fit
 
-RAW clip retreat only engages where CFA evidence says channel information was lost. It
-moves the color toward the neutral axis at the same luminance before the curve. This is
-different from AgX's global inset: one is driven by actual sensor clipping, while the
-other is the color geometry of the display transform itself.
+RAW headroom retreat only engages where the pre-demosaic CFA says a channel is near or at
+full well. Its soft 95–99% ramp is a conservative permission signal: the lower end means
+"approaching unreliable", not "already clipped". It moves color toward the neutral axis
+at the same luminance before the curve. This is different from AgX's global inset: one is
+driven by sensor headroom, while the other is the color geometry of the display transform
+itself.
 
 `punch` (labelled **mid-frequency purity** in the GUI) compensates for the broad loss
 of purity caused by the AgX inset in bright, wide-dynamic-range scenes. It works in
@@ -650,10 +672,31 @@ does not alter the tone plan. 4:2:2 and 4:2:0 are available when smaller files m
 the cost of chroma resolution. Display P3 embeds an ICC profile and export stops if that
 profile is unavailable rather than writing untagged wide-gamut values.
 
-An ISO 21496-1 gain-map HDR JPEG path also exists. It uses a P3 SDR base as the
-compatibility image and attaches a luminance gain map. `--output-format ultrahdr`
-selects it and `--hdr-headroom` sets its gain ceiling in EV. This path remains
-experimental.
+The HDR option writes a JPEG with an ISO 21496-1 **RGB** gain map through Apple Core
+Image. Its 8-bit Display P3 primary is the ordinary finished SDR render (AgX / gated /
+lum / neutral as selected). SDR-only readers therefore see the same P3 JPEG as a normal
+export. First-release Ultrahdr requires `look=none` and `display_filter=none` — existing
+display looks are not yet HDR-aware and are rejected rather than silently ignored.
+
+The HDR alternate is **not** `SDR × scalar`. After the shared intent-scene path (WB,
+BaselineExposure, fixed mid-gray EV, user EV, scene transform), dngscan forks:
+
+1. SDR AgX (or other SDR core) → quantized Display P3 base
+2. ACES 2-derived HDR DRT (Hellwig JMh tone / chroma / gamut) → extended-linear P3
+3. Content-independent mid-gray match + JMh bridge (reveal around diffuse white
+   `log2(1/0.18)`) so low/midtones track SDR while highlights can use independent
+   colorfulness geometry
+4. RGB ISO gain map from the SDR/HDR pair (`HDRGainMapAsRGB`)
+
+Until official CTL runtime vectors are cross-checked, the product language is
+**ACES 2-derived HDR**, not “strict ACES 2”. NumPy (`dngscan.aces2`) is the reference
+kernel; the C++ native path is stubbed and not yet production-linked.
+
+`--hdr-headroom` is display **capacity** in EV relative to a 100 nit reference white
+(default `3.0` → 800 nit; max `log2(4000/100) ≈ 5.32`). Actual content headroom is taken
+from the finished HDR rendition. Core Image owns packaging; the writer validates an ISO
+gain-map auxiliary image, Display P3 ICC, 4:4:4, and RGB (not L008) map format before
+replacing the destination. Requires macOS + `pyobjc-framework-Quartz`.
 
 ## Quick start
 
@@ -691,6 +734,10 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # Highlight reconstruction and Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO RGB gain-map HDR JPEG (ACES 2-derived; capacity +3 EV → 800 nit)
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3 --hdr-drt aces2
 
 # RAW analysis dashboard and CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv

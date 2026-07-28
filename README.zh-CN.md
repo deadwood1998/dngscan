@@ -46,11 +46,14 @@ darktable 的 AgX 模块工作在去马赛克、白平衡和曝光之后的浮�
 ```text
 RAW / DNG
   |
-  +-- Capture
+  +-- Capture evidence（始终由 LibRaw 在去马赛克前读取）
   |     black / white level
   |     逐通道 CFA 剪切与满阱余量
   |     噪声可信度与可用动态范围
-  |     去马赛克、高光处理、相机色彩解释
+  |
+  +-- Scene decoder（独立选择轴）
+  |     LibRaw：去马赛克 + 所选高光模式 + 空间 CFA mask
+  |     Core Image：RAW 9 重建 + DNG opcode，只接收聚合 CFA 证据
   |
 scene-linear Rec.2020
   |
@@ -75,6 +78,27 @@ scene-linear Rec.2020
 色相路径、色度压缩与向白过渡；Capture 层提供事实，但不直接决定口味。这样调整某个环节
 时，至少能知道画面为什么发生变化。
 
+### 架构契约
+
+解码器与 tone core 是两个正交的选择轴。`libraw` / `coreimage` 决定 RAW 怎样变成
+scene-linear 像素；`agx` / `gated` / `lum` / `neutral` 决定这些像素怎样进入显示域。
+RAW 9 不是第五条 tone curve，`neutral` 也不是另一种 RAW 解码器。
+
+以后修改这套管线时，下面几条应当保持不变：
+
+- 原始 CFA、黑白电平、剪切比例与噪声统计始终由 LibRaw 在去马赛克前读取。只有
+  LibRaw 的 scene frame 能携带对应的空间 mask；Core Image 执行了不同几何，只能接收
+  聚合证据，不能借用逐像素 mask。
+- 两种解码器都交接 scene-linear Rec.2020。负色彩分量和 diffuse white 以上的数值在
+  DRT 前都是合法信号；输出色域 fit 发生在 tone 和可选 look 之后，不属于 capture。
+- DNG [`BaselineExposure`](https://developer.apple.com/documentation/coreimage/cirawfilter/baselineexposure)
+  是文件写入的基线显影补偿。它不是快门/光圈/ISO，不是传感器
+  绝对标定，也不是内容自适应自动曝光；显式 `--ev` 调整发生在它之后。
+- 场景亮度只编译 tone endpoint 与 toe/shoulder；RAW 剪切和输出色域压力只编译颜色
+  权限。颜色指标不能移动黑白端点，亮度百分位也不能冒充已经丢失的 CFA 色彩。
+- `agx` 配 darktable `base` primaries 是成片默认。`lum`、`neutral` 是受控对照，
+  `gated` 是仅限 LibRaw 的 RAW 证据实验。
+
 ## Capture：RAW 证据从哪里来
 
 ### 黑白电平与逐通道剪切
@@ -85,9 +109,10 @@ ceiling，没有才回退到逐通道 metadata white level。它不会拿一个�
 剪切阈值因此也是一张按 CFA 颜色生成的 threshold map。没有任何通道出现可靠堆积时，
 报告会明确把 full-well 标为 metadata fallback，而不是把估计值写成实测值。
 
-这一点会影响的不只是报告里的 clip%。空间剪切图、2×2 cell 指标、高光分类和渲染时的
-clip mask 都使用同一套阈值。如果某台相机的绿色通道比红色更早到满阱，后面的管线应该
-知道那是绿色信息先丢了，而不是把三个通道都当作同时剪切。
+这一点会影响的不只是报告里的 clip%。硬 clip%、2×2 cell 指标、高光分类和诊断剪切图
+使用同一张逐通道 threshold map。渲染时的**软余量 mask**与它相关，但刻意不完全相同：
+每个通道都按扣黑后的 full-well 从 95% 处的 0 平滑渐入到 99% 处的 1，让颜色能在插值形成
+硬断层前开始退让。如果绿色比红色更早到满阱，硬统计与软权限图都会保留这个通道差别。
 
 高光重建可以补出连续的亮度和看起来合理的颜色，但它不能重新获得传感器没有记录的信号。
 因此剪切证据在重建之前保存，后面重建得再平滑，也不能反过来定义全图的 white endpoint。
@@ -106,12 +131,15 @@ GUI/CLI 可手动指定 `dht / dcb / ahd / aahd / vng / ppg`；如果本机 LibR
 
 ### 可选 Core Image 管线
 
-`--decoder coreimage` 和 `lum` / `neutral` tone 核是同一类东西：第五条**对照路径**，
-换的是对这次拍摄的解释方式，不是默认画质升级。它用 `CIRAWFilter`（文件支持时用
-RAW 9，否则取最高可用版本——部分 Fujifilm RAF 只到 8，不会被标成 9），以 signed
+`--decoder coreimage` 是另一种 capture decoder，与 tone core 的选择彼此独立；它不是
+默认画质升级。解码前，dngscan 会查询当前文件的
+`CIRAWFilter.supportedDecoderVersions()`，不会把相机型号名单当作文件必然支持 RAW 9 的
+依据。文件只支持 RAW 8/7 时，GUI 会先询问是否使用旧版解码器，CLI 则输出明确警告；显式
+指定 `--coreimage-version 9` 会直接拒绝不支持的文件，不会静默降级。解码结果以 signed
 RGBA half-float 渲染到 extended-linear Rec.2020。负色彩分量和 diffuse white 以上的值
-会原样交给 AgX，不再经过 uint16 百分位缩放。look 类控制项清零；高光重建与镜头校正则
-显式开启。
+会原样交给 AgX，不再经过 uint16 百分位缩放。look 类控制项按中性线性交接配置（RAW 9 的
+moire 值刻意保留 Apple 更保细节的默认）；高光重建与镜头校正则显式开启。配置遵循 Apple
+在 [WWDC21 session 10160](https://developer.apple.com/videos/play/wwdc2021/10160/) 中对线性 RAW 配方与可编辑显影配方的区分。
 
 它是**独立管线，不是 LibRaw 的后端**。Core Image 会执行文件里的 DNG opcode：在
 Sigma fp 的 DNG 上是逐平面 `WarpRectilinear` 加一张镜头阴影 `GainMap`。这个畸变校正
@@ -120,15 +148,20 @@ Sigma fp 的 DNG 上是逐平面 `WarpRectilinear` 加一张镜头阴影 `GainMa
 位置上。于是这条路径没有逐像素 CFA 证据：`--tone-core gated` 会被拒绝，clip retreat
 不运行，`--highlight-mode` 也不适用（Core Image 有自己的高光重建）。而聚合型 RAW 事实
 （黑白电平、剪切百分比、SNR、噪声底、白平衡证词）是分布而非像素位置，依然有效，仍由
-LibRaw 提供。Tone plan 会用实测的剪切 cell 比例，从 RAW 9 亮度排序的最高端剔除等量样本：
-重建高光仍可描述尾部拓扑，但不能反过来定义全局白点。报告会写明解码器、版本，以及被执行
-的 opcode。
+LibRaw 提供。Tone plan 会用实测的剪切 cell 比例，从 RAW 9 亮度排序的最高端剔除等量样本。
+这是聚合层面的对照启发式，不表示某个 RAW 9 像素能对应到某个 CFA site：重建高光仍可描述
+尾部拓扑，但不能反过来定义全局白点。报告会写明解码器、版本，以及被执行的 opcode。
 
-signed-float RAW 9 交接完成后，固定缩放的结论也变了。三张 Sigma fp 样张上，RAW 9 /
-LibRaw 可靠主体亮度比分别为 1.088、1.104 和 1.012（+0.122、+0.143 和 +0.017 EV）。
-差异不大，但会随场景变，不支持一个固定的解码器补偿。所以现在默认
-`--coreimage-scale unity`：EV 0 就是各解码器原生的 scene-linear 结果。旧的 `1/1.0293`
-仍以 `measured` 保留，只用来复现以前的 A/B，不再属于当前曝光模型。
+Core Image 与 LibRaw 并没有暴露同一个 scene unit，单一固定补偿也无法跨相机、跨场景成立。
+所以默认改为 `--coreimage-scale aligned`：dngscan 会对同一文件快速做一次 half-size LibRaw
+重建，再用两种解码结果的绿色通道中位比，对 RAW 9 整幅乘一个标量。以前解释里引入的 RAW
+green 项会在分子分母中严格约掉；这里得到的是逐文件解码器 A/B 标尺，不是传感器绝对标定。
+它不会把中位数拉到 18% 灰，也不改变画面内部的光比，但解码器色彩、几何和重建都会影响
+这个统计量。
+
+`--coreimage-scale unity` 会跳过该比较，保留 Core Image 原生单位；`measured` 只应用旧的
+Sigma fp 固定 `1/1.0293` 倍率，用来复现早期 A/B。三个模式现在在效果上互斥，固定倍率不会
+再被后续逐文件对齐抵消。
 
 这类对比里有两种亮度口径，**不能互相引用**。**可靠主体**中位是 scene-linear 的，量在色调
 曲线之前，且已剔除 RAW 剪切样本；**最终输出**中位量在渲染完成的图像上，此时 AgX 已经把
@@ -153,7 +186,7 @@ LibRaw 可靠主体亮度比分别为 1.088、1.104 和 1.012（+0.122、+0.143 
   解码本身。这也是它仍作为对照路径而非静默替换 LibRaw 的原因。
 
 **RAW 9 的降噪来自架构本身。** Apple 把它描述为一个把去马赛克与降噪融合在一起的分块
-CoreML 模型（WWDC26 session 305），所以不存在"未处理模式"可以索取：重建本身就是解码器。
+CoreML 模型（[WWDC26 session 305](https://developer.apple.com/videos/play/wwdc2026/305/)），所以不存在"未处理模式"可以索取：重建本身就是解码器。
 也因此 `luminanceNoiseReductionAmount` 为 0 **并不等于"不降噪"**——它只是在一个始终运行
 的模型上选中了标定范围里最不平滑的一端。
 
@@ -191,47 +224,25 @@ Apple 默认值实测，版本 9 上真正起作用的只有三项，而当前�
 LibRaw 换成更平滑的去马赛克（VNG、PPG）并不能缩小差距，所以这是模型本身而非插值选择。
 这一点与本工具"不做降噪、把纹理选择留给去马赛克"的立场需要各自权衡。
 
-**解码遵循 Apple 自己的线性提取配方。** WWDC21《Capture and process ProRAW images》给出
-的取到线性 scene-referred 数据的做法正好是五项——`baselineExposure`、`shadowBias`、
-`boostAmount`、`localToneMapAmount` 置 0，`isGamutMappingEnabled` 置 false——并渲染到
-`extendedLinearITUR_2020`。其中四项已应用；头文件把 `boostAmount` 为 0 定义为"无全局色调
-曲线，即线性响应"，这正是 AgX 需要的性质。`baselineExposure` 是有意的例外，理由见下。
+**解码采用 Apple 的线性提取结构，但保留一个明确的策略选择。** `shadowBias`、
+`boostAmount`、`localToneMapAmount` 清零，gamut mapping 关闭，结果渲染到
+`extendedLinearITUR_2020`。dngscan 没有把文件中的 `baselineExposure` 强制清零，因为它
+属于 DNG/ProRAW 写入的显影配方；LibRaw 路径通过 `scene_scale` 应用同一 metadata gain。
+这与 CIRAWFilter 的 `exposure` 分开，后者在共同 scene 管线应用用户 EV 前保持为零。
 
-**Core Image 缓冲会逐文件对齐到 LibRaw 的曝光尺度。** 两个解码器对 1.0 的定义不同：
-LibRaw 归一化到传感器饱和，是个解析常数；Apple 归一化到它对**这一张**的 diffuse white
-的估计。以 raw→scene 的绿通道增益衡量，LibRaw 在 Sigma fp、iPhone 16 Pro 和 Fuji
-X-Trans 上都是 2^BaselineExposure × 1.02 ± 0.08 EV，而 Apple 在同一批文件上是 1.08 到
-2.18，**既随机型变也随场景变**。任何常数都对不齐它——这正是先后两个拟合值
-（`1/0.9314`、`1/1.0293`）失败的原因。现在改为对着 raw 马赛克实测，它位于两个解码器的
-共同上游，而且本来就已经加载。
+**aligned 是逐文件的实用解码器对照。** half-size LibRaw 参考使用与主 LibRaw 路径相同的
+白平衡、高光重建与存储尺度契约；它的解码绿色中位除以 RAW 9 的解码绿色中位，得到整幅使用
+的单一标量。旧解释中的 RAW mosaic 归一项在分子分母里完全相同，数学上会约掉，因此把结果
+称作 raw→scene 传感器增益并不正确。
 
-取绿通道是因为它是放大最少的通道，白平衡会把它归一化到 1.0，从而把 WB 排除在比较之外
-——注意这是**施加的增益**的性质而非**上报的乘子**的性质，Fuji 返回的
-`camera_whitebalance` 是未归一化的 `[581, 302, 544]`。而且它是**增益**不是**电平**：
-暗场景会让比值的分子分母同步缩小，所以归一化它只是移动标尺，不改变照片本身有多亮。这就
-是它与自动曝光的分界——后者移动电平，会把夜景拉成灰色。
+当前样张中 half-size 因子与全分辨率约在 0.02 EV 内。报告会写明因子；统计无效或超出可信
+范围时会写明失败并回退为 1×。这一步不对齐几何，也不对齐 tone plan：两个缓冲仍各自编译
+端点，RAW 9 也保留自己的重建、色彩分离与噪声行为。要检查这些原生尺度差异，应使用
+`unity`。
 
-在全分辨率导出的 JPEG 上实测，两条路径现在相差 +0.006、+0.018、+0.019、+0.000 EV
-（此前是 0.12 到 0.85 EV）。参考渲染走 half-size，那一档 LibRaw 做的是 2×2 超像素合并
-而非去马赛克，成本约 0.2 秒，得到的因子与全分辨率相差 1.3% 以内。报告会写明这个因子；
-测量失败时写明失败原因，而不是静默回退——输出上看，一个没有解释的 1.0 和"对齐正常"
-无法区分。
-
-这套做法**不对齐色调计划**。两个缓冲仍各自编译端点，而它们的差异是真实的：Apple 保留了
-LibRaw 的 `clip` 剪掉的镜面余量，RAW 9 的降噪抬高了黑端。亮度对齐了，影调分布没有——
-也不应该，因为那正是你选择这个解码器的理由。
-
-*为什么这样分层。* 一次渲染的亮度是三个乘子的积：相对拍摄曝光的场景辐照、解码器的尺度
-约定、以及渲染自身的决策。第一个是作品本身——夜景必须保持是暗的；第三个是意图。只有
-中间那个是噪声，而它正是让 EV 0 在不同设备上含义不同的原因。把它单独摘出来，是"跨设备
-一致"和"忠实"能够并存的前提；这也是为什么它不属于本工具一贯拒绝的那种内容自适应归一化
-——自动曝光移动的是**电平**，会把夜景拉灰，而这里归一化的是**增益**，每个电平都留在
-拍摄时的位置上。
-
-这同时确定了这一步该放在哪里。darktable 的 scene-referred 次序是先曝光后视图变换，而
-dngscan 一直都在 AgX 之前施加曝光增益——但那是个固定常数（`0.18 × 2³`），前置阶段完全
-不做设备归一化，场景自适应全部落在其后的端点编译里。把解码器尺度的测量放进这个前置阶段，
-才让管线在实质上而非仅在顺序上落到 darktable 的模型。
+这个标量比自动曝光窄得多：它没有外部亮度目标，也不会重排照片内部的光比，夜景仍然是夜景。
+但两种解码器的颜色和几何并不完全一致，所以统计仍可能受内容影响；因此这里把它称作 A/B
+标尺，而不是物理标定。
 
 还有一处残余的不对称，看预览前值得知道。Core Image 的预览解码到 1280px 代理，而 LibRaw
 的预览做 2×2 超像素合并，两者看到的噪声量不同，因此各自编译出的黑端可能与自己的导出略有
@@ -239,21 +250,12 @@ dngscan 一直都在 AgX 之前施加曝光增益——但那是个固定常数�
 一侧是 −0.05、+0.02、−0.04 EV：除了噪声大的那张之外量级相当，而在那张上，代理把噪声
 平均掉之后读出的阴影比导出实际会给的更干净。
 
-**BaselineExposure 在两条管线上都被遵从。** 这个 DNG 标签是文件在告诉渲染器：在原始数据
-之上还应当施加多少曝光。把它清零，在它表示**逐机型的固定标定常数**时看起来是安全的——
-Sigma fp 无论什么场景都写 1.0——但 Apple 用它承载**逐张的拍摄决策**：iPhone 16 Pro 实测
-ISO 80 写 0.4973，而相机为保高光而欠曝的那张 ISO 640 恰好多写 2.0。丢弃它并不是"中和掉
-一个标定"，而是丢掉了这张照片的曝光究竟是多少，并且会让同一主体的两张照片相差 2 EV，
-而原因完全不在渲染设置里。
-
-LibRaw 是彻底忽略这个标签的，这一点可验证：两张标签相差 2 EV 的 iPhone 照片，它的输出
-比值不随标签移动。因此 dngscan 在 LibRaw 路径上把增益折进 `scene_scale`，在 Core Image
-路径上不再覆盖 Apple 的属性。它以**改变尺度**而非乘缓冲的方式施加——那张 ISO 640 的增益
-达到 5.65 倍，在归一化到传感器饱和的 uint16 缓冲里会把 0.18 以上的一切削平。后果是渲染
-整体变亮：Sigma fp 实测 +0.54 EV，iPhone 那张 +1.17 EV，小于标签本身，因为编译出的窗口
-吸收了一部分。主观微调请用 `--ev`；报告会写明遵从了哪个标签值。另需注意：在旧尺度上调过
-的门控现在看到的主体约亮一档——某张 Sigma 上 punch 从 0.268 变成 0.627——它们的标定值得
-用语料重新检查。
+**BaselineExposure 在两条管线上都被遵从。** Apple 明确把它定义为 RAW 文件请求的 baseline
+exposure，默认值可以随相机设置变化；ProRAW 还会随场景动态范围写入逐图配方。它不是快门/
+光圈/ISO 所描述的物理拍摄曝光，也不是要求把画面归一到某个中位亮度。LibRaw 不应用该标签，
+所以 dngscan 在 LibRaw 路径把 gain 折进 `scene_scale`；Core Image 则保留 CIRAWFilter 读取到
+的值。改变尺度而不直接放大 uint16 缓冲，可以保留高于名义白点的码值与精度。主观微调仍由
+`--ev` 完成，报告会写出文件中的标签值。
 
 `shadowBias` 是最容易漏掉的一项：默认值 **5.0**，作用是从阴影中减去一个量，本质是
 display-referred 的黑电平基座，在 scene-linear 缓冲里没有立足之地。保留默认值会让
@@ -345,9 +347,10 @@ LibRaw 会把 `blend` 和 `reconstruct` 的 uint16 整幅缩暗，倍数正好�
 
 ### 固定曝光锚点
 
-整条管线以 scene-linear `0.18` 作为名义中灰，曝光基准来自固定的相机常数与手动 EV，
-而不是让每张照片的中位数自动变成 18% 灰。常数缩放不会破坏场景意图：暗场景进 AgX
-之前依然暗，明亮场景依然亮，不同照片之间的相对关系不被内容自适应曝光重新排列。
+整条管线以 scene-linear `0.18` 作为名义中灰。当前显影锚点是统一固定标量
+`0.18 * 2^3` 再叠加手动 EV；它还不是逐机型标定，也不会把每张照片的中位数自动变成
+18% 灰。文件存在 DNG `BaselineExposure` 时，会更早按文件显影配方遵从。常数缩放不会
+破坏场景意图：暗场景进 AgX 前依然暗，明亮场景依然亮。
 
 GUI 里的“亮度参考”是一个主动调用的对照读数，也就是 CLI 的 `--ev auto`。它会尝试把
 可靠主体中位放到 18% 灰，并受新增高光剪切预算约束。这个中位来自当前解码器、当前
@@ -357,34 +360,35 @@ plan 上尝试候选 EV，不会边测边改变目标。全图统计仍可能被
 
 ### 场景统计不是简单 min/max
 
-Tone plan 会把可靠主体和高光尾部分开。主体统计剔除 CFA 已剪切或可信度过低的区域，用来
-估计 black、pivot、contrast 和主体所在的中频范围；尾部只负责给 shoulder 留出空间。
-点状灯源与大面积明亮表面也不是同一种高光：前者可以进入 roll-off，后者如果被同样压到
-顶端，会让整张图显得又暗又刺眼。
+Tone plan 会把可靠主体和高光尾部分开。LibRaw 路径剔除空间 CFA clip mask 对应的样本；
+Core Image 路径使用前文的聚合 rank trim。SNR 会约束黑端和 gated 颜色权限，但不是另一张
+主体 mask。尾部只负责给 shoulder 留出空间。点状灯源与大面积明亮表面也不是同一种高光：
+前者可以进入 roll-off，后者如果被同样压到顶端，会让整张图显得又暗又刺眼。
 
 因此 tone plan 里的几件事分别有自己的依据：
 
 - `black point` 与 `toe` 参考噪声底、暗部可用范围和目标黑场。
 - `white point` 与 `shoulder` 参考可靠亮度尾部、显示余量和发光体拓扑。
-- `pivot` 与 `contrast` 参考主体中间调，不让少量极亮像素支配整张照片。
+- `pivot` 当前固定在校准 EV 0，`contrast` 固定为 3.0；主体统计不会自动移动它们，GUI
+  中的有限调整是明确的人为偏置。
 - `view brightness` 只抬曲线内部，保持真黑与目标白端点，用于干净但整体偏暗的场景。
 
 ### GUI 中的四个明暗微调
 
-GUI 不直接暴露自动 pivot、black EV 或 white EV，而是在编译好的 tone plan 上提供四个有限
+GUI 不直接暴露校准 pivot 或编译后的 black/white EV，而是在 tone plan 上提供四个有限
 偏置。四个滑块的`自动`中心值就是分析结果，不是另一套 preset；全部归零时直接沿用原来的
 render plan，输出不变。
 
 | 选项 | 向左 | 向右 | 不会改变什么 |
 | --- | --- | --- | --- |
 | `中间调亮度` | 主体更沉、更暗 | 提亮主体和可见暗部 | 不移动 scene exposure、黑点或白点 |
-| `中间调对比` | 中间调更柔和 | 拉开自动 pivot 两侧的明暗距离 | 不移动 pivot 本身 |
+| `中间调对比` | 中间调更柔和 | 拉开校准 pivot 两侧的明暗距离 | 不移动 pivot 本身 |
 | `暗部过渡` | toe 更深，更快沉入黑场 | toe 更开放，阴影层次更容易看见 | 不移动黑点，也不会创造低 SNR 信号 |
 | `高光过渡` | shoulder 更直接，高光更有冲击力 | shoulder 更柔和，更早保留亮部层次 | 不移动白点或 RAW 剪切位置 |
 
 `中间调亮度`和曝光 EV 最容易混淆。曝光 EV 在 scene-linear 域缩放信号，会改变进入
 shoulder 的位置并消耗高光余量；中间调亮度是显示侧的内部曲线调整，真黑和目标白保持不动。
-`中间调对比`也不是另一个亮度控制：它围绕自动 pivot 改变斜率，决定主体内部的明暗距离，
+`中间调对比`也不是另一个亮度控制：它围绕校准 pivot 改变斜率，决定主体内部的明暗距离，
 而不是把主体整体上下移动。
 
 实际使用时，先用`中间调亮度`确定主体明暗，再用`中间调对比`确定立体感，最后分别调整
@@ -433,14 +437,15 @@ Blender 生态常把 Base 与 Punchy look 配套使用，本质上也是在处�
 
 ### 四条压缩核心
 
-四条核心共用同一个曝光锚点、CFA 证据和交付端保护，方便在相同 EV 下拆开比较：
+四条核心共用同一个曝光锚点和交付端保护，方便在相同 EV 下拆开比较。它们并不都能拿到
+相同的空间 CFA 证据：mask 只存在于 LibRaw 路径，各核心对现有证据的使用方式也不同。
 
 | 核心 | 底层差别 |
 | --- | --- |
 | `agx` | 完整的 inset → 逐通道 C1 curve → hue path → outset。默认成片路径。 |
-| `gated` | 同时计算 AgX 色彩结果与亮度保持结果，由 RAW 剪切、余量和噪声置信度逐像素混合。 |
+| `gated` | 仅限 LibRaw 的实验：同时计算 AgX 色彩与亮度保持结果，由 RAW 剪切、余量和噪声置信度逐像素混合。 |
 | `lum` | 同一条场景编译的 C1 曲线只作用于亮度 norm，RGB 比例保持，不进入 AgX inset/outset。 |
-| `neutral` | 固定的普通 shoulder，不使用场景编译的 AgX 几何，作为常规转换参考。 |
+| `neutral` | 固定 Y 比例诊断曲线，不使用场景编译 endpoint 或 AgX 几何；不是成片基线。 |
 
 `gated` 不是另一条曝光曲线。它先把 AgX 候选归一到与 lum 候选相同的 Rec.2020 亮度，再
 决定混入多少色度路径，所以亮度只有一个权威，mask 边界不会产生明暗接缝。它利用的是
@@ -451,11 +456,16 @@ darktable 模块本身看不到的 CFA 信息：某个颜色变化究竟来自�
 因为颜色不会像 AgX 那样主动向白退让。`y`、`max` 和 `power` norm 分别在色度学亮度、最响
 通道保护和两者折中之间选择。
 
+`neutral` 连 tone window 也固定，因此适合单独检查场景 plan 与 AgX 几何分别带来了什么。
+但保持 RGB 比例会把窄带高饱和高光直接推向 sRGB/P3 边界。最终 gamut fit 能保证输出合法，
+却不会让它获得 AgX 那种逐渐向白过渡的路径。
+
 ### RAW clip retreat、punch 与 gamut fit
 
-RAW clip retreat 只在 CFA 证据表明通道信息丢失时工作，在曲线前把颜色向该亮度下的中性轴
-收回。它与 AgX 的全局 inset 不同：一个由传感器真实剪切驱动，一个是显示变换本身的颜色
-几何。
+RAW headroom retreat 只在去马赛克前 CFA 表明通道接近或到达 full-well 时工作。95% 到 99%
+的软渐变是保守权限信号：低端表示“开始不可靠”，不表示“已经剪切”。它在曲线前把颜色向
+该亮度下的中性轴收回。它与 AgX 的全局 inset 不同：一个由传感器余量驱动，一个是显示变换
+本身的颜色几何。
 
 `punch`（GUI 中的`中频纯度`）用来补偿 AgX inset 在明亮宽动态场景里的整体去纯度。
 它在 Oklab 中工作，自动值由主体亮度、可用 DR 和 tone window 共同门控；在中性轴、深影、
@@ -517,9 +527,28 @@ SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4
 代价是色度分辨率。Display P3 会嵌入 ICC profile，找不到 profile 就停止导出，不写未标记
 的宽色域数据。
 
-项目里还有 ISO 21496-1 gain-map HDR JPEG 路径。HDR 输出以 P3 SDR 底图为兼容层，再附加
-亮度增益图；`--output-format ultrahdr` 选择它，`--hdr-headroom` 用 EV 指定增益图上限。
-这条路径目前仍然是实验项。
+HDR 选项通过 Apple Core Image 写出带 ISO 21496-1 **RGB** gain map 的 JPEG。8-bit Display
+P3 主图就是原本的完整 SDR 成片（所选 AgX / gated / lum / neutral）。普通 SDR 阅读器看到
+的是与普通导出一致的底图。第一版 Ultrahdr 要求 `look=none` 且 `display_filter=none`：
+现有 display look/filter 尚未 HDR 化，会明确报错而不是静默忽略。
+
+HDR alternate **不是** `SDR × 标量`。共享 intent-scene（白平衡、BaselineExposure、固定中灰
+EV、用户 EV、scene transform）之后分叉：
+
+1. SDR AgX（或其他 SDR 核）→ 量化后的 Display P3 底图  
+2. ACES 2 式 HDR DRT（Hellwig JMh 的 tone / chroma / gamut）→ 扩展线性 P3  
+3. 与内容无关的中灰匹配 + JMh bridge（在漫反射白 `log2(1/0.18)` 附近 reveal），低中调贴合
+   SDR，高光可用独立 colorfulness 几何  
+4. 由 SDR/HDR 图像对封装 RGB ISO gain map（`HDRGainMapAsRGB`）
+
+在官方 CTL 参考向量交叉验证完成前，产品表述为 **ACES 2-derived HDR / ACES 2 式 HDR**，
+不声称“严格 ACES 2”。NumPy（`dngscan.aces2`）是参考实现；C++ 原生路径仅有占位，尚未接入
+生产。
+
+`--hdr-headroom` 是相对 100 nit reference white 的显示 **capacity**（默认 `3.0` → 800 nit；
+上限约 `5.32` EV → 4000 nit）。文件里的实际 content headroom 取自成片。写入路径需要
+macOS 与 `pyobjc-framework-Quartz`，并校验 ISO 辅助图、Display P3 ICC、4:4:4，以及 RGB
+（而非 L008）gain-map 像素格式。
 
 ## 快速开始
 
@@ -553,6 +582,10 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # 高光重建 + Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO RGB gain-map HDR JPEG（ACES 2 式；capacity +3 EV → 800 nit）
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3 --hdr-drt aces2
 
 # RAW 分析图和 CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
