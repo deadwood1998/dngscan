@@ -219,10 +219,17 @@ def print_report(
             scale_mode = getattr(bundle, "scene_scale_mode", None)
             align = getattr(bundle, "scene_align_factor", 1.0)
             align_err = getattr(bundle, "scene_align_error", None)
-            if align_err:
-                scale_note = f"，曝光对齐失败（{align_err}），未对齐到 LibRaw 尺度"
+            if scale_mode == "aligned":
+                if align_err:
+                    scale_note = f"，逐文件尺度对齐失败（{align_err}），已回退 1×"
+                else:
+                    scale_note = (
+                        f"，尺度对齐={align:.4f}×（逐文件解码绿色中位比；非自动曝光）"
+                    )
+            elif scale_mode == "measured":
+                scale_note = "，尺度=旧版 Sigma fp 固定实测倍率（仅供复现）"
             else:
-                scale_note = f"，曝光对齐={align:.4f}×（逐文件实测，对齐到 LibRaw 尺度）"
+                scale_note = "，尺度=Core Image 原生单位（unity）"
             decoder_label = (
                 f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
                 f"{opcode_note}{scale_note}）"
@@ -241,9 +248,9 @@ def print_report(
             else f"EV 补偿={jpeg_ev:+.2f}，固定常数非自适应"
         )
         brighten_note = "全图亮度参考" if auto_ev is not None else "手动 EV / 固定锚点"
-        # BaselineExposure moves every pixel, and on some cameras it is a per-shot capture
-        # decision rather than a constant, so two frames can differ for a reason that is
-        # in the file rather than in the render settings. Name it when the file carries it.
+        # BaselineExposure moves every pixel and can be scene-dependent in ProRAW. It is
+        # file-authored baseline rendering compensation, not an auto-gray decision or the
+        # shutter/aperture/ISO measurement, so name it without calling it capture exposure.
         baseline_exposure = getattr(bundle, "baseline_exposure", None)
         baseline_exposure_note = (
             f"文件 BaselineExposure={baseline_exposure:+.3f} EV（已遵从）；"
@@ -268,7 +275,7 @@ def print_report(
         else:
             anchored = analysis.median_vs_gray_ev + math.log2(max(bundle.exposure_gain, EPS))
             print(
-                f"RAW 统计校验: CFA 中位亮度相对 18% 灰 {anchored:+.2f} EV"
+                f"RAW 统计校验: 解码场景中位亮度相对 18% 灰 {anchored:+.2f} EV"
                 + ("（暗调场景，符合拍摄意图即可）" if anchored < -1.0 else "")
             )
         if auto_ev is not None:
@@ -298,9 +305,13 @@ def print_report(
 def jpeg_policy_cn(mode: str, output_gamut: str = "srgb") -> str:
     label = output_gamut_label(output_gamut)
     if mode == "agx":
-        return f"agx: scene-linear Rec.2020 工作空间；白平衡按导出选项；无自动增亮；高光处理按导出选项；AgX inset→端点归一化 C1 sigmoid→outset，可靠 scene Y 只编译黑白范围与 toe/shoulder；CFA clip mask 仅驱动曲线前褪白；最后转 {label}；4:4:4 色度采样"
+        return f"agx: scene-linear Rec.2020 工作空间；白平衡按导出选项；无隐式自动增亮；高光重建属于所选解码器；AgX inset→端点归一化 C1→hue restore→outset；可靠 scene Y 只编译黑白范围与 toe/shoulder；逐像素 CFA mask 存在时才驱动曲线前褪白；最后转 {label}；4:4:4 色度采样"
     if mode == "lum":
-        return f"lum: scene-linear Rec.2020 工作空间；CFA clip mask 驱动曲线前褪白；固定 AgX body 的 C1 endpoint 作用于标量亮度/norm，RGB 比例保持；显示白附近再温和褪色；无 AgX inset/outset，最后转 {label} 并做输出色域 fit"
+        return f"lum: scene-linear Rec.2020 工作空间；逐像素 CFA mask 存在时驱动曲线前褪白；场景编译 C1 作用于标量亮度/norm，RGB 比例保持；显示白附近再温和褪色；无 AgX inset/outset，最后转 {label} 并做输出色域 fit"
+    if mode == "gated":
+        return f"gated: 仅限 LibRaw；场景编译 C1 的亮度结果是唯一亮度权威；AgX 色彩候选先对齐到同一 Y，再由 CFA 剪切、余量与 SNR 权限逐像素混合；最后转 {label} 并做输出色域 fit"
+    if mode == "neutral":
+        return f"neutral: 固定 Y 比例诊断曲线；不读取场景编译 endpoint，不进入 AgX inset/outset；逐像素 CFA mask 存在时仍可做剪切褪白；最后转 {label} 并做输出色域 fit"
     return ""
 
 
@@ -317,7 +328,7 @@ def jpeg_tone_plan_cn(
         from .neutral import NEUTRAL_BLACK_EV, NEUTRAL_WHITE_EV
 
         return (
-            f"neutral: fixed export curve (Y ratio, black={NEUTRAL_BLACK_EV:.1f}EV "
+            f"neutral: fixed diagnostic curve (Y ratio, black={NEUTRAL_BLACK_EV:.1f}EV "
             f"white=+{NEUTRAL_WHITE_EV:.1f}EV); no AgX; delivery={output_gamut}"
         )
     if mode in ("agx", "lum", "gated"):

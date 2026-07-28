@@ -15,7 +15,7 @@ import dngscan as dg
 from dngscan.debug_util import maybe_print_exc
 
 from .page import render_page
-from .service import list_dir, prepare_preview, run_export_isolated, run_preview
+from .service import list_dir, prepare_preview, raw9_support, run_export_isolated, run_preview
 
 
 def reveal_path(params: dict) -> dict:
@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in ("/export", "/preview", "/prepare", "/reveal"):
+        if path not in ("/export", "/preview", "/prepare", "/raw9-support", "/reveal"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -67,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = run_export_isolated(params)
             elif path == "/prepare":
                 result = prepare_preview(params)
+            elif path == "/raw9-support":
+                result = raw9_support(params)
             else:
                 result = reveal_path(params)
             self._json(result)

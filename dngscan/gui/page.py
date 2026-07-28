@@ -48,7 +48,7 @@ button.preview:disabled{opacity:.5;cursor:default}
 #controlHint{margin-top:10px;color:#9aa7c0;font-size:12px;line-height:1.55;min-height:0}
 #controlHint:empty{display:none}
 #status{margin-top:10px;min-height:20px}
-.err{color:#ff8a8a}.ok{color:#8ae08a}
+.err{color:#ff8a8a}.ok{color:#8ae08a}.warn{color:#ffc46b}
 .browserList{display:none;margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;max-height:260px;overflow:auto;background:#12141a}
 .browserList div{padding:6px 10px;cursor:pointer;border-bottom:1px solid #20242e;font-size:13px}
 .browserList div:hover{background:#1a2233}
@@ -113,7 +113,7 @@ button.preview:disabled{opacity:.5;cursor:default}
       <input type="range" id="midtoneBrightness" min="-1" max="1" step="0.05" value="0" title="向左压低主体，向右提亮主体。">
     </div>
     <div class="sliderField">
-      <div class="labelRow"><label title="围绕自动 pivot 改变中间调斜率，pivot 位置仍由场景分析决定。">中间调对比</label><span class="val" id="midtoneContrastVal">自动</span></div>
+      <div class="labelRow"><label title="围绕固定校准 pivot 改变中间调斜率，不移动 pivot 位置。">中间调对比</label><span class="val" id="midtoneContrastVal">自动</span></div>
       <input type="range" id="midtoneContrast" min="-1" max="1" step="0.05" value="0" title="向左柔和，向右增强。">
     </div>
   </div>
@@ -140,7 +140,7 @@ button.preview:disabled{opacity:.5;cursor:default}
           <option value="gated">RAW 门控 · 保真</option>
         </optgroup>
         <optgroup label="非 AgX 对照">
-          <option value="neutral">通用曲线 · 对照</option>
+          <option value="neutral">固定亮度曲线 · 诊断</option>
           <option value="lum">场景 C1 · 仅亮度</option>
         </optgroup>
       </select>
@@ -265,7 +265,7 @@ GRADE_OPTIONS
       <label>格式</label>
       <select id="format">
         <option value="sdr">SDR JPEG</option>
-        <option value="ultrahdr">HDR gain-map · 实验</option>
+        <option value="ultrahdr">HDR gain-map · Apple</option>
       </select>
     </div>
     <div style="flex:1;min-width:140px">
@@ -290,9 +290,9 @@ GRADE_OPTIONS
   </div>
   <div class="row" id="hdrBlock" style="margin-top:12px">
     <div style="min-width:220px">
-      <div class="labelRow"><label>HDR 余量</label><span class="val" id="hdrHeadroomVal">+3.00</span></div>
+      <div class="labelRow"><label>HDR 余量上限</label><span class="val" id="hdrHeadroomVal">+3.00 EV</span></div>
       <input type="range" id="hdrHeadroom" min="1" max="5" step="0.25" value="3">
-      <div class="muted" id="hdrHint">社交平台可能移除 HDR 增益图。</div>
+      <div class="muted" id="hdrHint">实际余量由场景决定；只恢复漫反射白以上的真实亮度档数。</div>
     </div>
   </div>
   <div style="margin-top:12px">
@@ -347,7 +347,7 @@ const CORE_FACTS={
 const CONTROL_HINTS={
   gated:"RAW 证据决定 AgX 色彩路径的混合量。",
   agx:"默认成片；全图使用 AgX 色彩路径。",
-  neutral:"固定 shoulder，用作常规导出对照。",
+  neutral:"固定 Y 比例曲线，用来检查色调核与高饱和边界。",
   lum:"共用场景 C1，仅压缩亮度。"
 };
 function updateToneCoreUi(){
@@ -361,9 +361,14 @@ function updateToneCoreUi(){
   $("#coreFacts").innerHTML=facts;
   $("#controlHint").textContent=CONTROL_HINTS[core]||"";
 }
-function updateFormatUi(){$("#hdrBlock").style.display=$("#format").value==="ultrahdr"?"flex":"none";}
+function updateFormatUi(){
+  const hdr=$("#format").value==="ultrahdr";
+  $("#hdrBlock").style.display=hdr?"flex":"none";
+  if(hdr){$("#gamut").value="p3";$("#chroma").value="444";$("#quality").value="100";}
+  $("#gamut").disabled=hdr;$("#chroma").disabled=hdr;$("#quality").disabled=hdr;
+}
 function setEvLabel(){const v=+$("#ev").value;$("#evval").textContent=(v>=0?"+":"")+v.toFixed(2);}
-function setHdrLabel(){const v=+$("#hdrHeadroom").value;$("#hdrHeadroomVal").textContent="+"+v.toFixed(2);}
+function setHdrLabel(){const v=+$("#hdrHeadroom").value;$("#hdrHeadroomVal").textContent="+"+v.toFixed(2)+" EV";}
 function fmtPct(v){if(v===undefined||!isFinite(v))return "";if(v<=0)return "0%";if(v<0.005)return "<0.01%";if(v<1)return "~"+v.toFixed(2)+"%";return v.toFixed(1)+"%";}
 function fmtEv(v){return (v>=0?"+":"")+v.toFixed(2);}
 function metricText(j){
@@ -393,7 +398,7 @@ function sceneTransformText(j){
 }
 function toneCoreText(j){
   if(!j.tone_core)return "";
-  const labels={gated:"成片·RAW 门控",agx:"成片·AgX 全图",lum:"对照 2·场景 C1 仅亮度",neutral:"对照 1·通用导出曲线"};
+  const labels={gated:"实验·RAW 门控",agx:"成片·AgX 全图",lum:"对照·场景 C1 仅亮度",neutral:"诊断·固定 Y 比例曲线"};
   const norms={y:"Y",power:"折中",max:"最大通道"};
   const norm=j.tone_core==="lum"&&j.lum_norm?"（"+(norms[j.lum_norm]||j.lum_norm)+"）":"";
   return "，策略 "+(labels[j.tone_core]||j.tone_core)+norm;
@@ -401,6 +406,11 @@ function toneCoreText(j){
 function highlightText(v){return ({clip:"保持剪切",blend:"高光混合",reconstruct:"高光重建"})[v]||v;}
 function gamutText(v){return ({srgb:"sRGB",p3:"Display P3"})[v]||v;}
 function formatText(v){return ({sdr:"SDR JPEG",ultrahdr:"HDR gain-map JPEG"})[v]||v;}
+function decoderText(j){
+  if(j.decoder!=="coreimage")return "";
+  const version=(j.decoder_version||"").replace(/\\.dng$/i,"");
+  return "，解码 Apple RAW"+(version?" "+version:"");
+}
 function applyJobEv(j){
   if(j.ev!==undefined){$("#ev").value=j.ev;setEvLabel();saveSettings();}
 }
@@ -512,13 +522,13 @@ function restoreSettings(){
 ["input","highlight"].forEach(id=>$("#"+id).addEventListener("change",()=>{saveSettings();preparePreview();}));
 ["demosaic","chroma","grade"].forEach(id=>$("#"+id).addEventListener("change",()=>{updateGradeUi();saveSettings();}));
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
-$("#coreimageVersion").addEventListener("change",()=>{saveSettings();preparePreview();});
+$("#coreimageVersion").addEventListener("change",()=>{RAW9_APPROVALS.delete($("#input").value.trim());saveSettings();preparePreview();});
 $("#wb").addEventListener("change",()=>{updateDecoderUi();updateGradeUi();saveSettings();preparePreview();});
 $("#toneCore").addEventListener("change",()=>{updateToneCoreUi();saveSettings();preparePreview();});
 $("#lumNorm").addEventListener("change",saveSettings);
 $("#agxPrimaries").addEventListener("change",saveSettings);
 $("#sceneTransform").addEventListener("change",()=>{updateSceneTransformUi();saveSettings();});
-$("#format").addEventListener("change",()=>{if($("#format").value==="ultrahdr")$("#gamut").value="p3";updateFormatUi();saveSettings();});
+$("#format").addEventListener("change",()=>{updateFormatUi();saveSettings();});
 $("#ev").oninput=()=>{setEvLabel();saveSettings();};
 $("#hdrHeadroom").oninput=()=>{setHdrLabel();saveSettings();};
 $("#gradeStrength").oninput=()=>{setGradeStrengthLabel();saveSettings();};
@@ -583,8 +593,56 @@ async function postJob(path, body){
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   return await r.json();
 }
+const RAW9_PROBES=new Map();
+const RAW9_APPROVALS=new Map();
+async function ensureRaw9Support(body){
+  if(body.decoder!=="coreimage")return true;
+  const key=body.input;
+  let j=RAW9_PROBES.get(key);
+  if(!j){
+    j=await postJob("/raw9-support",{input:key});
+    if(j.ok)RAW9_PROBES.set(key,j);
+  }
+  if(!j.ok){setStatus("RAW 9 探测失败："+(j.error||"未知错误"),"err");return false;}
+  const switchToLibRaw=(message)=>{
+    window.alert(message+"\n\n将改用 LibRaw。");
+    $("#decoder").value="libraw";updateDecoderUi();saveSettings();
+    body.decoder="libraw";body.coreimageVersion="auto";
+    setStatus(message+" 已改用 LibRaw。","warn");
+  };
+  if(!j.coreimage_available||j.probe_error){switchToLibRaw(j.message);return true;}
+  const offered=(j.versions_offered||[]).map(v=>String(v).replace(/\\.dng$/i,""));
+  if(body.coreimageVersion!=="auto"){
+    if(!offered.includes(String(body.coreimageVersion))){
+      setStatus(j.message+" 当前指定的 RAW "+body.coreimageVersion+" 也不可用。","err");
+      return false;
+    }
+    if(body.coreimageVersion!=="9"){
+      setStatus(j.message+" 当前明确使用 RAW "+body.coreimageVersion+"。","warn");
+    }
+    return true;
+  }
+  if(j.raw9_supported)return true;
+  if(!j.fallback_version){switchToLibRaw(j.message);return true;}
+  const approved=RAW9_APPROVALS.get(key);
+  if(approved===j.fallback_version){body.coreimageVersion=approved;return true;}
+  const useFallback=window.confirm(
+    j.message+"\n\n确定：继续使用 Apple RAW "+j.fallback_version+"\n取消：改用 LibRaw"
+  );
+  if(useFallback){
+    RAW9_APPROVALS.set(key,j.fallback_version);
+    body.coreimageVersion=j.fallback_version;
+    setStatus("此文件将使用 Apple RAW "+j.fallback_version+"。","warn");
+  }else{
+    $("#decoder").value="libraw";updateDecoderUi();saveSettings();
+    body.decoder="libraw";body.coreimageVersion="auto";
+    setStatus("此文件不支持 RAW 9，已改用 LibRaw。","warn");
+  }
+  return true;
+}
 async function preparePreview(){
   const body=payload();if(!body)return;
+  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   try{await postJob("/prepare",body);}catch(_){/* Preview remains available on demand. */}
 }
 function beginBusy(){const w=$("#previewWrap");w.classList.add("loading");}
@@ -599,13 +657,14 @@ function setPreviewImage(b64, ondone){
 function handleJobResult(j, prefix){
   if(!j.ok)return false;
   applyJobEv(j);
-  setStatus(prefix+"：EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j),"ok");
+  setStatus(prefix+"：EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+decoderText(j)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j),"ok");
   setPreviewImage(j.preview);
   return true;
 }
 
 $("#previewBtn").onclick=async()=>{
   const body=payload();if(!body)return;
+  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   $("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在生成预览…","");
   try{
     const j=await postJob("/preview",body);
@@ -616,6 +675,7 @@ $("#previewBtn").onclick=async()=>{
 
 $("#evReferenceBtn").onclick=async()=>{
   const body=payload();if(!body)return;
+  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   body.evAuto=true;
   $("#previewBtn").disabled=true;$("#evReferenceBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在计算亮度参考…","");
   try{
@@ -627,11 +687,12 @@ $("#evReferenceBtn").onclick=async()=>{
 
 $("#go").onclick=async()=>{
   const body=payload();if(!body)return;
+  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   $("#go").disabled=true;$("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在全尺寸导出…","");
   try{
     const j=await postJob("/export",body);
     if(!j.ok){endBusy();setStatus("错误："+j.error,"err");}
-    else{applyJobEv(j);setStatus("已保存："+j.saved.join(" · ")+"（"+formatText(j.format)+"，EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j)+"）","ok");
+    else{applyJobEv(j);setStatus("已保存："+j.saved.join(" · ")+"（"+formatText(j.format)+"，EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+decoderText(j)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j)+"）","ok");
       lastSavedPath=j.saved[0]||"";$("#revealBtn").style.display=lastSavedPath?"inline-block":"none";setPreviewImage(j.preview);}
   }catch(e){endBusy();setStatus("请求失败："+e,"err");}
   $("#go").disabled=false;$("#previewBtn").disabled=false;

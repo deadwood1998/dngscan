@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -77,6 +78,46 @@ class CoreImageVersionTests(unittest.TestCase):
     def test_explicit_unsupported_raises(self) -> None:
         with self.assertRaises(RuntimeError):
             coreimage_decode.resolve_decoder_version("9", ("7", "8"))
+
+    def test_raw9_probe_accepts_dng_version_token(self) -> None:
+        with (
+            patch.object(coreimage_decode, "available", return_value=True),
+            patch.object(
+                coreimage_decode,
+                "supported_versions",
+                return_value=("8", "8.dng", "9.dng"),
+            ),
+        ):
+            result = coreimage_decode.probe_raw9_support(Path("camera.dng"))
+        self.assertTrue(result["raw9_supported"])
+        self.assertIsNone(result["fallback_version"])
+
+    def test_raw9_probe_reports_explicit_legacy_fallback(self) -> None:
+        with (
+            patch.object(coreimage_decode, "available", return_value=True),
+            patch.object(
+                coreimage_decode,
+                "supported_versions",
+                return_value=("7.dng", "8.dng"),
+            ),
+        ):
+            result = coreimage_decode.probe_raw9_support(Path("older.dng"))
+        self.assertFalse(result["raw9_supported"])
+        self.assertEqual(result["fallback_version"], "8")
+        self.assertEqual(result["versions_offered"], ("7.dng", "8.dng"))
+
+    def test_raw9_probe_contains_open_error(self) -> None:
+        with (
+            patch.object(coreimage_decode, "available", return_value=True),
+            patch.object(
+                coreimage_decode,
+                "supported_versions",
+                side_effect=RuntimeError("unsupported container"),
+            ),
+        ):
+            result = coreimage_decode.probe_raw9_support(Path("not-raw.bin"))
+        self.assertFalse(result["raw9_supported"])
+        self.assertIn("unsupported container", str(result["error"]))
 
 
 @unittest.skipUnless(coreimage_decode.available(), "Core Image unavailable")
@@ -159,8 +200,9 @@ class CoreImageLiveTests(unittest.TestCase):
         # Aggregate (geometry-free) RAW facts survive: same mosaic, same levels.
         self.assertEqual(int(ci_bundle.white_level), int(libraw.white_level))
         self.assertEqual(list(ci_bundle.black_levels), list(libraw.black_levels))
-        # The float16 buffer itself stays unscaled; scene_scale carries only the measured
-        # alignment onto the LibRaw exposure scale, so the two are each other's inverse.
+        # The float16 buffer stays unscaled; default aligned mode carries its one scalar
+        # in scene_scale, so factor and scale are each other's inverse.
+        self.assertEqual(ci_bundle.scene_scale_mode, "aligned")
         self.assertIsNone(ci_bundle.scene_align_error)
         self.assertNotAlmostEqual(ci_bundle.scene_align_factor, 1.0, places=3)
         self.assertAlmostEqual(
@@ -271,14 +313,16 @@ class DecoderGuardTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse_args(["photo.dng", "--jpeg", "out.jpg", "--coreimage-scale", "unity"])
 
-    def test_scale_modes_are_distinct_and_default_is_unity(self) -> None:
-        """Both alignments must be reachable, and they must actually differ: the point of
-        the option is to make the fitted correction falsifiable against unity."""
+    def test_scale_modes_are_distinct_and_default_is_aligned(self) -> None:
+        """Per-file alignment, Apple-native units, and the legacy fixed fit are separate
+        policies; a fixed multiplier must not masquerade as per-file alignment."""
         from dngscan.cli import parse_args
 
         measured = coreimage_decode.scale_compensation_for_mode("measured")
         unity = coreimage_decode.scale_compensation_for_mode("unity")
+        aligned = coreimage_decode.scale_compensation_for_mode("aligned")
         self.assertEqual(unity, 1.0)
+        self.assertEqual(aligned, 1.0)
         self.assertNotAlmostEqual(measured, unity, places=3)
         self.assertAlmostEqual(
             measured, 1.0 / coreimage_decode.COREIMAGE_SCALE_MEASURED_RATIO, places=9
@@ -286,7 +330,7 @@ class DecoderGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             coreimage_decode.scale_compensation_for_mode("nope")
         args = parse_args(["photo.dng", "--jpeg", "out.jpg", "--decoder", "coreimage"])
-        self.assertEqual(args.coreimage_scale, "unity")
+        self.assertEqual(args.coreimage_scale, "aligned")
 
     def test_raw9_normalizes_libraw_only_controls(self) -> None:
         from dngscan.cli import parse_args
@@ -348,11 +392,13 @@ class SubjectiveControlTests(unittest.TestCase):
     def test_moire_reduction_is_left_at_apples_default(self) -> None:
         """The one look-adjacent control deliberately not cleared.
 
-        moireReductionAmount reads like something to zero, and isMoireReductionSupported
-        returns False on version 9 so the guarded call skips it anyway. Forcing it would
-        be actively harmful: measured at full resolution, 0 costs 59.8 % of the buffer's
-        high-frequency energy, because the control's zero is its smoothest end rather
-        than "off", and 0.5 and 1.0 render identically on the plateau its default sits on.
+        moireReductionAmount reads like something to zero. On version 9,
+        isMoireReductionSupported is False, so a gated setter would skip — and that
+        accidental skip is what kept detail. Forcing 0 is actively harmful: measured at
+        full resolution it costs 59.8 % of high-frequency energy, because zero is the
+        control's smoothest end rather than "off", while 0.5 and 1.0 render identically
+        on the plateau its default sits on. configure_linear_filter must not touch it
+        at all, even if a future SDK reports the control as supported.
         """
         _skip_unless_available()
         if not SIGMA_DNG.is_file():
@@ -367,6 +413,9 @@ class SubjectiveControlTests(unittest.TestCase):
         coreimage_decode.configure_linear_filter(filt, version="9", scale_factor=0.1)
         self.assertAlmostEqual(float(filt.moireReductionAmount()), default, places=6)
         self.assertGreater(default, 0.0)
+        # Policy pin: the module must not expose a path that zeros this control.
+        source = Path(coreimage_decode.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("setMoireReductionAmount_", source)
 
     def test_highlight_recovery_stays_on_and_keeps_clipped_highlights_neutral(
         self,

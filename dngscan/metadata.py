@@ -21,10 +21,10 @@ TAG_EXIF_IFD = 34665
 TAG_ISO = 34855
 TAG_AS_SHOT_NEUTRAL = 50728
 TAG_SUB_IFDS = 330
-# DNG 1.7 §5: log2 exposure the renderer is expected to apply on top of the raw data.
-# Most vendors use it as a fixed per-model calibration constant (Sigma fp writes 1.0 on
-# every frame); Apple uses it to carry a per-shot capture decision, writing 0.4973 at
-# base ISO and exactly 2.0 more on an underexposed low-light frame.
+# DNG 1.7 §5: log2 baseline rendering compensation applied on top of raw data.
+# It may be a stable camera baseline (Sigma fp writes 1.0 on the tested frames) or part
+# of a per-image rendering recipe (ProRAW can vary it with scene dynamic range). It is
+# not the shutter/aperture/ISO measurement and does not imply content normalization.
 TAG_BASELINE_EXPOSURE = 50730
 
 _TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}

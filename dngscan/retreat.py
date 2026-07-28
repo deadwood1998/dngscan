@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Clip-driven chroma retreat for the luminance tone core."""
+"""Pre-demosaic CFA headroom-driven chroma retreat for scene tone cores."""
 from __future__ import annotations
 
 from typing import Any
@@ -102,7 +102,7 @@ def retreat_strength_from_masks(masks_rgb: Any) -> Any:
 
 
 def apply_clip_retreat_rec2020(rgb_rec2020: Any, masks_rgb: Any, strength: float = 1.0) -> Any:
-    """Move clipped chroma toward the Rec.2020 neutral axis at the same luminance."""
+    """Move near/full-well chroma toward the Rec.2020 neutral axis at fixed luminance."""
     if masks_rgb is None or strength <= 0.0:
         return rgb_rec2020
     rgb = np.asarray(rgb_rec2020, dtype=np.float32)

@@ -617,6 +617,12 @@ def analyze(
     fullwell, fullwell_ids, fullwell_note, channel_fullwell = resolve_fullwell(
         channel_ids, ceilings, spike_ok, sat
     )
+    # load_raw can only seed the soft headroom mask from metadata. If this frame contains
+    # a trustworthy saturation pile, bring the render-time mask onto the same resolved
+    # per-channel full-well endpoints used by hard clip statistics.
+    from .raw_io import refresh_clip_masks_from_fullwell
+
+    refresh_clip_masks_from_fullwell(bundle, channel_fullwell)
     threshold = int(max(fullwell - margin, 0))
     channel_thresholds = channel_clip_thresholds(channel_ids, channel_fullwell, margin)
     clip_pct = compute_clip_pct_by_thresholds(raw_image, raw_colors, channel_ids, channel_thresholds)

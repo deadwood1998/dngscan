@@ -6,9 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .constants import DEFAULT_GAINMAP_SCALE, DEFAULT_HDR_HEADROOM_EV
-
-
 @dataclass
 class RawBundle:
     path: Path
@@ -32,14 +29,17 @@ class RawBundle:
     shot_make: str | None = None
     shot_model: str | None = None
     shot_iso: int | None = None
-    # DNG BaselineExposure as written by the camera, or None when the file omits it. Both
-    # decoders honour it, so it is recorded to explain a brightness that came from the
-    # file rather than from render settings.
+    # DNG BaselineExposure as written by the camera, or None when the file omits it. This
+    # is file-authored baseline rendering compensation, not shutter/aperture/ISO or an
+    # auto-gray target. Both decoders honour it before dngscan's explicit EV adjustment.
     baseline_exposure: float | None = None
     # Half-resolution, orientation-correct RGB soft clip masks in raw/CFA space.
     # Shape is (H, W, 3), aligned to scene_rec2020_render when scene_half_size=True.
     # Full-resolution renders resize this mask to the render buffer on demand.
     clip_masks: Any | None = None
+    # Per-channel endpoints used to build clip_masks. None means the initial metadata
+    # white levels; analysis records observed full wells here when it rebuilds the mask.
+    _clip_mask_fullwell: dict[int, int] | None = None
     # Lazily filled by retreat.clip_masks_for_shape when a render resizes masks.
     _clip_masks_cache_shape: tuple[int, int] | None = None
     _clip_masks_resized: Any | None = None
@@ -54,14 +54,13 @@ class RawBundle:
     # one, whose frame geometry cannot carry them.
     scene_decoder: str = "libraw"
     scene_decoder_version: str | None = None
-    # Which --coreimage-scale mode produced the buffer ("measured" | "unity"), so a
-    # comparison between the two is visible in the report rather than implicit.
+    # Which Core Image scale policy produced the buffer: aligned (per-file decoded-green
+    # comparison), unity (Apple-native), or measured (legacy fixed Sigma-fp fit).
     scene_scale_mode: str | None = None
-    # Per-file scale that put the Core Image buffer on the LibRaw path's exposure scale.
-    # 1.0 on the LibRaw path and whenever the measurement could not be made.
+    # Per-file scalar used only by the aligned policy. It compares two decoded green
+    # medians; it is not an absolute sensor calibration or content-adaptive auto exposure.
     scene_align_factor: float = 1.0
-    # Why the alignment fell back to identity, when it did. An unexplained 1.0 is
-    # indistinguishable from a working alignment in the output, so the reason is carried.
+    # Why aligned mode fell back to identity. None is expected for unity/measured modes.
     scene_align_error: str | None = None
     # DNG opcodes the decoder executed (Core Image path only). Reported, not acted on:
     # their presence is why that path cannot share LibRaw's per-pixel CFA evidence.
@@ -156,7 +155,8 @@ class ToneCompressionPlan:
     # Scene-driven purity compensation applied after the AgX curve (see dngscan/punch.py).
     # 0 = identity (night/high-ISO scenes gate to exactly zero).
     punch_strength: float = 0.0
-    # Tone core selector: "agx" keeps inset/outset AgX, "lum" uses luminance-ratio shoulder.
+    # Tone core selector: agx (full geometry), gated (RAW-permission mix), lum
+    # (luminance-ratio C1), or neutral (fixed diagnostic Y-ratio curve).
     tone_core: str = "agx"
     # Norm for the luminance core: "y", "power", or "max".
     lum_norm: str = "y"
@@ -188,9 +188,11 @@ class ToneCompressionPlan:
 class SceneToneMetrics:
     """Scene-referred luminance facts used only to compile the tone plan.
 
-    The reliable distribution excludes CFA sites with exhausted headroom. Its purpose is
-    to prevent reconstructed lamps and single-channel clipping from defining the global
-    shoulder. It deliberately contains no creative or output-gamut decisions.
+    On LibRaw, the reliable distribution excludes CFA sites with exhausted headroom. On
+    Core Image, opcode geometry prevents that mapping, so an equal aggregate RAW-clipped
+    fraction is removed from the top luminance rank instead. The latter is a conservative
+    comparison heuristic, not pixel-level evidence. Neither path mixes creative or
+    output-gamut decisions into these metrics.
     """
 
     reliable_sample_pct: float
@@ -215,8 +217,9 @@ class SceneToneMetrics:
 class ColorGeometryPlan:
     """Colour-only decisions for one output gamut.
 
-    `raw_clip_retreat_strength` is applied only through the CFA-derived mask. Output
-    gamut pressure controls the final hue-preserving fit, never the tone endpoints.
+    `raw_clip_retreat_strength` is applied only when a CFA-derived per-pixel mask exists;
+    it is therefore inactive on Core Image buffers. Output-gamut pressure controls the
+    final hue-preserving fit, never the tone endpoints.
     """
 
     target_gamut: str
@@ -281,14 +284,3 @@ class AutoEvResult:
     highlight_limited: bool
     highlight_cap_ev: float
     anchored_median_ev: float
-
-
-@dataclass
-class GainMapMetadata:
-    headroom: float
-    gamma: float = 1.0
-    min_gain: float = 0.0
-    max_gain: float = DEFAULT_HDR_HEADROOM_EV
-    hdr_capacity_min: float = 0.0
-    hdr_capacity_max: float = DEFAULT_HDR_HEADROOM_EV
-    gainmap_scale: int = DEFAULT_GAINMAP_SCALE

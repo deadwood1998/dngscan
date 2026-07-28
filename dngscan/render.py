@@ -19,7 +19,7 @@ from . import retreat as retreat_engine
 from . import scene_transform as scene_transform_engine
 from . import _fast as fast_backend
 from .color import (
-    encode_display_linear, fit_to_output_gamut, luminance_from_rgb_space, oklab_to_output_rgb,
+    encode_display_linear, fit_to_output_gamut, oklab_to_output_rgb,
     rec2020_to_output, rgb_to_oklab, smoothstep,
 )
 from .models import Analysis, ColorGeometryPlan, RawBundle, RenderPlan, ToneCompressionPlan
@@ -97,7 +97,11 @@ def finalize_output_linear(
     look_strength: float = 1.0,
     color_plan: ColorGeometryPlan | None = None,
 ) -> Any:
-    """Apply the post-AgX chromatic look and output-gamut fit in display-linear RGB."""
+    """Apply common post-tone color operations in display-linear output RGB.
+
+    This stage runs after agx, gated, lum, and neutral alike: optional look, optional
+    display-highlight chroma retreat, then the authoritative hue-preserving gamut fit.
+    """
     original_shape = rgb_linear.shape
     flat = rgb_linear.reshape(-1, 3)
     out = np.empty((flat.shape[0], 3), dtype=np.float32)
@@ -145,7 +149,7 @@ def plan_with_look_overrides(
 
 
 def apply_agx_core(rgb_rec2020: Any, plan: ToneCompressionPlan) -> Any:
-    """AgX in Rec.2020 working space: inset -> log2 -> sigmoid curve -> outset -> gamma.
+    """AgX in Rec.2020: inset -> log2/C1 -> linearize -> hue restore -> outset.
 
     The inset/outset channel crosstalk is what makes this AgX rather than a per-channel
     filmic curve; the darktable-derived sigmoid supplies the curve shape, while the plan's
@@ -200,7 +204,7 @@ def scene_render_to_display_linear(
     scene_transform: str = "none",
     scene_transform_strength: float = 1.0,
 ) -> Any:
-    """Scene-linear -> display-linear through the plan's tone core (agx / lum / neutral).
+    """Scene-linear -> display-linear through agx, gated, lum, or neutral.
 
     Named for the pipeline stage, not the AgX core specifically: `plan.tone.tone_core`
     selects which core runs (see apply_tone_core), and clip retreat + gamut fit come
@@ -251,7 +255,6 @@ def scene_render_to_display_linear(
         output_linear = np.nan_to_num(output_linear, nan=0.0, posinf=1e6, neginf=-1e6)
         out[start:end] = output_linear.astype(np.float32, copy=False)
     return out.reshape(h, w, 3)
-
 
 # Back-compat alias: the pipeline ran only AgX when this was named; kept for external
 # callers. Prefer scene_render_to_display_linear.
@@ -495,48 +498,3 @@ def render_output_u8(
 
             consume_in_quantize_groups(ordered_results())
     return out.reshape(h, w, 3)
-
-
-def scene_render_to_reference_linear(bundle: RawBundle, output_gamut: str = "p3") -> Any:
-    """Unclipped scene-linear output-space reference used as the HDR reservoir."""
-    scene = bundle.scene_rec2020_render
-    h, w = scene.shape[:2]
-    flat_scene = scene.reshape(-1, scene.shape[-1])
-    out = np.empty((flat_scene.shape[0], 3), dtype=np.float32)
-    chunk = 1_000_000
-    for start in range(0, flat_scene.shape[0], chunk):
-        end = min(start + chunk, flat_scene.shape[0])
-        rec = scene_rec2020_to_float(flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain)
-        output_linear = rec2020_to_output(rec, output_gamut)
-        out[start:end] = np.nan_to_num(output_linear, nan=0.0, posinf=1e6, neginf=-1e6).astype(np.float32, copy=False)
-    return out.reshape(h, w, 3)
-
-
-def hdr_highlight_weight(sdr_base_linear: Any, hdr_reference_linear: Any, output_gamut: str) -> Any:
-    base_y = luminance_from_rgb_space(np.clip(sdr_base_linear.reshape(-1, 3), 0.0, 1.0), output_gamut)
-    ref_y = luminance_from_rgb_space(np.clip(hdr_reference_linear.reshape(-1, 3), 0.0, None), output_gamut)
-    base_y = np.nan_to_num(base_y, nan=0.0, posinf=1.0, neginf=0.0)
-    ref_y = np.nan_to_num(ref_y, nan=0.0, posinf=1e6, neginf=0.0)
-    bright = smoothstep(np.float32(0.55), np.float32(0.98), base_y)
-    extra = smoothstep(np.float32(0.02), np.float32(0.50), np.maximum(ref_y - base_y, 0.0))
-    ref_bright = smoothstep(np.float32(0.70), np.float32(1.20), ref_y)
-    return np.maximum(bright, extra * ref_bright).reshape(sdr_base_linear.shape[:2])
-
-
-def render_hdr_numerator_linear(
-    bundle: RawBundle,
-    sdr_linear: Any,
-    output_gamut: str,
-    hdr_headroom: float,
-) -> Any:
-    hdr_limit = np.float32(2.0 ** hdr_headroom)
-    sdr_base = np.clip(np.nan_to_num(sdr_linear, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
-    reference = np.clip(
-        np.nan_to_num(scene_render_to_reference_linear(bundle, output_gamut), nan=0.0, posinf=float(hdr_limit), neginf=0.0),
-        0.0,
-        float(hdr_limit),
-    )
-    candidate = np.maximum(reference, sdr_base)
-    weight = hdr_highlight_weight(sdr_base, reference, output_gamut).astype(np.float32, copy=False)
-    hdr = sdr_base + weight[:, :, None] * (candidate - sdr_base)
-    return np.maximum(sdr_base, np.clip(hdr, 0.0, float(hdr_limit))).astype(np.float32, copy=False)

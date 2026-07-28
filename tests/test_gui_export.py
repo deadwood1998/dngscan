@@ -28,6 +28,10 @@ class ExportSuffixTests(unittest.TestCase):
         self.assertIn("高光过渡", html)
         self.assertIn("高光褪白", html)
         self.assertIn("中频纯度", html)
+        self.assertIn("HDR gain-map · Apple", html)
+        self.assertIn("只恢复漫反射白以上的真实亮度档数", html)
+        self.assertIn("/raw9-support", html)
+        self.assertIn("此文件不支持 RAW 9", html)
         self.assertNotIn('optgroup label="本地 LUT"', html)
         for vendor in ("ARRI Classic", "ARRI Reveal", "Fujifilm", "Kodak", "RED IPP2"):
             self.assertNotIn(vendor, html)

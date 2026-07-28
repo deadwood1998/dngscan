@@ -54,9 +54,6 @@ JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr")
 DEFAULT_HDR_HEADROOM_EV = 3.0
 
 
-DEFAULT_GAINMAP_SCALE = 2
-
-
 XYZ_TO_RGB = {
     "sRGB": np.array(  # type: ignore[union-attr]
         [[3.2406, -1.5372, -0.4986], [-0.9689, 1.8758, 0.0415], [0.0557, -0.2040, 1.0570]],
@@ -120,11 +117,12 @@ DECODER_CHOICES = ("libraw", "coreimage")
 
 COREIMAGE_VERSION_CHOICES = ("auto", "9", "8", "7")
 
-# Optional legacy alignment of the Core Image buffer to LibRaw's exposure anchor.
-# Current signed-float RAW 9 decoding agrees with LibRaw around the scene body without a
-# useful fixed correction; keep "measured" only so older A/B commands remain reproducible.
-COREIMAGE_SCALE_CHOICES = ("measured", "unity")
-COREIMAGE_SCALE_DEFAULT_MODE = "unity"
+# Core Image scale policy. ``aligned`` is the production comparison contract: a single
+# per-file scalar puts RAW 9 on the LibRaw decoded-green median without targeting any
+# absolute brightness. ``unity`` preserves Apple's native units, while ``measured`` is
+# the old fixed Sigma-fp fit kept only for reproducing historical A/B renders.
+COREIMAGE_SCALE_CHOICES = ("aligned", "unity", "measured")
+COREIMAGE_SCALE_DEFAULT_MODE = "aligned"
 # Legacy median ratio retained for explicit --coreimage-scale measured runs.
 COREIMAGE_SCALE_MEASURED_RATIO = 1.0293
 

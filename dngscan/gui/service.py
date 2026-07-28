@@ -279,6 +279,38 @@ def list_dir(raw: str) -> dict:
     return {"cwd": str(p), "parent": str(p.parent), "dirs": dirs, "files": files}
 
 
+def raw9_support(params: dict) -> dict:
+    """Return a cheap per-file RAW 9 capability probe for the GUI."""
+    inp = Path(str(params.get("input", ""))).expanduser()
+    if not inp.is_file():
+        raise FileNotFoundError(f"文件不存在：{inp}")
+    from dngscan import coreimage_decode
+
+    probe = coreimage_decode.probe_raw9_support(inp)
+    offered = [str(value) for value in probe["versions_offered"]]
+    fallback = probe["fallback_version"]
+    if not probe["coreimage_available"]:
+        message = "此系统没有可用的 Apple Core Image RAW 解码器。"
+    elif probe["error"]:
+        message = f"Apple RAW 无法打开这个文件：{probe['error']}"
+    elif probe["raw9_supported"]:
+        message = "此文件支持 Apple RAW 9。"
+    elif fallback is not None:
+        message = f"此文件不支持 Apple RAW 9；系统最高可使用 RAW {fallback}。"
+    else:
+        detail = "、".join(offered) if offered else "无"
+        message = f"此文件不支持 Apple RAW 9，也没有可用的 RAW 8/7 降级路径（报告版本：{detail}）。"
+    return {
+        "ok": True,
+        "coreimage_available": bool(probe["coreimage_available"]),
+        "raw9_supported": bool(probe["raw9_supported"]),
+        "versions_offered": offered,
+        "fallback_version": fallback,
+        "probe_error": probe["error"],
+        "message": message,
+    }
+
+
 def parse_job_params(params: dict) -> tuple[Path, str, str, str, float, float, int, bool, Path | None, bool]:
     inp = Path(str(params["input"])).expanduser()
     if not inp.is_file():
@@ -296,11 +328,13 @@ def parse_job_params(params: dict) -> tuple[Path, str, str, str, float, float, i
         gamut = "p3"
     ev = float(params.get("ev", 0.0))
     hdr_headroom = float(params.get("hdrHeadroom", dg.DEFAULT_HDR_HEADROOM_EV))
-    if hdr_headroom <= 0:
-        raise ValueError("HDR headroom 必须大于 0")
+    if not 0 < hdr_headroom <= 8:
+        raise ValueError("HDR headroom 必须在 0-8 EV 之间")
     quality = int(params.get("quality", 100))
     if not 1 <= quality <= 100:
         raise ValueError("质量需在 1-100 之间")
+    if output_format == "ultrahdr":
+        quality = 100
     want_png = bool(params.get("png", False))
     outdir = Path(str(params["outdir"])).expanduser() if params.get("outdir") else None
     ev_auto = bool(params.get("evAuto", False))
@@ -458,16 +492,15 @@ def export_preview_jpeg(
         "scene_transform_strength": scene_transform_strength,
         "tone_core": tone_core,
         "lum_norm": lum_norm,
+        "decoder": str(getattr(proxy_bundle, "scene_decoder", decoder) or decoder),
+        "decoder_version": getattr(proxy_bundle, "scene_decoder_version", None),
         "ev_auto": auto_ev_payload(auto_ev),
     }
     return payload
 
 
 def parse_grade(params: dict) -> tuple[str, float, str, float]:
-    look, look_strength, display_filter, filter_strength = resolve_grade_params(params)
-    if display_filter != "none" and str(params.get("format", "sdr")) == "ultrahdr":
-        raise ValueError("输出滤镜暂不支持 Ultra HDR（SDR 底图一致性优先）")
-    return look, look_strength, display_filter, filter_strength
+    return resolve_grade_params(params)
 
 
 def run_preview(params: dict) -> dict:
@@ -547,7 +580,14 @@ def prepare_preview(params: dict) -> dict:
             inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
         )
     height, width = entry.bundle.scene_rec2020_render.shape[:2]
-    return {"ok": True, "prepared": True, "width": int(width), "height": int(height)}
+    return {
+        "ok": True,
+        "prepared": True,
+        "width": int(width),
+        "height": int(height),
+        "decoder": str(getattr(entry.bundle, "scene_decoder", decoder) or decoder),
+        "decoder_version": getattr(entry.bundle, "scene_decoder_version", None),
+    }
 
 
 def export_suffix_parts(
@@ -590,11 +630,17 @@ def run_export(params: dict) -> dict:
     inp, highlight, gamut, output_format, ev, hdr_headroom, quality, want_png, outdir_arg, ev_auto = parse_job_params(
         params
     )
+    if output_format == "ultrahdr":
+        available, reason = dg.apple_gainmap_backend_status()
+        if not available:
+            raise RuntimeError(reason)
     outdir = outdir_arg if outdir_arg is not None else inp.parent
     outdir.mkdir(parents=True, exist_ok=True)
 
     demosaic = str(params.get("demosaic", "auto"))
     chroma = str(params.get("chroma", "444"))
+    if output_format == "ultrahdr":
+        chroma = "444"
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
@@ -676,23 +722,22 @@ def run_export(params: dict) -> dict:
         bundle.exposure_gain = dg.compute_exposure_gain(dg.exposure_mode_for_tone_core(tone_core), ev)
         icc_profile = dg.output_icc_profile_bytes(gamut)
         export_result = dg.export_jpeg(
-            inp,
-            jpg_path,
-            quality,
-            bundle,
-            analysis,
-            render_plan,
-            gamut,
-            output_format,
-            hdr_headroom,
-            dg.DEFAULT_GAINMAP_SCALE,
-            dg.chroma_to_subsampling(chroma),
-            look,
-            look_strength,
-            display_filter,
-            filter_strength,
-            scene_transform,
-            scene_transform_strength,
+            path=inp,
+            out_path=jpg_path,
+            quality=quality,
+            bundle=bundle,
+            analysis=analysis,
+            tone_plan=render_plan,
+            output_gamut=gamut,
+            output_format=output_format,
+            hdr_headroom=hdr_headroom,
+            subsampling=dg.chroma_to_subsampling(chroma),
+            look=look,
+            look_strength=look_strength,
+            display_filter=display_filter,
+            filter_strength=filter_strength,
+            scene_transform=scene_transform,
+            scene_transform_strength=scene_transform_strength,
             return_rgb=output_format == "sdr",
         )
         rendered_u8 = export_result[1] if isinstance(export_result, tuple) else None
@@ -760,6 +805,8 @@ def run_export(params: dict) -> dict:
         "scene_transform_strength": scene_transform_strength,
         "tone_core": tone_core,
         "lum_norm": lum_norm,
+        "decoder": str(getattr(bundle, "scene_decoder", decoder) or decoder),
+        "decoder_version": getattr(bundle, "scene_decoder_version", None),
     }
 
 

@@ -10,12 +10,14 @@ import numpy as np
 from dngscan.raw_io import (
     baseline_exposure_gain,
     coreimage_alignment_factor,
-    scene_green_gain,
+    coreimage_uses_file_alignment,
+    scene_green_median,
     libraw_scene_scale,
     libraw_wb_headroom_gain,
     scene_rec2020_to_xyz_render,
     load_raw,
 )
+from dngscan.tone import scene_rec2020_to_float
 
 
 class LibRawSceneScaleTests(unittest.TestCase):
@@ -59,26 +61,34 @@ class LibRawSceneScaleTests(unittest.TestCase):
         # A corrupt tag must not rewrite the exposure by an absurd amount.
         self.assertEqual(baseline_exposure_gain(99.0), 2.0 ** 8)
 
-    def test_alignment_factor_is_a_ratio_of_measured_gains(self) -> None:
-        """No fitted constant can align the decoders — Apple's scale moves with the
-        scene — so the factor is a ratio of two gains measured against the same raw
-        statistic, and it degrades to identity rather than to a guess."""
+    def test_alignment_factor_is_a_ratio_of_decoded_green_levels(self) -> None:
+        """The per-file A/B ruler is explicit about being a decoded-level comparison.
+
+        It is not a sensor gain calibration, and invalid or implausible measurements
+        degrade to identity rather than to a clipped guess.
+        """
         self.assertAlmostEqual(coreimage_alignment_factor(1.02, 2.17), 1.02 / 2.17)
         for bad in ((float("nan"), 2.0), (1.0, float("nan")), (0.0, 2.0), (1.0, 0.0)):
             self.assertEqual(coreimage_alignment_factor(*bad), 1.0)
         # A failed statistic must not be able to destroy a render.
-        self.assertEqual(coreimage_alignment_factor(1000.0, 1.0), 4.0)
-        self.assertEqual(coreimage_alignment_factor(1.0, 1000.0), 0.25)
+        self.assertEqual(coreimage_alignment_factor(1000.0, 1.0), 1.0)
+        self.assertEqual(coreimage_alignment_factor(1.0, 1000.0), 1.0)
 
-    def test_green_gain_is_scale_free_in_the_scene(self) -> None:
-        """A gain, not a level: halving the scene halves both sides and leaves it fixed.
-        That is what lets the alignment move the ruler without touching how bright the
-        photograph is, which an auto-exposure normalisation could not do."""
+    def test_only_aligned_mode_requests_a_reference_render(self) -> None:
+        self.assertTrue(coreimage_uses_file_alignment("aligned"))
+        self.assertFalse(coreimage_uses_file_alignment("unity"))
+        self.assertFalse(coreimage_uses_file_alignment("measured"))
+
+    def test_scene_green_median_reports_the_decoded_level(self) -> None:
         scene = np.full((4, 4, 3), 0.2, dtype=np.float32)
-        self.assertAlmostEqual(scene_green_gain(scene, 0.1), 2.0, places=6)
-        self.assertAlmostEqual(scene_green_gain(scene * 0.5, 0.05), 2.0, places=6)
-        self.assertTrue(np.isnan(scene_green_gain(scene, 0.0)))
-        self.assertTrue(np.isnan(scene_green_gain(np.zeros((4, 4, 3), np.float32), 0.1)))
+        self.assertAlmostEqual(scene_green_median(scene), 0.2, places=6)
+        self.assertAlmostEqual(scene_green_median(scene * 0.5), 0.1, places=6)
+        self.assertTrue(np.isnan(scene_green_median(np.zeros((4, 4, 3), np.float32))))
+
+    def test_float_scene_scale_below_one_is_honoured(self) -> None:
+        scene = np.full((1, 1, 3), 0.2, dtype=np.float16)
+        decoded = scene_rec2020_to_float(scene, 0.5)
+        self.assertAlmostEqual(float(decoded[0, 0, 1]), 0.4, places=3)
 
     def test_alignment_reference_must_use_the_libraw_scale_function(self) -> None:
         """The reference has to be decoded the way the LibRaw path decodes, not by the

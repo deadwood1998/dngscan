@@ -12,6 +12,7 @@ from .render import *  # noqa: F401,F403
 from .lum import *  # noqa: F401,F403
 from .retreat import *  # noqa: F401,F403
 from .scene_transform import *  # noqa: F401,F403
+from .gainmap import *  # noqa: F401,F403
 from .export import *  # noqa: F401,F403
 from .analysis import *  # noqa: F401,F403
 from .plot import *  # noqa: F401,F403

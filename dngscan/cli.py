@@ -16,7 +16,6 @@ from .color import output_gamut_space
 from .constants import (
     CHROMA_CHOICES, COREIMAGE_SCALE_CHOICES, COREIMAGE_SCALE_DEFAULT_MODE,
     COREIMAGE_SCALE_MEASURED_RATIO, COREIMAGE_VERSION_CHOICES, DECODER_CHOICES,
-    DEFAULT_GAINMAP_SCALE,
     DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, JPEG_OUTPUT_FORMATS, WB_CHOICES,
 )
 from .export import chroma_to_subsampling, export_jpeg
@@ -81,20 +80,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--output-format",
         choices=JPEG_OUTPUT_FORMATS,
         default="sdr",
-        help="JPEG 输出格式: sdr=普通 JPEG；ultrahdr=ISO 21496-1 gain-map HDR JPEG（强制 Display P3 底图）",
+        help="JPEG 输出格式: sdr=普通 JPEG；ultrahdr=Apple 原生 ISO 21496-1 HDR JPEG（P3 SDR 底图）",
     )
     parser.add_argument(
         "--hdr-headroom",
         type=float,
         default=DEFAULT_HDR_HEADROOM_EV,
-        help="Ultra HDR gain map 的 HDR headroom（档），默认 +3EV",
-    )
-    parser.add_argument(
-        "--hdr-gainmap-scale",
-        type=int,
-        choices=(1, 2, 4),
-        default=DEFAULT_GAINMAP_SCALE,
-        help="gain map 降采样倍率；1=全分辨率，2/4=更小体积，默认 2",
+        help="HDR content headroom 上限（档）；实际余量由场景亮度决定，默认最多 +3EV",
     )
     parser.add_argument(
         "--ev",
@@ -158,7 +150,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--tone-core",
         choices=TONE_CORE_CHOICES,
         default="agx",
-        help="tone 核: agx=默认全图 AgX；gated=RAW 门控；lum=对照·场景 C1 仅亮度；neutral=对照·固定通用导出曲线",
+        help="tone 核: agx=默认全图 AgX；gated=RAW 门控实验；lum=对照·场景 C1 仅亮度；neutral=诊断·固定 Y 比例曲线",
     )
     parser.add_argument(
         "--lum-norm",
@@ -195,9 +187,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=COREIMAGE_SCALE_CHOICES,
         default=None,
         help=(
-            "仅 --decoder coreimage：scene-linear 固定缩放。"
-            "unity=不补偿（默认）；"
-            f"measured=保留旧版实测中位比 1/{COREIMAGE_SCALE_MEASURED_RATIO:.4f}，仅供复现旧 A/B"
+            "仅 --decoder coreimage：scene-linear 尺度策略。"
+            "aligned=逐文件对齐 LibRaw 解码绿色中位（默认，非自动曝光）；"
+            "unity=保留 Core Image 原生单位；"
+            f"measured=旧版固定倍率 1/{COREIMAGE_SCALE_MEASURED_RATIO:.4f}，仅供复现"
         ),
     )
     parser.add_argument(
@@ -219,8 +212,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--margin must be >= 0")
     if not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
-    if args.hdr_headroom <= 0:
-        parser.error("--hdr-headroom must be > 0")
+    if not 0 < args.hdr_headroom <= 8:
+        parser.error("--hdr-headroom must be between 0 and 8 EV")
     if not 0.0 <= args.grade_strength <= 1.5:
         parser.error("--grade-strength must be between 0 and 1.5")
     if not 0.0 <= args.scene_transform_strength <= 3.0:
@@ -233,8 +226,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ):
         if not -1.0 <= getattr(args, _name) <= 1.0:
             parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
-    if args.grade != "none" and args.output_format == "ultrahdr":
-        parser.error("成片风格暂不支持 Ultra HDR 输出")
+    if args.output_format == "ultrahdr" and args.chroma != "444":
+        parser.error("Apple HDR gain-map JPEG 固定使用 4:4:4；请移除 --chroma 或设为 444")
+    if args.output_format == "ultrahdr" and args.jpeg_quality != 100:
+        parser.error("Apple HDR gain-map JPEG 固定使用 quality 100")
     if args.decoder == "coreimage" and args.tone_core == "gated":
         # gated is defined as "RAW evidence gates the colour path"; the Core Image
         # pipeline has no per-pixel CFA evidence, so the combination is meaningless
@@ -260,6 +255,45 @@ def main(argv: list[str]) -> int:
         if not args.path.is_file():
             raise FileNotFoundError(f"Input path is not a file: {args.path}")
         require_dependencies()
+        if args.output_format == "ultrahdr":
+            from .gainmap import apple_gainmap_backend_status
+
+            available, reason = apple_gainmap_backend_status()
+            if not available:
+                raise RuntimeError(reason)
+        if args.decoder == "coreimage":
+            from . import coreimage_decode
+
+            probe = coreimage_decode.probe_raw9_support(args.path)
+            if not probe["coreimage_available"]:
+                raise RuntimeError("Apple Core Image RAW 解码器在此系统不可用")
+            if probe["error"]:
+                raise RuntimeError(f"Apple RAW 无法探测这个文件：{probe['error']}")
+            if not probe["raw9_supported"]:
+                fallback = probe["fallback_version"]
+                offered = ", ".join(str(value) for value in probe["versions_offered"]) or "none"
+                if args.coreimage_version == "9":
+                    raise RuntimeError(
+                        f"此文件不支持 Apple RAW 9（系统报告版本：{offered}）；"
+                        "请改用 --decoder libraw，或显式选择可用的 --coreimage-version"
+                    )
+                if args.coreimage_version == "auto":
+                    if fallback is None:
+                        raise RuntimeError(
+                            f"此文件不支持 Apple RAW 9，且没有 RAW 8/7 降级路径"
+                            f"（系统报告版本：{offered}）"
+                        )
+                    print(
+                        f"warning: 此文件不支持 Apple RAW 9；将明确降级到 Apple RAW {fallback}。"
+                        f"可用 --coreimage-version 9 禁止降级，或改用 --decoder libraw。",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"warning: 此文件不支持 Apple RAW 9；当前显式使用 Apple RAW "
+                        f"{args.coreimage_version}。",
+                        file=sys.stderr,
+                    )
         scan_requested = bool(args.scan or args.out is not None or (args.jpeg is None and args.csv is None))
         out_path = args.out if args.out is not None else (default_png_path(args.path) if scan_requested else None)
 
@@ -347,23 +381,22 @@ def main(argv: list[str]) -> int:
             )
         if jpeg_path is not None:
             jpeg_icc_embedded = export_jpeg(
-                args.path,
-                jpeg_path,
-                args.jpeg_quality,
-                bundle,
-                analysis,
-                render_plan,
-                jpeg_output_gamut,
-                args.output_format,
-                args.hdr_headroom,
-                args.hdr_gainmap_scale,
-                chroma_to_subsampling(args.chroma),
-                look,
-                look_strength,
-                display_filter,
-                filter_strength,
-                args.scene_transform,
-                args.scene_transform_strength,
+                path=args.path,
+                out_path=jpeg_path,
+                quality=args.jpeg_quality,
+                bundle=bundle,
+                analysis=analysis,
+                tone_plan=render_plan,
+                output_gamut=jpeg_output_gamut,
+                output_format=args.output_format,
+                hdr_headroom=args.hdr_headroom,
+                subsampling=chroma_to_subsampling(args.chroma),
+                look=look,
+                look_strength=look_strength,
+                display_filter=display_filter,
+                filter_strength=filter_strength,
+                scene_transform=args.scene_transform,
+                scene_transform_strength=args.scene_transform_strength,
             )
 
         if args.csv is not None:
@@ -406,7 +439,10 @@ def main(argv: list[str]) -> int:
             args.scene_transform_strength,
         )
         if jpeg_path is not None and args.output_format == "ultrahdr":
-            print(f"JPEG HDR: ISO 21496-1 gain-map；headroom=+{args.hdr_headroom:.2f}EV；gain map scale=1/{args.hdr_gainmap_scale}")
+            print(
+                f"JPEG HDR: Apple Core Image ISO 21496-1；Display P3 SDR 底图；"
+                f"单通道 gain map；headroom 上限=+{args.hdr_headroom:.2f}EV"
+            )
         return 0
     except Exception as exc:
         maybe_print_exc()

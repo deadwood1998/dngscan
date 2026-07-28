@@ -34,11 +34,14 @@ def exposure_mode_for_tone_core(tone_core: str) -> str:
 
 
 def neutral_tone_plan(target_gamut: str) -> ToneCompressionPlan:
-    """Fixed generic tone curve — non-AgX export baseline (Lightroom-style).
+    """Fixed Y-ratio diagnostic curve, not a production or camera-render baseline.
 
     Endpoints are constants, not compiled from scene body/tail statistics. The operator
     is luminance-ratio compression only; AgX inset/outset and scene C1 planning are
-    skipped. Shared EV anchor, CFA clip retreat, and delivery gamut fit still apply.
+    skipped. It intentionally exposes what ratio-preserving color does near a narrow
+    output-gamut boundary; saturated highlights may look harder or more neon than AgX.
+    Shared EV anchor and delivery gamut fit still apply. CFA clip retreat applies only
+    when the selected capture decoder has a spatial mask.
     """
     from .neutral import (
         NEUTRAL_BLACK_EV, NEUTRAL_CONTRAST, NEUTRAL_SHOULDER_POWER,
@@ -78,7 +81,13 @@ def compute_exposure_gain(mode: str, ev: float) -> float:
 
 
 def scene_rec2020_to_float(values: Any, scene_scale: float, gain: float = 1.0) -> Any:
-    rgb = values.astype(np.float32, copy=False) / np.float32(max(scene_scale, 1.0))
+    scale = float(scene_scale)
+    if not np.isfinite(scale) or scale <= 0.0:
+        scale = 1.0
+    # A float decoder can legitimately carry scene_scale below one (for example when an
+    # A/B alignment gain is above one). Clamping the divisor to one would make analysis
+    # and rendering disagree exactly in that case.
+    rgb = values.astype(np.float32, copy=False) / np.float32(scale)
     if gain != 1.0:
         rgb = rgb * np.float32(gain)
     return np.nan_to_num(rgb, nan=0.0, posinf=1e6, neginf=0.0)
@@ -145,8 +154,10 @@ def scene_tone_metrics(
     """Measure the reliable scene body separately from its highlight tail.
 
     Reconstruction may make a clipped lamp visually plausible, but it cannot restore its
-    sensor headroom. We therefore exclude soft CFA-clipped sites from body percentiles
-    while retaining the complete rendered tail for topology classification.
+    sensor headroom. On LibRaw we therefore exclude soft CFA-clipped sites from body
+    percentiles. Core Image's opcode geometry prevents spatial reuse, so that path removes
+    the aggregate clipped-cell fraction from the brightest luminance ranks instead. The
+    complete rendered tail remains available only for topology classification.
     """
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = subsample_step(flat.shape[0], max_samples)
@@ -247,8 +258,8 @@ def build_color_geometry_plan(
         )
     return ColorGeometryPlan(
         target_gamut=output_gamut,
-        # Neutral skips tone curves but still retreats clipped CFA chroma toward the
-        # Rec.2020 neutral axis at fixed luminance (evidence-based hue restore).
+        # Every non-gated core requests clip retreat, but it executes only when the
+        # capture decoder supplied a spatial CFA mask. RAW 9 has aggregate evidence only.
         raw_clip_retreat_strength=1.0,
         output_gamut_pressure_pct=pressure,
         gamut_fit_alpha=alpha,
@@ -415,7 +426,7 @@ def apply_render_adjustments(
 ) -> RenderPlan:
     """Apply restrained user biases without recompiling the scene analysis.
 
-    The automatic pivot and scene endpoints remain authoritative. Tone controls alter
+    The calibrated pivot and scene-compiled endpoints remain authoritative. Tone controls alter
     only the local curve shape; highlight fade is a display-side chroma control. The
     fixed neutral reference intentionally ignores all of these adjustments.
     """
@@ -496,7 +507,7 @@ def build_render_plan(
         from .guidance import ensure_raw_guidance
 
         ensure_raw_guidance(bundle, analysis)
-    # agx / lum / neutral all curve (or pass through) in the Rec.2020 working space; the
+    # All four current cores operate in the Rec.2020 working space; the
     # `else` stays a defensive fallback for any future output-space-native core.
     if mode == "agx" or tone_core in ("lum", "neutral", "gated"):
         target_gamut = "Rec2020"

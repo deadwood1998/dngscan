@@ -7,16 +7,18 @@ across (raw_io drops the masks; see the comment there). Aggregate RAW facts — 
 clip percentages, SNR, noise floor, white-balance testimony — are distributions rather
 than pixel positions and still come from LibRaw.
 
-The decode follows Apple's own recipe for reaching linear scene-referred data (WWDC21
+The decode follows Apple's recipe for reaching linear scene-referred data (WWDC21
 "Capture and process ProRAW images"): shadowBias, boostAmount and localToneMapAmount at
-0, gamut mapping off, rendered into extendedLinearITUR_2020. Look controls are cleared on
-top of that. Highlight recovery and lens correction are enabled explicitly: both are part
-of Apple's RAW decode, not downstream rendering choices.
+0, gamut mapping off, rendered into extendedLinearITUR_2020. Adjustable look controls are
+neutralised where RAW 9 exposes a meaningful neutral value; moire is deliberately left at
+Apple's default because its zero is the strongest smoothing end. Highlight recovery and
+lens correction are enabled explicitly because they belong to Apple's camera
+interpretation, not to dngscan's downstream display transform.
 
-baselineExposure is the one item of that recipe deliberately not applied. The recipe aims
-at a neutral extraction; dngscan wants the exposure the photograph was taken at, because
-Apple uses the tag to carry a per-shot capture decision rather than a fixed per-model
-constant. The LibRaw path folds the same tag into scene_scale so the two agree.
+baselineExposure is left at the value authored in the file. It is a baseline rendering
+compensation (and can be scene-dependent in ProRAW), not a measurement of shutter /
+aperture / ISO or a request to force the image median to gray. The LibRaw path applies the
+same metadata gain through scene_scale so both capture paths honour the file's intent.
 
 The handoff is signed float16. Extended-linear Rec.2020 legitimately contains negative
 components and values above 1.0; quantising it through an unsigned sensor-white buffer
@@ -37,11 +39,11 @@ from .constants import (
     COREIMAGE_SCALE_MEASURED_RATIO,
 )
 
-# Current signed-float measurements do not support a fixed decoder correction. Reliable
-# body medians on three Sigma fp frames differ by +0.017..+0.143 EV, with scene-dependent
-# direction and highlight tails; unity therefore preserves each decoder's native scale.
-# The old empirical 1/1.0293 fit remains available only to reproduce earlier A/B renders.
+# Fixed decode-time multipliers only. Per-file ``aligned`` scaling belongs to raw_io,
+# where both decoded buffers are available; it intentionally has a unity multiplier here.
+# The old empirical 1/1.0293 fit remains only to reproduce earlier A/B renders.
 COREIMAGE_SCALE_MODES = {
+    "aligned": 1.0,
     "measured": 1.0 / COREIMAGE_SCALE_MEASURED_RATIO,
     "unity": 1.0,
 }
@@ -61,7 +63,7 @@ def describe_scale_compensation(gain: float) -> str:
     can tell which one produced a given buffer.
     """
     if abs(float(gain) - 1.0) <= 1e-9:
-        return "unity: native scene-linear scale (no fixed decoder correction)"
+        return "no fixed decode-time correction (native or per-file aligned handoff)"
     return (
         f"measured 2026-07 Sigma fp; CI/LibRaw median ratio "
         f"{1.0 / float(gain):.4f} (per-frame spread 0.94..1.12)"
@@ -163,6 +165,40 @@ def supported_versions(path: Path) -> tuple[str, ...]:
         if text and text not in out:
             out.append(text)
     return tuple(out)
+
+
+def probe_raw9_support(path: Path) -> dict[str, Any]:
+    """Probe RAW 9 support for one file without rendering any pixels.
+
+    Core Image's per-file ``supportedDecoderVersions`` is the authority here. A static
+    camera list would become stale with macOS updates and cannot account for containers
+    that expose different decoder versions for the same camera family.
+    """
+    result: dict[str, Any] = {
+        "coreimage_available": available(),
+        "raw9_supported": False,
+        "versions_offered": (),
+        "fallback_version": None,
+        "error": None,
+    }
+    if not result["coreimage_available"]:
+        result["error"] = "Core Image / CIRAWFilter is unavailable"
+        return result
+    try:
+        offered = supported_versions(Path(path))
+    except Exception as exc:  # a probe must report an unsupported file, not crash the UI
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    majors = {_normalize_version_token(item) for item in offered}
+    result["versions_offered"] = offered
+    result["raw9_supported"] = "9" in majors
+    if not result["raw9_supported"]:
+        for major in ("8", "7"):
+            if major in majors:
+                result["fallback_version"] = major
+                break
+    return result
 
 
 def _normalize_version_token(token: str) -> str:
@@ -276,8 +312,8 @@ def configure_linear_filter(
 
     Not "zero everything": that rule came from the LibRaw path and produces a worse
     decode here, not a purer one. Apple's own five settings for reaching linear data are
-    applied, look controls are cleared on top, and decode-time reconstruction/correction
-    controls are enabled explicitly.
+    applied, adjustable look controls are neutralised where their API has a true neutral
+    value, and decode-time reconstruction/correction controls are enabled explicitly.
 
     Returns a small dict describing what was applied (for reports/tests).
     """
@@ -290,17 +326,12 @@ def configure_linear_filter(
     _set_amount(filt, "setBoostAmount_", None, 0.0)
     # No effect while boostAmount is 0, cleared so the pair cannot drift apart.
     _set_amount(filt, "setBoostShadowAmount_", None, 0.0)
-    # baselineExposure is left at the value CIRAWFilter reads from the file. Zeroing it
-    # was defensible while "exposure is dngscan's own axis" seemed to describe a fixed
-    # per-model calibration constant, which is what most vendors write — Sigma fp puts
-    # 1.0 on every frame regardless of scene. Apple instead uses the tag to carry a
-    # per-shot capture decision: 0.4973 at base ISO and exactly 2.0 more on a low-light
-    # frame the camera underexposed to protect highlights. Discarding it there does not
-    # neutralise a calibration, it throws away what the exposure of that photograph was,
-    # and it injects up to 2 EV of variance between two frames of the same subject. The
-    # tag describes the scene's exposure; --ev expresses the user's intent on top of it.
-    # Measured: the property equals the file's tag exactly, and zeroing removed precisely
-    # 2^tag (+2.497, +0.497, +1.000 EV on three files).
+    # baselineExposure is left at the value CIRAWFilter reads from the file. Apple uses
+    # it as part of the per-image ProRAW rendering recipe; it can vary with scene dynamic
+    # range, while Sigma fp writes a stable camera baseline. It is not the photographed
+    # scene exposure itself. Discarding it would nevertheless discard file-authored
+    # rendering intent and create a decoder mismatch. --ev remains the explicit user
+    # adjustment on top. Measured: zeroing the property removed exactly 2**tag.
     # shadowBias subtracts from the shadows and defaults to 5.0, which is a black-level
     # pedestal: a display-referred operation with no place in a scene-linear buffer.
     # Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800
@@ -343,14 +374,13 @@ def configure_linear_filter(
     sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", "isSharpnessSupported", 0.0)
     if not sharpness_cleared:
         sharpness_cleared = _set_amount(filt, "setSharpnessAmount_", None, 0.0)
-    # Moire reduction is deliberately NOT cleared, which is the opposite of how it reads.
-    # isMoireReductionSupported returns False on version 9 so the call below is skipped
-    # anyway, but were it forced to 0 the buffer would lose 59.8 % of its high-frequency
-    # energy — the control's zero is its *smoothest* end, not "off", and its default of
-    # 0.55 is on a plateau where 0.5 and 1.0 render identically. Leaving Apple's default is
-    # the sharper choice; the guarded call stays so an SDK that starts reporting support
-    # keeps the value pinned somewhere known rather than drifting.
-    _set_amount(filt, "setMoireReductionAmount_", "isMoireReductionSupported", 0.0)
+    # Moire reduction is deliberately left alone — never cleared, never forced.
+    # isMoireReductionSupported returns False on version 9 today, so a capability-gated
+    # setter would skip anyway; an earlier accidental skip is what preserved detail.
+    # Forcing 0 would cost 59.8 % of high-frequency energy: the control's zero is its
+    # *smoothest* end, not "off", and 0.5 / 1.0 render identically on the plateau its
+    # ~0.55 default sits on. Do not "tidy" this into a zeroing call if an SDK later
+    # reports support — leave Apple's value.
     _set_amount(filt, "setLocalToneMapAmount_", "isLocalToneMapSupported", 0.0)
     # Gamut mapping is an output-referred clamp and belongs after the view transform, not
     # before it. Enabling it collapses the buffer into the destination gamut: measured on
@@ -621,8 +651,10 @@ def decode_scene_rec2020(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Decode to signed float16 HxWx3 linear Rec.2020.
 
-    Subjective CIRAW controls are zeroed. Scale compensation brings units in line
-    with the LibRaw pipeline. Optional ``target_shape`` resamples after render.
+    Subjective CIRAW controls are configured for the documented linear handoff (not
+    blindly zeroed). ``scale_compensation`` is only the optional legacy fixed multiplier;
+    load_raw performs the separate per-file alignment policy.
+    Optional ``target_shape`` resamples after render.
     """
     path = Path(path)
     offered = supported_versions(path)
