@@ -1,3 +1,6 @@
+# Local ACES reference checkouts (not distributed)
+_ref/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -23,6 +23,19 @@ used by Eary Chow's AgX LUT generator:
 
 No third-party display or camera LUT is distributed with dngscan.
 
+## ACES (Apache-2.0)
+
+The ACES 2-derived HDR reference kernel under `dngscan/aces2/` ports algorithms
+from the Academy Software Foundation's ACES project:
+
+- https://github.com/AcademySoftwareFoundation/aces
+- https://github.com/AcademySoftwareFoundation/aces-core
+- https://github.com/AcademySoftwareFoundation/aces-output
+
+That source code is licensed under Apache-2.0. Pinned release commits and the
+Python-to-CTL function map are recorded in `dngscan/aces2/REFERENCE.md`.
+Local reference checkouts under `_ref/` are gitignored and not distributed.
+
 ## RAW to ACES spectral data (Apache-2.0)
 
 Selected camera sensitivities and training reflectances under
@@ -33,13 +46,3 @@ Selected camera sensitivities and training reflectances under
 
 That source repository is licensed under Apache-2.0. Derived CSV files retain
 source and measurement notes in `dngscan_assets/spectral/README.md`.
-
-## libultrahdr (Apache-2.0)
-
-Ultra HDR export can optionally call Google's `ultrahdr_app` from:
-
-- https://github.com/google/libultrahdr
-
-libultrahdr is licensed under Apache-2.0. It is **not** redistributed with this
-repository; install it separately (for example `brew install libultrahdr`) if the
-macOS ImageIO gain-map backend is not sufficient.
