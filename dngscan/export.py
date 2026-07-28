@@ -61,18 +61,32 @@ def export_ultrahdr_jpeg(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
+    hdr_drt: str = "aces2",
 ) -> bool:
     output_gamut = "p3"
+    if look != "none" or display_filter != "none":
+        raise RuntimeError(
+            "Ultrahdr 第一版仅支持 look=none 与 display_filter=none；"
+            "现有 display look/filter 尚未 HDR 化，不能静默忽略"
+        )
+    if str(hdr_drt) != "aces2":
+        raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（当前仅支持 aces2）")
     try:
         from .grade import RENDER_MODE
+        from .hdr_render import build_hdr_alternate_from_dual_rendition
+        from .hdr_tone import clamp_hdr_capacity_ev
+        from .models import RenderPlan
         from .tone import build_render_plan
 
+        capacity = clamp_hdr_capacity_ev(hdr_headroom)
         # When no plan is supplied, honour the caller's core/primaries so a no-plan HDR
         # export cannot silently diverge from the matching SDR settings.
         plan = tone_plan if tone_plan is not None else build_render_plan(
             bundle, analysis, RENDER_MODE, output_gamut, scene_transform, scene_transform_strength,
             punch_scale, tone_core, lum_norm, agx_primaries=agx_primaries,
         )
+        if not isinstance(plan, RenderPlan):
+            raise RuntimeError("Ultrahdr 需要完整 RenderPlan")
         base_u8 = render_output_u8(
             bundle,
             analysis,
@@ -88,15 +102,17 @@ def export_ultrahdr_jpeg(
             lum_norm,
             agx_primaries,
         )
-        hdr_rgba = build_hdr_alternate_rgba_half(
-            base_u8,
+        hdr_rgba, diagnostics, _hdr_plan = build_hdr_alternate_from_dual_rendition(
             bundle,
+            analysis,
             plan,
-            hdr_headroom,
-            scene_transform,
-            scene_transform_strength,
+            base_u8,
+            capacity_ev=capacity,
+            scene_transform=scene_transform,
+            scene_transform_strength=scene_transform_strength,
         )
-        write_apple_gainmap_jpeg(base_u8, hdr_rgba, out_path, quality, hdr_headroom)
+        info = write_apple_gainmap_jpeg(base_u8, hdr_rgba, out_path, quality, capacity)
+        info["diagnostics"] = diagnostics
         return True
     except Exception as exc:
         raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {exc}") from exc
@@ -157,6 +173,7 @@ def export_jpeg(
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
     return_rgb: bool = False,
+    hdr_drt: str = "aces2",
 ) -> Any:
     if output_format == "ultrahdr":
         return export_ultrahdr_jpeg(
@@ -177,6 +194,7 @@ def export_jpeg(
             lum_norm,
             agx_primaries,
             punch_scale,
+            hdr_drt=hdr_drt,
         )
     if output_format != "sdr":
         raise ValueError(f"unknown output format: {output_format}")

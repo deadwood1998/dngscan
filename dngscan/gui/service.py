@@ -327,8 +327,11 @@ def parse_job_params(params: dict) -> tuple[Path, str, str, str, float, float, i
         gamut = "p3"
     ev = float(params.get("ev", 0.0))
     hdr_headroom = float(params.get("hdrHeadroom", dg.DEFAULT_HDR_HEADROOM_EV))
-    if not 0 < hdr_headroom <= 8:
-        raise ValueError("HDR headroom 必须在 0-8 EV 之间")
+    if not 0.0 <= hdr_headroom <= float(dg.MAX_HDR_HEADROOM_EV) + 1e-9:
+        raise ValueError(
+            f"HDR capacity 必须在 0–{dg.MAX_HDR_HEADROOM_EV:.6f} EV "
+            "（对应最多 4000 nit）"
+        )
     quality = int(params.get("quality", 100))
     if not 1 <= quality <= 100:
         raise ValueError("质量需在 1-100 之间")
@@ -647,6 +650,11 @@ def run_export(params: dict) -> dict:
         highlight = "reconstruct"
         demosaic = "auto"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
+    if output_format == "ultrahdr" and (look != "none" or display_filter != "none"):
+        raise RuntimeError(
+            "Ultrahdr 第一版仅支持 look=none 与 display_filter=none；"
+            "现有 display look/filter 尚未 HDR 化"
+        )
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)

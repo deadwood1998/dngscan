@@ -20,19 +20,30 @@ from dngscan.cli import parse_args
 
 
 class GainCurveTests(unittest.TestCase):
-    def test_cli_hdr_keeps_project_look_and_fixed_delivery_defaults(self) -> None:
+    def test_cli_ultrahdr_rejects_display_look(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(
+                [
+                    "photo.dng",
+                    "--output-format",
+                    "ultrahdr",
+                    "--grade",
+                    "look:optic_warm_cyan",
+                ]
+            )
+
+    def test_cli_hdr_keeps_fixed_delivery_defaults(self) -> None:
         args = parse_args(
             [
                 "photo.dng",
                 "--output-format",
                 "ultrahdr",
-                "--grade",
-                "look:optic_warm_cyan",
             ]
         )
-        self.assertEqual(args.grade, "look:optic_warm_cyan")
+        self.assertEqual(args.grade, "none")
         self.assertEqual(args.jpeg_quality, 100)
         self.assertEqual(args.chroma, "444")
+        self.assertEqual(args.hdr_drt, "aces2")
 
     def test_gain_is_c1_monotone_and_bounded(self) -> None:
         start = HDR_DIFFUSE_WHITE_EV
@@ -133,7 +144,8 @@ class AppleGainMapWriterTests(unittest.TestCase):
             self.assertTrue(inspected["has_iso_gainmap"])
             self.assertEqual(inspected["profile"], "Display P3")
             self.assertEqual(inspected["chroma_subsampling"], "4:4:4")
-            self.assertEqual(inspected["gainmap_pixel_format"], "L008")
+            self.assertNotEqual(inspected["gainmap_pixel_format"], "L008")
+            self.assertTrue(inspected["gainmap_pixel_format"])
             self.assertEqual(
                 (inspected["gainmap_width"], inspected["gainmap_height"]), (w, h)
             )

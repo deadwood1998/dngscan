@@ -16,7 +16,8 @@ from .color import output_gamut_space
 from .constants import (
     CHROMA_CHOICES, COREIMAGE_SCALE_CHOICES, COREIMAGE_SCALE_DEFAULT_MODE,
     COREIMAGE_SCALE_MEASURED_RATIO, COREIMAGE_VERSION_CHOICES, DECODER_CHOICES,
-    DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, JPEG_OUTPUT_FORMATS, WB_CHOICES,
+    DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, HDR_DRT_CHOICES,
+    JPEG_OUTPUT_FORMATS, MAX_HDR_HEADROOM_EV, WB_CHOICES,
 )
 from .export import chroma_to_subsampling, export_jpeg
 from .grade import RENDER_MODE, grade_choices, resolve_grade
@@ -87,7 +88,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--hdr-headroom",
         type=float,
         default=DEFAULT_HDR_HEADROOM_EV,
-        help="HDR content headroom 上限（档）；实际余量由场景亮度决定，默认最多 +3EV",
+        help=(
+            f"HDR display capacity（EV，相对 100 nit reference white）；"
+            f"默认 {DEFAULT_HDR_HEADROOM_EV}（800 nit），上限 {MAX_HDR_HEADROOM_EV:.6f}（4000 nit）。"
+            "实际内容余量由成片决定，不是归一化目标。"
+        ),
+    )
+    parser.add_argument(
+        "--hdr-drt",
+        choices=HDR_DRT_CHOICES,
+        default=DEFAULT_HDR_DRT,
+        help="HDR display rendering transform（当前仅 aces2=ACES 2-derived）",
+    )
+    parser.add_argument(
+        "--hdr-debug-dir",
+        type=Path,
+        default=None,
+        help="可选：写出 HDR 诊断中间结果目录",
     )
     parser.add_argument(
         "--ev",
@@ -213,8 +230,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--margin must be >= 0")
     if not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
-    if not 0 < args.hdr_headroom <= 8:
-        parser.error("--hdr-headroom must be between 0 and 8 EV")
+    if not 0 <= args.hdr_headroom <= MAX_HDR_HEADROOM_EV + 1e-9:
+        parser.error(
+            f"--hdr-headroom must be between 0 and {MAX_HDR_HEADROOM_EV:.6f} EV "
+            "(4000 nit @ 100 nit reference white)"
+        )
     if not 0.0 <= args.grade_strength <= 1.5:
         parser.error("--grade-strength must be between 0 and 1.5")
     if not 0.0 <= args.scene_transform_strength <= 3.0:
@@ -231,6 +251,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("Apple HDR gain-map JPEG 固定使用 4:4:4；请移除 --chroma 或设为 444")
     if args.output_format == "ultrahdr" and args.jpeg_quality != 100:
         parser.error("Apple HDR gain-map JPEG 固定使用 quality 100")
+    if args.output_format == "ultrahdr" and args.grade != "none":
+        parser.error(
+            "Ultrahdr 第一版不支持 display look/filter；请使用 --grade none"
+        )
     if args.decoder == "coreimage" and args.tone_core == "gated":
         # gated is defined as "RAW evidence gates the colour path"; the Core Image
         # pipeline has no per-pixel CFA evidence, so the combination is meaningless
@@ -391,6 +415,7 @@ def main(argv: list[str]) -> int:
                 output_gamut=jpeg_output_gamut,
                 output_format=args.output_format,
                 hdr_headroom=args.hdr_headroom,
+                hdr_drt=args.hdr_drt,
                 subsampling=chroma_to_subsampling(args.chroma),
                 look=look,
                 look_strength=look_strength,
@@ -442,7 +467,7 @@ def main(argv: list[str]) -> int:
         if jpeg_path is not None and args.output_format == "ultrahdr":
             print(
                 f"JPEG HDR: Apple Core Image ISO 21496-1；Display P3 SDR 底图；"
-                f"单通道 gain map；headroom 上限=+{args.hdr_headroom:.2f}EV"
+                f"ACES 2-derived RGB gain map；capacity=+{args.hdr_headroom:.2f}EV"
             )
         return 0
     except Exception as exc:

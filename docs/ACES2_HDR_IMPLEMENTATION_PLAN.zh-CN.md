@@ -3,7 +3,11 @@
 > 状态：实现规格，供 Cursor 按阶段执行  
 > **Phase 0：已落地**（`tests/sdr_freeze/` + `tests/test_sdr_freeze.py` + `tools/regen_sdr_freeze.py`）  
 > **Phase 1：已落地**（`SceneScaleContract` + `dngscan/scene_scale.py` + `tests/test_scene_scale_contract.py`）
-> **Phase 2：已落地**（`dngscan/aces2/` + reference vectors；自称 ACES 2-derived，待 CTL 交叉验证）  
+> **Phase 2：已落地**（`dngscan/aces2/` + reference vectors；自称 ACES 2-derived，待 CTL 交叉验证）
+> **Phase 3：已落地**（`hdr_tone.py` / `hdr_evidence.py` + HDR dataclasses）
+> **Phase 4：已落地**（`hdr_render.py` dual-rendition bridge）
+> **Phase 5：已落地**（RGB Apple gain-map writer；拒绝 L008 回落）
+> **Phase 6：已落地**（CLI `--hdr-drt` / capacity 上限 / look 拦截；GUI capacity 校验）  
 > 范围：独立 HDR DRT、RAW9/LibRaw scene 契约、RGB gain map 及验证  
 > 不在本轮范围：视频 HDR、HEIF/AVIF、改变现有 SDR 成片、重新设计 RAW 解码器
 

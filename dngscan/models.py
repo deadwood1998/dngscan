@@ -323,3 +323,67 @@ class SceneScaleContract:
     def legacy_exposure_gain(self) -> float:
         """Product historically stored on ``RawBundle.exposure_gain``."""
         return float(self.fixed_midgray_gain * self.user_ev_gain)
+
+
+@dataclass(frozen=True)
+class HdrDisplayTarget:
+    limiting_gamut: str = "p3"
+    white_point: str = "D65"
+    reference_white_nits: float = 100.0
+    capacity_ev: float = 3.0
+    peak_nits: float = 800.0
+    linear_output: bool = True
+    aces_version: str = "v2.0.0+2025.04.04-derived"
+
+
+@dataclass(frozen=True)
+class HdrSceneMetrics:
+    body_ev_p50: float
+    reliable_tail_ev_p9999: float
+    diffuse_white_ev: float
+    broad_highlight_pct: float
+    sparse_emitter_pct: float
+    raw_clip_union_pct: float
+    spatial_evidence: str  # cfa / aggregate / none
+    scale_confidence: str  # calibrated / relative / decoder-native
+
+
+@dataclass(frozen=True)
+class HdrColorGeometryPlan:
+    target_peak_nits: float
+    limiting_gamut: str
+    chroma_compression_enabled: bool
+    gamut_compression_enabled: bool
+    white_limiting_enabled: bool
+    low_mid_match_enabled: bool
+    reveal_start_ev: float
+    reveal_end_ev: float
+    raw_evidence_strength: float
+
+
+@dataclass(frozen=True)
+class HdrRenderPlan:
+    target: HdrDisplayTarget
+    scene: HdrSceneMetrics
+    color: HdrColorGeometryPlan
+    midgray_match_scale: float
+    reference_transform_id: str
+
+
+@dataclass(frozen=True)
+class DualRenditionPlan:
+    sdr: RenderPlan
+    hdr: HdrRenderPlan
+    scale: SceneScaleContract
+
+
+@dataclass(frozen=True)
+class HdrRenderDiagnostics:
+    actual_content_headroom: float
+    peak_luminance_ratio: float
+    pct_above_reference_white: float
+    pct_above_2x: float
+    pct_above_4x: float
+    min_channel_gain: tuple[float, float, float]
+    max_channel_gain: tuple[float, float, float]
+    sdr_hdr_midgray_delta_ev: float

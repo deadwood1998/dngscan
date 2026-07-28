@@ -281,7 +281,7 @@ def write_apple_gainmap_jpeg(
     options = {
         Quartz.kCGImageDestinationLossyCompressionQuality: float(quality) / 100.0,
         Quartz.kCIImageRepresentationHDRImage: hdr_image,
-        Quartz.kCIImageRepresentationHDRGainMapAsRGB: _nsnumber_bool(False),
+        Quartz.kCIImageRepresentationHDRGainMapAsRGB: _nsnumber_bool(True),
         Quartz.kCGImageDestinationEncodeRequest: Quartz.kCGImageDestinationEncodeToISOGainmap,
         Quartz.kCGImageDestinationEncodeRequestOptions: {
             Quartz.kCGImageDestinationEncodeBaseIsSDR: _nsnumber_bool(True),
@@ -313,13 +313,17 @@ def write_apple_gainmap_jpeg(
             raise RuntimeError(
                 f"HDR JPEG 主图未保持 4:4:4：{info['chroma_subsampling'] or '未知'}"
             )
-        if info["gainmap_pixel_format"] != "L008":
+        fmt = str(info["gainmap_pixel_format"] or "")
+        # RGB gain maps are required for independent HDR color geometry. Reject L008.
+        if fmt in ("", "L008"):
             raise RuntimeError(
-                f"HDR JPEG gain map 不是单通道 8-bit：{info['gainmap_pixel_format'] or '未知'}"
+                f"HDR JPEG gain map 不是 RGB 辅助图（got {fmt or '未知'}）；"
+                "独立 ACES 2-derived color geometry 需要 RGB gain map"
             )
         if info["headroom"] <= 1.0:
             raise RuntimeError("HDR JPEG 未声明有效的扩展动态范围")
         os.replace(temp_path, out_path)
+        info["gainmap_as_rgb"] = True
         return info
     finally:
         try:

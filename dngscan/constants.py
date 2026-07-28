@@ -52,6 +52,11 @@ JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr")
 
 
 DEFAULT_HDR_HEADROOM_EV = 3.0
+# First-release ACES2 HDR capacity ceiling: log2(4000/100).
+MAX_HDR_HEADROOM_EV = math.log2(4000.0 / 100.0)
+DIFFUSE_WHITE_EV = math.log2(1.0 / 0.18)
+HDR_DRT_CHOICES = ("aces2",)
+DEFAULT_HDR_DRT = "aces2"
 
 
 XYZ_TO_RGB = {
