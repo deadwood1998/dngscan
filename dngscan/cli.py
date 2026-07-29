@@ -98,7 +98,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--hdr-drt",
         choices=HDR_DRT_CHOICES,
         default=DEFAULT_HDR_DRT,
-        help="HDR display rendering transform（当前仅 agx=darktable 式 HDR AgX，尚未实现）",
+        help="HDR display rendering transform（当前仅 agx=darktable 式 HDR AgX；中性 formation 已实现，色彩几何与交付未完成）",
     )
     parser.add_argument(
         "--hdr-debug-dir",

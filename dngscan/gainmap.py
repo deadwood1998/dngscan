@@ -152,14 +152,16 @@ def apple_gainmap_backend_status() -> tuple[bool, str]:
     """Keep production HDR disabled while the darktable-style HDR AgX is designed.
 
     The private round-trip probe remains available for packaging experiments, but a
-    successful container backend is not enough: the ACES-derived renderer that used to
-    supply the alternate has been removed, and the darktable-style HDR AgX that replaces
-    it does not exist yet. Public callers must not promote packaging readiness into a
-    supported output merely because a future OS passes the probe.
+    successful container backend is not enough. The darktable-style HDR AgX now produces
+    a neutral rendition (Phase 2), but its colour geometry and HDR gamut convergence are
+    not built and the delivery round-trip is unverified, so there is still nothing whose
+    pixels should be written to a file. Public callers must not promote packaging
+    readiness into a supported output merely because a future OS passes the probe.
     """
     return False, (
-        "HDR 输出已暂停：正在重新设计独立的 darktable-style HDR AgX 核；"
-        "gain-map 封装可用，但没有可写入的 HDR rendition"
+        "HDR 输出未启用：darktable 式 HDR AgX 已有中性 formation（Phase 2），"
+        "但独立色彩几何与 HDR 色域收敛尚未实现，交付链路也未验证；"
+        "gain-map 封装本身可用"
     )
 
 
