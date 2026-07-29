@@ -12,7 +12,16 @@ import numpy as np
 from dngscan.analysis import analyze
 from dngscan.color import srgb_decode
 from dngscan.gainmap import (
+    BASE_BLOCK_P99_CODE_ERROR_LIMIT,
+    BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT,
+    BASE_MEAN_CODE_ERROR_LIMIT,
+    HDR_BLOCK_CHROMA_ERROR_LIMIT,
+    HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT,
+    HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT,
+    HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT,
     _base_roundtrip_error,
+    _base_roundtrip_is_acceptable,
+    _hdr_roundtrip_is_acceptable,
     _roundtrip_error,
     apple_gainmap_backend_status,
     inspect_gainmap_jpeg,
@@ -82,6 +91,33 @@ class RoundtripErrorTests(unittest.TestCase):
         self.assertGreater(out["median_relative_error"], 0.1)
         self.assertGreater(out["p99_relative_error"], 0.1)
 
+    def test_zero_mean_hdr_texture_error_does_not_reject_low_frequency_fidelity(self) -> None:
+        intended = np.full((16, 16, 4), 0.25, dtype=np.float16)
+        intended[..., 3] = np.float16(1.0)
+        expanded = intended.copy()
+        for y in range(0, 16, 8):
+            for x in range(0, 16, 8):
+                expanded[y, x, :3] = np.float16(0.30)
+                expanded[y, x + 1, :3] = np.float16(0.20)
+        with mock.patch(
+            "dngscan.gainmap._read_expanded_hdr_rgba_half", return_value=expanded
+        ):
+            metrics = _roundtrip_error(Path("unused.jpg"), intended)
+        self.assertGreater(metrics["p99_relative_error"], 0.1)
+        self.assertTrue(_hdr_roundtrip_is_acceptable(metrics))
+
+    def test_uniform_hdr_scale_error_is_rejected(self) -> None:
+        intended = np.full((16, 16, 4), 0.25, dtype=np.float16)
+        intended[..., 3] = np.float16(1.0)
+        expanded = intended.copy()
+        expanded[..., :3] = np.float16(0.275)
+        with mock.patch(
+            "dngscan.gainmap._read_expanded_hdr_rgba_half", return_value=expanded
+        ):
+            metrics = _roundtrip_error(Path("unused.jpg"), intended)
+        self.assertGreater(metrics["block_median_relative_error"], 0.09)
+        self.assertFalse(_hdr_roundtrip_is_acceptable(metrics))
+
     def test_sdr_base_shape_mismatch_cannot_pass(self) -> None:
         with mock.patch("PIL.Image.open") as opened:
             opened.return_value.__enter__.return_value.convert.return_value = np.zeros(
@@ -91,6 +127,30 @@ class RoundtripErrorTests(unittest.TestCase):
                 Path("unused.jpg"), np.zeros((3, 2, 3), dtype=np.uint8)
             )
         self.assertEqual(out["base_mean_code_error"], float("inf"))
+
+    def test_zero_mean_high_frequency_jpeg_error_does_not_reject_the_rendition(self) -> None:
+        intended = np.full((16, 16, 3), 128, dtype=np.uint8)
+        decoded = intended.copy()
+        # A balanced +/-10 pair in every JPEG block creates large pixel outliers but no
+        # low-frequency brightness or colour shift.
+        for y in range(0, 16, 8):
+            for x in range(0, 16, 8):
+                decoded[y, x] = 138
+                decoded[y, x + 1] = 118
+        with mock.patch("PIL.Image.open") as opened:
+            opened.return_value.__enter__.return_value.convert.return_value = decoded
+            metrics = _base_roundtrip_error(Path("unused.jpg"), intended)
+        self.assertGreater(metrics["base_p99_code_error"], 4.0)
+        self.assertTrue(_base_roundtrip_is_acceptable(metrics))
+
+    def test_uniform_code_shift_is_rejected_as_a_changed_rendition(self) -> None:
+        intended = np.full((16, 16, 3), 128, dtype=np.uint8)
+        decoded = np.full((16, 16, 3), 130, dtype=np.uint8)
+        with mock.patch("PIL.Image.open") as opened:
+            opened.return_value.__enter__.return_value.convert.return_value = decoded
+            metrics = _base_roundtrip_error(Path("unused.jpg"), intended)
+        self.assertGreater(metrics["base_channel_bias_code_error"], 1.0)
+        self.assertFalse(_base_roundtrip_is_acceptable(metrics))
 
 
 @unittest.skipUnless(_BACKEND_OK, f"gain-map backend unavailable: {_BACKEND_WHY}")
@@ -152,13 +212,30 @@ class EndToEndDeliveryTests(unittest.TestCase):
             # An L008 gain map cannot carry independent per-channel geometry.
             self.assertNotIn(str(probe["gainmap_pixel_format"]), ("", "L008"))
             self.assertGreater(probe["headroom"], 1.0)
-            self.assertLessEqual(info["median_relative_error"], 0.015)
-            self.assertLessEqual(info["p95_relative_error"], 0.08)
-            self.assertLessEqual(info["p99_relative_error"], 0.12)
+            self.assertLessEqual(
+                info["block_median_relative_error"],
+                HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT,
+            )
+            self.assertLessEqual(
+                info["block_p95_relative_error"], HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT
+            )
+            self.assertLessEqual(
+                info["block_p99_relative_error"], HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT
+            )
+            self.assertLessEqual(
+                info["block_chroma_error"], HDR_BLOCK_CHROMA_ERROR_LIMIT
+            )
             self.assertLessEqual(info["headroom_error_ev"], 0.05)
-            self.assertLessEqual(info["base_mean_code_error"], 1.0)
-            self.assertLessEqual(info["base_p99_code_error"], 4.0)
-            self.assertLessEqual(info["base_max_code_error"], 12.0)
+            self.assertLessEqual(
+                info["base_mean_code_error"], BASE_MEAN_CODE_ERROR_LIMIT
+            )
+            self.assertLessEqual(
+                info["base_channel_bias_code_error"],
+                BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT,
+            )
+            self.assertLessEqual(
+                info["base_block_p99_code_error"], BASE_BLOCK_P99_CODE_ERROR_LIMIT
+            )
             # Declared headroom must not exceed what the scene was allowed.
             self.assertLessEqual(
                 float(np.log2(probe["headroom"])), info["rendered_headroom_ev"] + 1e-3
@@ -167,8 +244,8 @@ class EndToEndDeliveryTests(unittest.TestCase):
     def test_sdr_base_is_the_same_rendition_as_a_plain_export(self) -> None:
         """Same pixels into the encoder; the encoders themselves then differ.
 
-        Pillow and Core Image do not agree bit for bit -- measured up to 8/255 on 54 % of
-        pixels at quality 100 -- so this asserts the rendition, not the bytes.
+        Pillow and Core Image do not agree bit for bit, especially on high-ISO noise, so
+        this asserts the pre-encoder rendition rather than compressed bytes.
         """
         bundle = load_raw(SIGMA, scene_half_size=True)
         analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)

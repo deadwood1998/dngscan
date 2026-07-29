@@ -159,7 +159,7 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
         "budget": hdr_plan.tone.rendered_headroom_ev,
         "actual": actual,
         "white": hdr_plan.tone.white_ev,
-        "gamma": hdr_plan.tone.curve_gamma,
+        "body_gamma": hdr_plan.tone.body_gamma,
         "tail": hdr_plan.tone.reliable_tail_ev,
         "body_delta_ev": body_delta,
         "above_one_pct": 100.0 * float(np.count_nonzero(hdr > 1.0)) / hdr.size,
@@ -185,7 +185,7 @@ def main(argv: list[str]) -> int:
         f"= +{target.display_headroom_ev:.2f} EV capacity"
     )
     print(
-        f"\n  {'frame':16s} {'white':>7s} {'gamma':>7s} {'tail':>7s} {'target':>7s} {'actual':>7s} "
+        f"\n  {'frame':16s} {'white':>7s} {'body g':>7s} {'tail':>7s} {'target':>7s} {'actual':>7s} "
         f"{'body dEV':>9s} {'>1.0':>7s}"
     )
     rows = []
@@ -196,7 +196,7 @@ def main(argv: list[str]) -> int:
         row = process(path, args.out, target, half=not args.full)
         rows.append(row)
         print(
-            f"  {row['name']:16s} {row['white']:7.2f} {row['gamma']:7.3f} {row['tail']:+7.2f} "
+            f"  {row['name']:16s} {row['white']:7.2f} {row['body_gamma']:7.3f} {row['tail']:+7.2f} "
             f"{row['budget']:7.2f} {row['actual']:7.2f} {row['body_delta_ev']:+9.5f} "
             f"{row['above_one_pct']:6.2f}%"
         )

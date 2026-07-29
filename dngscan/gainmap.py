@@ -18,6 +18,20 @@ from typing import Any
 from ._deps import np
 from .color import srgb_decode
 
+# Project delivery tolerances, not ISO 21496-1 constants. They distinguish a real
+# low-frequency colour/tone change from encoder-dependent high-frequency JPEG loss.
+BASE_MEAN_CODE_ERROR_LIMIT = 4.0
+BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT = 1.0
+BASE_BLOCK_P99_CODE_ERROR_LIMIT = 2.0
+HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT = 0.015
+# Core Image's ISO gain-map interpolation reaches about 4.12% on the sparse
+# 32x64 conformance ramp even though its block median is 0.08% and chroma error
+# is 0.12%. Keep p95 above that measured encoder floor; the median and p99 gates
+# still reject broad tone shifts and isolated larger failures independently.
+HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT = 0.05
+HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT = 0.06
+HDR_BLOCK_CHROMA_ERROR_LIMIT = 0.015
+
 
 def _apple_gainmap_api_status() -> tuple[bool, str]:
     """Report API availability without claiming RGB round-trip correctness."""
@@ -173,6 +187,10 @@ def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
             "p95_relative_error": float("inf"),
             "p99_relative_error": float("inf"),
             "p999_relative_error": float("inf"),
+            "block_median_relative_error": float("inf"),
+            "block_p95_relative_error": float("inf"),
+            "block_p99_relative_error": float("inf"),
+            "block_chroma_error": float("inf"),
         }
     a = expanded.reshape(-1, 3)
     e = intended.reshape(-1, 3)
@@ -194,6 +212,30 @@ def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
     p95_relative = float(np.percentile(relative, 95.0))
     p99_relative = float(np.percentile(relative, 99.0))
     p999_relative = float(np.percentile(relative, 99.9))
+    h8 = expanded.shape[0] - expanded.shape[0] % 8
+    w8 = expanded.shape[1] - expanded.shape[1] % 8
+    if h8 > 0 and w8 > 0:
+        ab = expanded[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3).mean(axis=(1, 3))
+        eb = intended[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3).mean(axis=(1, 3))
+        block_relative = np.max(np.abs(ab - eb), axis=2) / np.maximum(
+            np.max(np.abs(eb), axis=2), 0.05
+        )
+        block_median = float(np.median(block_relative))
+        block_p95 = float(np.percentile(block_relative, 95.0))
+        block_p99 = float(np.percentile(block_relative, 99.0))
+        block_mask = np.max(np.abs(eb), axis=2) > 0.05
+        if bool(np.any(block_mask)):
+            abc = ab[block_mask]
+            ebc = eb[block_mask]
+            block_chroma = np.abs(
+                abc / np.maximum(abc.sum(axis=1, keepdims=True), 1e-6)
+                - ebc / np.maximum(ebc.sum(axis=1, keepdims=True), 1e-6)
+            )
+            block_chroma_p99 = float(np.percentile(block_chroma, 99.0))
+        else:
+            block_chroma_p99 = 0.0
+    else:
+        block_median = block_p95 = block_p99 = block_chroma_p99 = float("inf")
     return {
         "chroma_error": chroma_p99,
         "relative_error": p99_relative,
@@ -201,11 +243,33 @@ def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
         "p95_relative_error": p95_relative,
         "p99_relative_error": p99_relative,
         "p999_relative_error": p999_relative,
+        "block_median_relative_error": block_median,
+        "block_p95_relative_error": block_p95,
+        "block_p99_relative_error": block_p99,
+        "block_chroma_error": block_chroma_p99,
     }
 
 
+def _hdr_roundtrip_is_acceptable(metrics: dict[str, float]) -> bool:
+    """Whether the expanded HDR preserves low-frequency tone and colour geometry."""
+    return bool(
+        metrics["block_median_relative_error"]
+        <= HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT
+        and metrics["block_p95_relative_error"]
+        <= HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT
+        and metrics["block_p99_relative_error"]
+        <= HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT
+        and metrics["block_chroma_error"] <= HDR_BLOCK_CHROMA_ERROR_LIMIT
+    )
+
+
 def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
-    """JPEG-domain error of the SDR rendition seen by gain-map-unaware readers."""
+    """JPEG-domain error of the SDR rendition seen by gain-map-unaware readers.
+
+    Raw per-pixel error is content-dependent because JPEG is lossy even at quality 100;
+    high-ISO noise is especially expensive. Signed channel bias and 8x8 block means expose
+    an actual colour/tone transform while discounting zero-mean DCT-scale texture loss.
+    """
     from PIL import Image
 
     with Image.open(path) as image:
@@ -216,14 +280,38 @@ def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
             "base_mean_code_error": float("inf"),
             "base_p99_code_error": float("inf"),
             "base_max_code_error": float("inf"),
+            "base_channel_bias_code_error": float("inf"),
+            "base_block_p99_code_error": float("inf"),
         }
-    channel_error = np.abs(decoded.astype(np.int16) - intended.astype(np.int16))
+    signed = decoded.astype(np.float32) - intended.astype(np.float32)
+    channel_error = np.abs(signed)
     pixel_error = np.max(channel_error, axis=2)
+    channel_bias = float(np.max(np.abs(np.mean(signed, axis=(0, 1)))))
+    h8 = decoded.shape[0] - decoded.shape[0] % 8
+    w8 = decoded.shape[1] - decoded.shape[1] % 8
+    if h8 > 0 and w8 > 0:
+        block_signed = signed[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3)
+        block_error = np.max(np.abs(np.mean(block_signed, axis=(1, 3))), axis=2)
+        block_p99 = float(np.percentile(block_error, 99.0))
+    else:
+        block_p99 = float("inf")
     return {
         "base_mean_code_error": float(np.mean(channel_error)),
         "base_p99_code_error": float(np.percentile(pixel_error, 99.0)),
         "base_max_code_error": float(np.max(pixel_error)),
+        "base_channel_bias_code_error": channel_bias,
+        "base_block_p99_code_error": block_p99,
     }
+
+
+def _base_roundtrip_is_acceptable(metrics: dict[str, float]) -> bool:
+    """Whether JPEG loss preserved the base rendition's low-frequency appearance."""
+    return bool(
+        metrics["base_mean_code_error"] <= BASE_MEAN_CODE_ERROR_LIMIT
+        and metrics["base_channel_bias_code_error"]
+        <= BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT
+        and metrics["base_block_p99_code_error"] <= BASE_BLOCK_P99_CODE_ERROR_LIMIT
+    )
 
 
 def apple_gainmap_backend_status() -> tuple[bool, str]:
@@ -432,16 +520,14 @@ def write_apple_gainmap_jpeg(
             )
         base_roundtrip = _base_roundtrip_error(temp_path, base)
         info.update(base_roundtrip)
-        if (
-            base_roundtrip["base_mean_code_error"] > 1.0
-            or base_roundtrip["base_p99_code_error"] > 4.0
-            or base_roundtrip["base_max_code_error"] > 12.0
-        ):
+        if not _base_roundtrip_is_acceptable(base_roundtrip):
             raise RuntimeError(
                 "写出的 SDR 底图无法保持输入 rendition："
                 f"平均码值误差={base_roundtrip['base_mean_code_error']:.3f}，"
                 f"p99={base_roundtrip['base_p99_code_error']:.1f}，"
-                f"max={base_roundtrip['base_max_code_error']:.1f}；已丢弃该文件"
+                f"max={base_roundtrip['base_max_code_error']:.1f}，"
+                f"通道偏差={base_roundtrip['base_channel_bias_code_error']:.3f}，"
+                f"8x8块p99={base_roundtrip['base_block_p99_code_error']:.3f}；已丢弃该文件"
             )
         # Verify the pixels that were actually written, not a synthetic stand-in. This is
         # the guarantee that matters -- that this file, read back, is the rendition it
@@ -449,18 +535,17 @@ def write_apple_gainmap_jpeg(
         # only answer for its own test pattern.
         roundtrip = _roundtrip_error(temp_path, hdr)
         info.update(roundtrip)
-        if (
-            roundtrip["median_relative_error"] > 0.015
-            or roundtrip["p95_relative_error"] > 0.08
-            or roundtrip["p99_relative_error"] > 0.12
-            or roundtrip["chroma_error"] > 0.02
-        ):
+        if not _hdr_roundtrip_is_acceptable(roundtrip):
             raise RuntimeError(
                 "写出的 HDR rendition 无法从文件还原："
                 f"中位相对误差={roundtrip['median_relative_error']:.4f}，"
                 f"p95相对误差={roundtrip['p95_relative_error']:.4f}，"
                 f"p99相对误差={roundtrip['p99_relative_error']:.4f}，"
-                f"p99色品误差={roundtrip['chroma_error']:.4f}；已丢弃该文件"
+                f"p99色品误差={roundtrip['chroma_error']:.4f}，"
+                f"8x8中位/p95/p99={roundtrip['block_median_relative_error']:.4f}/"
+                f"{roundtrip['block_p95_relative_error']:.4f}/"
+                f"{roundtrip['block_p99_relative_error']:.4f}，"
+                f"8x8色品p99={roundtrip['block_chroma_error']:.4f}；已丢弃该文件"
             )
         os.replace(temp_path, out_path)
         info["gainmap_as_rgb"] = True

@@ -75,8 +75,10 @@ def export_ultrahdr_jpeg(
     That base is the same *rendition* as an ordinary SDR export -- the identical
     render_output_u8 call on the identical plan -- but not the same bytes. Core Image
     writes this file while Pillow writes the SDR one, and two JPEG encoders do not agree
-    bit for bit: measured, up to 8/255 on 54 % of pixels at quality 100. The invariant
-    worth stating is the one that holds before the encoder, not after it.
+    bit for bit. On a high-ISO frame the same intended pixels differed by up to 30/255,
+    while signed channel bias remained 0.13/255 and 8x8-block p99 error 0.94/255. Delivery
+    therefore gates low-frequency rendition fidelity rather than treating sensor noise as
+    a colour transform.
 
     Display looks and filters are refused rather than dropped: they are SDR operators with
     no HDR meaning yet, and silently ignoring them would make the two renditions disagree
