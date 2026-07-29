@@ -650,27 +650,22 @@ def _plan_hue_restore(plan: Any) -> float:
     return AGX_HUE_RESTORE
 
 
-def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: Any) -> Any:
-    """AgX's shared formation order in the Rec.2020 working space:
+def prepare_formation(rgb_rec2020: Any, plan: Any, inset_matrix: Any) -> tuple[Any, Any | None]:
+    """Apply the guard rail and inset, retaining the hue used by darktable restore.
 
-    guard rail -> inset (rotation+attenuation) -> log2 window -> sigmoid ->
-    linearize -> hue restore (darktable semantics) -> outset in LINEAR light.
-
-    Deviations from the reference, all deliberate: the endpoint-normalized log2 window
-    and C1 sigmoid parameters come from the scene plan while EV=0 remains the calibrated
-    mid-gray pivot; the scene DRT uses darktable's default fixed internal gamma, whereas
-    the legacy branch retains optional diagonal-pivot gamma. Call formation_matrices(plan)
-    for preset-specific inset/outset before invoking this function.
+    HDR needs access to the interval between the per-channel curve and hue restore/outset.
+    Keeping that interval explicit avoids reconstructing it from the completed SDR image.
     """
     hue_restore = _plan_hue_restore(plan)
-    outset = outset_matrix
     rgb = compress_into_gamut(rgb_rec2020.astype(np.float32, copy=False))
     inset = _apply_matrix3(rgb, inset_matrix)
     pre_hue = _rgb_to_hsv(np.maximum(inset, 0.0))[:, 0] if hue_restore > 1e-6 else None
+    return inset, pre_hue
+
+
+def apply_formation_curve(inset: Any, plan: Any) -> Any:
+    """Map inset scene channels through the existing endpoint-normalized AgX curve."""
     if bool(getattr(plan, "use_c1_endpoints", False)):
-        # The DRT derives endpoints from luminance-only scene measurements but maps each
-        # AgX-inset channel through the same endpoint-normalized C1 curve, preserving
-        # the per-channel path-to-white.
         from .drt import apply_c1_endpoints
 
         linear = apply_c1_endpoints(np.log2(np.maximum(inset / 0.18, EPS)), plan)
@@ -687,7 +682,9 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
             round(float(getattr(plan, "target_black_linear", 0.0)), 4),
             round(float(getattr(plan, "target_white_linear", 1.0)), 4),
         )
-        log_encoded = (np.log2(np.maximum(inset / 0.18, EPS)) - float(params["black_ev"])) / float(params["range_ev"])
+        log_encoded = (
+            np.log2(np.maximum(inset / 0.18, EPS)) - float(params["black_ev"])
+        ) / float(params["range_ev"])
         log_encoded = np.clip(log_encoded, 0.0, 1.0)
         curved = apply_curve(log_encoded, params)
         brightness = max(EPS, float(getattr(plan, "view_brightness", 1.0)))
@@ -696,9 +693,32 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
         linear = np.power(np.maximum(curved, 0.0), float(params["gamma"]))
     brightness = max(EPS, float(getattr(plan, "view_brightness", 1.0)))
     if bool(getattr(plan, "use_c1_endpoints", False)) and abs(brightness - 1.0) > 1e-6:
-        # Mirrors darktable's display-referred "brightness" look control. It raises
-        # only the interior of the curve, preserving true black and target white.
         linear = np.power(np.maximum(linear, 0.0), look_brightness_power(brightness))
+    return linear.astype(np.float32, copy=False)
+
+
+def finish_formation(
+    linear: Any, pre_hue: Any | None, plan: Any, outset_matrix: Any
+) -> Any:
+    """Apply darktable hue restore and outset to completed formation-space RGB."""
+    hue_restore = _plan_hue_restore(plan)
     if pre_hue is not None:
         linear = _mix_hue(linear, pre_hue, hue_restore)
-    return _apply_matrix3(linear, outset).astype(np.float32)
+    return _apply_matrix3(linear, outset_matrix).astype(np.float32)
+
+
+def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: Any) -> Any:
+    """AgX's shared formation order in the Rec.2020 working space:
+
+    guard rail -> inset (rotation+attenuation) -> log2 window -> sigmoid ->
+    linearize -> hue restore (darktable semantics) -> outset in LINEAR light.
+
+    Deviations from the reference, all deliberate: the endpoint-normalized log2 window
+    and C1 sigmoid parameters come from the scene plan while EV=0 remains the calibrated
+    mid-gray pivot; the scene DRT uses darktable's default fixed internal gamma, whereas
+    the legacy branch retains optional diagonal-pivot gamma. Call formation_matrices(plan)
+    for preset-specific inset/outset before invoking this function.
+    """
+    inset, pre_hue = prepare_formation(rgb_rec2020, plan, inset_matrix)
+    linear = apply_formation_curve(inset, plan)
+    return finish_formation(linear, pre_hue, plan, outset_matrix)

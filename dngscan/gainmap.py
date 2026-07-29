@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Apple-native ISO 21496-1 gain-map packaging and round-trip probes.
 
-This module does not construct HDR pixels. The darktable-style HDR AgX renderer owns the
-alternate rendition; Core Image only packages an already-complete SDR/HDR pair.
+This module does not construct HDR pixels. dngscan's HDR extension around darktable-style
+AgX formation owns the alternate rendition; Core Image only packages an already-complete
+SDR/HDR pair.
 """
 from __future__ import annotations
 
@@ -47,6 +48,11 @@ def _apple_gainmap_api_status() -> tuple[bool, str]:
         return False, "当前 macOS/PyObjC 不暴露 ISO gain-map 编码 API：" + ", ".join(missing)
     if not hasattr(Quartz.CIContext, "writeJPEGRepresentationOfImage_toURL_colorSpace_options_error_"):
         return False, "当前 Core Image 不支持直接写入 HDR JPEG"
+    context = Quartz.CIContext.contextWithOptions_(
+        {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
+    )
+    if context is None:
+        return False, "Core Image 无法创建可用的 CIContext"
     return True, "Apple Core Image ISO 21496-1 gain-map APIs available"
 
 
@@ -79,6 +85,8 @@ def _read_expanded_hdr_rgba_half(path: Path) -> Any:
     context = Quartz.CIContext.contextWithOptions_(
         {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
     )
+    if context is None:
+        raise RuntimeError("Core Image 无法创建 HDR 回读 CIContext")
     context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
         image,
         buf,
@@ -151,29 +159,70 @@ def _apple_rgb_gainmap_roundtrip_status() -> tuple[bool, str]:
 def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
     """How far the file's expanded HDR rendition sits from the one that was written.
 
-    Measured over pixels above reference white only. Below it the gain map carries no
-    information by construction, so including those pixels would dilute the statistic
-    with a region that is trivially correct.
+    The whole rendition is measured. RGB gain maps can carry chromatic corrections below
+    reference white when the completed SDR and HDR gamut projectors differ; excluding that
+    region would let a file pass without proving that its shadows and midtones survive.
     """
     expanded = _read_expanded_hdr_rgba_half(path)[..., :3].astype(np.float32)
     intended = np.asarray(intended_hdr_half)[..., :3].astype(np.float32)
     if expanded.shape != intended.shape:
-        return {"chroma_error": float("inf"), "relative_error": float("inf")}
-    mask = intended.max(axis=2) > 1.0
-    if not bool(np.any(mask)):
-        return {"chroma_error": 0.0, "relative_error": 0.0}
-    a = expanded[mask]
-    e = intended[mask]
-    chroma = np.abs(
-        a / np.maximum(a.sum(axis=1, keepdims=True), 1e-6)
-        - e / np.maximum(e.sum(axis=1, keepdims=True), 1e-6)
-    )
-    relative = np.abs(a - e) / np.maximum(np.abs(e), 0.05)
-    # p99.9 rather than max: a handful of pixels on a hard specular edge are a JPEG
-    # artefact, not evidence that the rendition failed to survive.
+        return {
+            "chroma_error": float("inf"),
+            "relative_error": float("inf"),
+            "median_relative_error": float("inf"),
+            "p95_relative_error": float("inf"),
+            "p99_relative_error": float("inf"),
+            "p999_relative_error": float("inf"),
+        }
+    a = expanded.reshape(-1, 3)
+    e = intended.reshape(-1, 3)
+    # Normalize one RGB-vector error by that pixel's strongest intended component. A tiny
+    # secondary channel must not turn a sub-code-value JPEG error into a huge percentage.
+    relative = np.max(np.abs(a - e), axis=1) / np.maximum(np.max(np.abs(e), axis=1), 0.05)
+    chroma_mask = np.max(np.abs(e), axis=1) > 0.05
+    if bool(np.any(chroma_mask)):
+        ac = a[chroma_mask]
+        ec = e[chroma_mask]
+        chroma = np.abs(
+            ac / np.maximum(ac.sum(axis=1, keepdims=True), 1e-6)
+            - ec / np.maximum(ec.sum(axis=1, keepdims=True), 1e-6)
+        )
+        chroma_p99 = float(np.percentile(chroma, 99.0))
+    else:
+        chroma_p99 = 0.0
+    median_relative = float(np.median(relative))
+    p95_relative = float(np.percentile(relative, 95.0))
+    p99_relative = float(np.percentile(relative, 99.0))
+    p999_relative = float(np.percentile(relative, 99.9))
     return {
-        "chroma_error": float(np.percentile(chroma, 99.9)),
-        "relative_error": float(np.percentile(relative, 99.9)),
+        "chroma_error": chroma_p99,
+        "relative_error": p99_relative,
+        "median_relative_error": median_relative,
+        "p95_relative_error": p95_relative,
+        "p99_relative_error": p99_relative,
+        "p999_relative_error": p999_relative,
+    }
+
+
+def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
+    """JPEG-domain error of the SDR rendition seen by gain-map-unaware readers."""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        decoded = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    intended = np.asarray(intended_rgb_u8, dtype=np.uint8)
+    if decoded.shape != intended.shape:
+        return {
+            "base_mean_code_error": float("inf"),
+            "base_p99_code_error": float("inf"),
+            "base_max_code_error": float("inf"),
+        }
+    channel_error = np.abs(decoded.astype(np.int16) - intended.astype(np.int16))
+    pixel_error = np.max(channel_error, axis=2)
+    return {
+        "base_mean_code_error": float(np.mean(channel_error)),
+        "base_p99_code_error": float(np.percentile(pixel_error, 99.0)),
+        "base_max_code_error": float(np.max(pixel_error)),
     }
 
 
@@ -270,18 +319,8 @@ def write_apple_gainmap_jpeg(
     _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
     """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map."""
-    ok, reason = (
-        apple_gainmap_backend_status()
-        if _verify_roundtrip_capability
-        else _apple_gainmap_api_status()
-    )
-    if not ok:
-        raise RuntimeError(reason)
     if not 1 <= int(quality) <= 100:
         raise ValueError("JPEG quality 必须在 1-100 之间")
-
-    import Quartz  # type: ignore
-    from Foundation import NSURL  # type: ignore
 
     base = np.asarray(base_rgb_u8)
     hdr = np.asarray(hdr_rgba_half)
@@ -289,6 +328,20 @@ def write_apple_gainmap_jpeg(
         raise ValueError("HDR gain-map 底图必须是 HxWx3 uint8")
     if hdr.dtype != np.float16 or hdr.shape != base.shape[:2] + (4,):
         raise ValueError("HDR alternate 必须是与底图同尺寸的 HxWx4 float16")
+    if not bool(np.all(np.isfinite(hdr))):
+        raise ValueError("HDR alternate 含 NaN/Inf，无法声明可靠的 content headroom")
+
+    ok, reason = (
+        apple_gainmap_backend_status()
+        if _verify_roundtrip_capability
+        else _apple_gainmap_api_status()
+    )
+    if not ok:
+        raise RuntimeError(reason)
+
+    import Quartz  # type: ignore
+    from Foundation import NSURL  # type: ignore
+
     if not base.flags.c_contiguous:
         base = np.ascontiguousarray(base)
     if not hdr.flags.c_contiguous:
@@ -306,6 +359,10 @@ def write_apple_gainmap_jpeg(
     hdr_image, hdr_data = _ciimage_from_rgba(hdr, Quartz.kCIFormatRGBAh, linear_p3)
     base_image = base_image.imageBySettingContentHeadroom_(1.0)
     requested_headroom = float(2.0 ** float(hdr_headroom_ev))
+    # Apple content headroom describes the actual encoded range, so use the finite pixel
+    # maximum here. The p99.99 value reported by export.py is an image-analysis diagnostic,
+    # not container metadata: declaring that percentile would clip valid brighter pixels
+    # when Core Image adapts the file to a display with less headroom.
     actual_headroom = float(np.max(hdr[:, :, :3]))
     if actual_headroom > requested_headroom * 1.001:
         raise RuntimeError(
@@ -318,6 +375,8 @@ def write_apple_gainmap_jpeg(
     context = Quartz.CIContext.contextWithOptions_(
         {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
     )
+    if context is None:
+        raise RuntimeError("Core Image 无法创建 HDR 编码 CIContext")
     options = {
         Quartz.kCGImageDestinationLossyCompressionQuality: float(quality) / 100.0,
         Quartz.kCIImageRepresentationHDRImage: hdr_image,
@@ -362,17 +421,46 @@ def write_apple_gainmap_jpeg(
             )
         if info["headroom"] <= 1.0:
             raise RuntimeError("HDR JPEG 未声明有效的扩展动态范围")
+        headroom_error_ev = abs(
+            float(np.log2(max(float(info["headroom"]), 1e-9) / actual_headroom))
+        )
+        info["headroom_error_ev"] = headroom_error_ev
+        if headroom_error_ev > 0.05:
+            raise RuntimeError(
+                "HDR JPEG 声明余量与 alternate 峰值不一致："
+                f"误差={headroom_error_ev:.4f} EV；已丢弃该文件"
+            )
+        base_roundtrip = _base_roundtrip_error(temp_path, base)
+        info.update(base_roundtrip)
+        if (
+            base_roundtrip["base_mean_code_error"] > 1.0
+            or base_roundtrip["base_p99_code_error"] > 4.0
+            or base_roundtrip["base_max_code_error"] > 12.0
+        ):
+            raise RuntimeError(
+                "写出的 SDR 底图无法保持输入 rendition："
+                f"平均码值误差={base_roundtrip['base_mean_code_error']:.3f}，"
+                f"p99={base_roundtrip['base_p99_code_error']:.1f}，"
+                f"max={base_roundtrip['base_max_code_error']:.1f}；已丢弃该文件"
+            )
         # Verify the pixels that were actually written, not a synthetic stand-in. This is
         # the guarantee that matters -- that this file, read back, is the rendition it
         # claims to be -- and it is strictly stronger than any capability probe, which can
         # only answer for its own test pattern.
         roundtrip = _roundtrip_error(temp_path, hdr)
         info.update(roundtrip)
-        if roundtrip["chroma_error"] > 0.06 or roundtrip["relative_error"] > 0.25:
+        if (
+            roundtrip["median_relative_error"] > 0.015
+            or roundtrip["p95_relative_error"] > 0.08
+            or roundtrip["p99_relative_error"] > 0.12
+            or roundtrip["chroma_error"] > 0.02
+        ):
             raise RuntimeError(
                 "写出的 HDR rendition 无法从文件还原："
-                f"色品误差={roundtrip['chroma_error']:.4f}，"
-                f"相对误差={roundtrip['relative_error']:.4f}；已丢弃该文件"
+                f"中位相对误差={roundtrip['median_relative_error']:.4f}，"
+                f"p95相对误差={roundtrip['p95_relative_error']:.4f}，"
+                f"p99相对误差={roundtrip['p99_relative_error']:.4f}，"
+                f"p99色品误差={roundtrip['chroma_error']:.4f}；已丢弃该文件"
             )
         os.replace(temp_path, out_path)
         info["gainmap_as_rgb"] = True

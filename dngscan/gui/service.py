@@ -505,7 +505,7 @@ def parse_grade(params: dict) -> tuple[str, float, str, float]:
 
 
 def run_preview(params: dict) -> dict:
-    inp, highlight, gamut, _, ev, _, quality, _, _, ev_auto = parse_job_params(params)
+    inp, highlight, gamut, output_format, ev, _, quality, _, _, ev_auto = parse_job_params(params)
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
@@ -516,7 +516,11 @@ def run_preview(params: dict) -> dict:
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
+    if output_format == "ultrahdr" and abs(float(adjustments.highlight_fade)) > 1e-9:
+        raise RuntimeError("HDR 尚未定义显示侧高光褪白；请将该项恢复为自动")
     tone_core, lum_norm = parse_tone_core(params)
+    if output_format == "ultrahdr" and tone_core != "agx":
+        raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     cached = PREVIEW_STORE.get(
         inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
@@ -658,7 +662,11 @@ def run_export(params: dict) -> dict:
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
+    if output_format == "ultrahdr" and abs(float(adjustments.highlight_fade)) > 1e-9:
+        raise RuntimeError("HDR 尚未定义显示侧高光褪白；请将该项恢复为自动")
     tone_core, lum_norm = parse_tone_core(params)
+    if output_format == "ultrahdr" and tone_core != "agx":
+        raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     bundle = dg.load_raw(
         inp,

@@ -37,11 +37,10 @@ PLANS = {
 HEADROOMS = (0.0, 1.0, 2.0, 3.0, math.log2(10.0))
 
 
-def _sdr_reference(ev: np.ndarray, black_ev: float = -10.0, white_ev: float = 6.5) -> np.ndarray:
-    """A stand-in monotone SDR response in [0,1] with T(0)=0.18.
+def _hdr_base_reference(ev: np.ndarray, black_ev: float = -10.0, white_ev: float = 6.5) -> np.ndarray:
+    """A stand-in monotone HDR base response in [0,1] with T(0)=0.18.
 
-    Phase 1 only needs *a* valid T0 to verify the allocation's properties; the real
-    darktable curve arrives in Phase 2, where H=0 is checked against it directly.
+    Phase 1 only needs a valid monotone HDR base response to verify allocation properties.
     """
     x = np.clip((np.asarray(ev, dtype=np.float64) - black_ev) / (white_ev - black_ev), 0.0, 1.0)
     x0 = (0.0 - black_ev) / (white_ev - black_ev)
@@ -121,29 +120,29 @@ class AllocationPropertyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.ev = np.linspace(-16.0, 16.0, 65537)
-        self.t0 = _sdr_reference(self.ev)
+        self.t0 = _hdr_base_reference(self.ev)
 
-    def test_zero_budget_is_exactly_the_sdr_curve(self) -> None:
+    def test_zero_budget_returns_the_hdr_base_curve(self) -> None:
         for name, (knee, white) in PLANS.items():
             with self.subTest(plan=name):
                 out = apply_hdr_allocation(self.t0, self.ev, knee, white, 0.0)
                 self.assertEqual(float(np.max(np.abs(out - self.t0))), 0.0)
 
-    def test_below_the_knee_nothing_moves(self) -> None:
+    def test_allocation_is_zero_before_its_start(self) -> None:
         for name, (knee, white) in PLANS.items():
             for h in HEADROOMS:
                 with self.subTest(plan=name, headroom=h):
-                    out = apply_hdr_allocation(self.t0, self.ev, knee, white, h)
                     below = self.ev <= knee
-                    self.assertEqual(float(np.max(np.abs(out[below] - self.t0[below]))), 0.0)
+                    allocated = lift_stops(self.ev, knee, white, h)
+                    self.assertEqual(float(np.max(np.abs(allocated[below]))), 0.0)
 
-    def test_midgray_anchor_never_moves(self) -> None:
-        """EV 0 is the exposure anchor; HDR capacity must not touch it."""
+    def test_midgray_anchor_remains_an_hdr_scene_intent_guard(self) -> None:
+        """The HDR allocation must not turn available display capacity into auto exposure."""
         for name, (knee, white) in PLANS.items():
             for h in HEADROOMS:
                 with self.subTest(plan=name, headroom=h):
                     out = apply_hdr_allocation(
-                        _sdr_reference(np.zeros(1)), np.zeros(1), knee, white, h
+                        _hdr_base_reference(np.zeros(1)), np.zeros(1), knee, white, h
                     )
                     self.assertLess(abs(float(out[0]) - 0.18), 2e-6)
 
@@ -162,14 +161,14 @@ class AllocationPropertyTests(unittest.TestCase):
                     self.assertLessEqual(float(np.max(out)), 2.0 ** h + 2e-6)
                     self.assertTrue(bool(np.all(np.isfinite(out))))
 
-    def test_black_end_needs_no_positive_t0(self) -> None:
-        """Monotonicity must hold where T0 is exactly 0.
+    def test_black_end_needs_no_positive_base(self) -> None:
+        """Monotonicity must hold where the HDR base is exactly 0.
 
-        The log-derivative form in the design doc divides by T0 and appears to fail here;
+        The log-derivative form divides by the base and appears to fail here;
         the product rule does not. This pins the working form.
         """
         ev = np.linspace(-16.0, 16.0, 4097)
-        t0 = _sdr_reference(ev)
+        t0 = _hdr_base_reference(ev)
         t0[ev < -10.0] = 0.0
         knee, white = PLANS["wide"]
         out = apply_hdr_allocation(t0, ev, knee, white, 3.0)
@@ -180,8 +179,8 @@ class AllocationPropertyTests(unittest.TestCase):
         for name, (knee, white) in PLANS.items():
             with self.subTest(plan=name):
                 ev = np.linspace(knee - 0.5, knee + 0.5, 200001)
-                out = apply_hdr_allocation(_sdr_reference(ev), ev, knee, white, 3.0)
-                ref = _sdr_reference(ev)
+                out = apply_hdr_allocation(_hdr_base_reference(ev), ev, knee, white, 3.0)
+                ref = _hdr_base_reference(ev)
                 mid = out.size // 2
                 d1 = np.diff(out)
                 d1_ref = np.diff(ref)
@@ -300,10 +299,12 @@ class SingleCurveImpossibilityTests(unittest.TestCase):
         """Same target, reached without asking the shoulder to steepen."""
         knee, white = PLANS["wide"]
         ev = np.linspace(-16.0, 16.0, 65537)
-        out = apply_hdr_allocation(_sdr_reference(ev), ev, knee, white, math.log2(10.0))
+        out = apply_hdr_allocation(_hdr_base_reference(ev), ev, knee, white, math.log2(10.0))
         self.assertLessEqual(float(np.max(out)), 10.0 + 2e-6)
         self.assertGreaterEqual(float(np.min(np.diff(out))), -2e-7)
-        mid = apply_hdr_allocation(_sdr_reference(np.zeros(1)), np.zeros(1), knee, white, math.log2(10.0))
+        mid = apply_hdr_allocation(
+            _hdr_base_reference(np.zeros(1)), np.zeros(1), knee, white, math.log2(10.0)
+        )
         self.assertLess(abs(float(mid[0]) - 0.18), 2e-6)
 
 

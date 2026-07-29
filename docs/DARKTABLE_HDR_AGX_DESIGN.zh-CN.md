@@ -1,9 +1,9 @@
-# dngscan：darktable 式 HDR AgX 实施计划
+# dngscan：darktable 式 HDR AgX 实施说明
 
-> 状态：**数学方案已确定，暂不接入生产管线**  
+> 状态：**核心数学、HDR AgX 及 Apple ISO gain-map 交付已接入；实机跨平台验收仍待完成**
 > 更新日期：2026-07-28  
-> 当前生产输出：SDR JPEG  
-> 本文用途：作为后续实现、代码评审和数值验收的唯一 HDR 设计依据。
+> 当前生产输出：SDR JPEG；macOS/Core Image 上的可选 ISO 21496-1 HDR JPEG
+> 本文用途：记录实现边界、参数来源、代码评审结论和数值验收线。
 
 ## 1. 最终决定
 
@@ -29,6 +29,8 @@ SDR P3 + HDR P3 -> Adaptive HDR / ISO 21496-1 delivery
 
 旧 ACES 2 bridge、`SDR × spatial gain` 和“把 gain map 当 tone mapper”的方案全部停止。
 Gain map 只能在两张已经完成的 SDR/HDR rendition 之间承担交付编码，不能参与决定画面。
+两张 rendition 不要求在某个 knee 以下逐像素相等；需要保持的是同一拍摄意图，而不是同一
+显示变换。HDR 屏幕上的中间调稳定是独立验收项，不再通过复制 SDR 像素获得。
 
 ## 2. 已由上游实现确认的事实
 
@@ -103,6 +105,26 @@ Core Image / Image I/O 决定如何封装这些像素
 参考：
 
 - <https://developer.apple.com/videos/play/wwdc2024/10177/>
+- <https://developer.apple.com/documentation/coreimage/ciimage/settingcontentheadroom%28_%3A%29>
+
+### 2.4 交付插值与 HDR 色彩不是同一个问题
+
+ISO/Ultra HDR 阅读端会按可用显示余量在 log gain 域插值。Android 的公开参考实现明确使用
+`exp2(log_boost * weight)`，而不是在 SDR/HDR 像素间线性插值；后者只会在最大 headroom
+端点保持原本的相对明暗关系。dngscan 不自行实现这一步，交给 Core Image 写入的 ISO gain
+map 与系统阅读端。
+
+但 gain map 只能重建已经给定的目标 HDR rendition，不能替 DRT 决定高光应该多亮、何时
+褪色。ACES 2 的参考 Output Transform 把 tone mapping、chroma compression 和 gamut
+compression 分开，并在 Hellwig 2022 JMh 色貌空间里固定感知 hue。它说明了 HDR 色彩几何
+应随 lightness、chroma 与显示峰值联动，也同时说明当前 dngscan 的线性 P3 中性轴投影只是
+更简单的工程近似，不能称为严格保感知色相。
+
+参考：
+
+- <https://android.googlesource.com/platform/external/libultrahdr/+/refs/heads/main/lib/include/ultrahdr/gainmapmath.h>
+- <https://docs.acescentral.com/system-components/output-transforms/technical-details/chroma-compression/>
+- <https://docs.acescentral.com/system-components/output-transforms/technical-details/gamut-compression/>
 
 ## 3. 四层架构
 
@@ -174,11 +196,11 @@ default_peak_nits    = 800
 default_H_display    = 3 EV
 ```
 
-这三个数不是同一份标准规定出来的。`100 nit` 匹配 Blender HDR AgX 的 authoring reference，
-也便于把当前 SDR 的 `1.0` 解释成 100 nit；Apple 只规定 headroom 是 HDR peak 与 reference
-white 的**比值**，并没有要求 reference white 必须绝对等于 100 nit。`800 nit / 3 EV` 是
-dngscan 的初始显示目标。代码里的 `4000 nit / 5.321928 EV` 上限也是工程护栏，不是 Apple、
-ISO 或 PQ 的格式极限。
+这三个数不是同一份标准规定出来的。dngscan 选择 `100 nit`，是为了让现有 SDR 的 `1.0`
+成为清楚的 authoring reference-white 约定；Apple 只规定 content headroom 的相对意义，
+并没有要求 reference white 必须绝对等于 100 nit。`800 nit / 3 EV` 是 dngscan 的初始显示
+目标。代码里的 `4000 nit / 5.321928 EV` 上限也是工程护栏，不是 Apple、AgX、ISO 或 PQ
+的格式极限。
 
 ITU-R BT.2408 的广播制作参考通常把 HDR reference white 放在 203 nit，但报告也明确说明它
 不等于 SDR peak white。若以后输出 PQ master，reference white 必须参数化，不能静默改变照片
@@ -217,9 +239,14 @@ H_actual   渲染结果实际达到的内容余量
 | `p99.99` | reliable tail / H_actual 统计政策 | 待 corpus；用于拒绝单点 peak，不是标准常数。 |
 | `0.5 EV` | minimum window 原型值 | 未获数学支持；不是数值稳定阈值，候选删除。 |
 | `3.0 EV/EV` | 最大 added log-slope 原型值 | 未标定，且与 AgX contrast 的 `3.0` 无关。 |
-| `rho=0` | Phase 2 隔离值 | 只用于先验证亮度；不是最终色彩参数。 |
-| `rho=0.5` | Blender probe 初值 | 语义并不等同 Blender `HDR_purity`，不得直接成为默认。 |
-| `hue_restore=0.6` | 当前 SDR color-path 继承值 | Phase 2 保持 SDR 一致；HDR 是否继续使用须由 Phase 3 色彩 probe 决定。 |
+| `rho_base=0.5` | dngscan 色彩原型值 | 当前 evidence compiler 的上限；语义不等同 Blender `HDR_purity`，须由 EDR corpus 标定。 |
+| `10%` 多通道剪切 | dngscan 置信度政策 | 达到时撤回全局 channel separation；不是传感器或标准阈值。 |
+| `20%` P3 越界 | dngscan 置信度政策 | 达到时撤回全局 channel separation；不是 ACES gamut 边界。 |
+| `rho<=0.25` for RAW9 | dngscan 保守政策 | RAW9 缺少对齐的逐像素 CFA mask，因此限制局部不可验证的色彩自由。 |
+| `white margin=0.30/0.50 EV` | dngscan broad/sparse 政策 | 给可靠尾部留 shoulder 空间；尚未由 corpus 标定。 |
+| `white floor=3.0/3.5 EV` | dngscan broad/sparse 政策 | 防止高光窗过窄；与 `0.5 EV` minimum-window 一起复核。 |
+| `white cap=8.5 EV` | dngscan 工程护栏 | 不是 AgX 或显示标准上限。 |
+| `hue_restore=0.6` | darktable scene-default 初值 | HDR plan 独立持有，但第一版仍从共享 scene intent 初始化，尚非 peak-aware 标定。 |
 
 `EPS`、采样点数和测试容差只属于数值实现与验收，不参与决定画面；不得把“测试能通过的
 误差范围”反写成 DRT 参数。
@@ -279,15 +306,16 @@ concave shoulder 必要条件：s_hdr >= s_avg
 
 ### 6.1 基础响应
 
-记当前冻结的 darktable-style SDR 中性响应为：
+记 HDR 分支自己持有的 darktable-style 基础中性响应为：
 
 ```text
-T0(e) in [0,1]
+BH(e) in [0,1]
 e = log2(scene Y / 0.18)
 ```
 
-`T0` 继续由现有 SDR plan 的 black/white/pivot/contrast/toe/shoulder 生成。HDR 不修改 SDR
-plan，也不扩大 `target_white_linear`。
+`BH` 由 HDR formation plan 生成。第一版从共同的 scene analysis 初始化 black、pivot、contrast、
+toe 和 shoulder，并独立从 reliable tail 编译 HDR white EV；它不是完成 SDR rendition 的中间量，
+也不受 SDR gamut fit 或 native/Python 数值差异约束。
 
 ### 6.2 HDR 分配窗
 
@@ -312,13 +340,13 @@ S''(0)=S''(1)=0
 HDR 中性亮度响应定义为：
 
 ```text
-TH(e) = T0(e) * 2^(H_budget * S(u))
+TH(e) = BH(e) * 2^(H_budget * S(u))
 ```
 
 也可在 log-output 域写成：
 
 ```text
-log2 TH(e) = log2 T0(e) + H_budget * S(u)
+log2 TH(e) = log2 BH(e) + H_budget * S(u)
 ```
 
 这里出现的乘法只是 HDR DRT 内部的解析表达，不是读取 SDR JPEG 后再做 spatial gain。HDR
@@ -326,40 +354,40 @@ log2 TH(e) = log2 T0(e) + H_budget * S(u)
 
 ### 6.3 已证明的性质
 
-在 `T0 >= 0`、`T0' >= 0`、`H_budget >= 0` 下：
+在 `BH >= 0`、`BH' >= 0`、`H_budget >= 0` 下：
 
-1. **SDR 严格退化**
+1. **HDR allocation 严格退化**
 
    ```text
-   H_budget=0 => TH=T0
+   H_budget=0 => TH=BH
    ```
 
-2. **低中调严格不变**
+2. **allocation 起点以下不额外提亮**
 
    ```text
-   e<=e_k => S=0 => TH=T0
+   e<=e_k => S=0 => TH=BH
    ```
 
 3. **输出有界**
 
    ```text
-   T0<=1 and S<=1 => TH<=2^H_budget<=R_display
+   BH<=1 and S<=1 => TH<=2^H_budget<=R_display
    ```
 
 4. **单调**
 
    ```text
-   TH' = TH * (T0'/T0 + ln(2)*H_budget*S') >= 0
+   TH' = TH * (BH'/BH + ln(2)*H_budget*S') >= 0
    ```
 
 5. **knee 处至少 C2 继承**
 
-   因为 `S、S'、S''` 在起点均为零，`TH` 在 `e_k` 的值、一阶导数和二阶导数与 `T0`
-   相同。额外 HDR range 不会在漫反射白附近制造接缝。
+   因为 `S、S'、S''` 在起点均为零，`TH` 在 `e_k` 的值、一阶导数和二阶导数与 `BH`
+   相同。这里保证 HDR 自身没有接缝，不声明它与 SDR 曲线相同。
 
-6. **白端行为诚实继承 SDR**
+6. **白端行为诚实继承 HDR base**
 
-   `S'(1)=0`，HDR lift 不增加白端斜率；有限 `e_w` 处是否与外侧 clamp C1，取决于 `T0`。
+   `S'(1)=0`，HDR lift 不增加白端斜率；有限 `e_w` 处是否与外侧 clamp C1，取决于 `BH`。
    当前 darktable 风格实现只把白端精确钳到目标，不能把它误报为零斜率端点。
 
 ### 6.4 已完成的数值探针
@@ -374,7 +402,7 @@ H = 0, 1, 2, 3, log2(10)
 
 - `min(diff(TH)) = 0`，无反转；
 - `TH(0) = 0.18`，浮点误差小于 `1.3e-7`；
-- `e<=e_k` 区域与 SDR 最大差为 `0`；
+- `e<=e_k` 区域的额外 allocation 为 `0`；这不约束完整 HDR 与 SDR 像素相等；
 - H=3 的上限精确为 `8.0`；
 - H=log2(10) 的上限为 `9.999999999999998`；
 - knee 左右数值导数连续。
@@ -451,7 +479,7 @@ HDR AgX 使用二者之间的连续几何。
 scene Rec.2020 -> guard rail -> inset = c_scene
 e_c = log2(c_scene / 0.18)        # 三通道
 e_Y = log2(Y_scene / 0.18)        # 真正 Rec.2020 scene luminance
-f_c = T0(e_c)                     # 当前 darktable-style per-channel formation
+f_c = BH(e_c)                     # HDR 自己的 darktable-style per-channel formation
 ```
 
 `e_Y` 必须在 inset 之前用标准 Rec.2020 Y 计算，避免 rendering primaries 反过来改变 tone
@@ -472,9 +500,13 @@ p_c     = f_c * 2^(H_budget*w_mix_c)
 
 含义：
 
-- `rho=0`：三个通道获得相同 HDR lift，只改变亮度，不改变 SDR chroma；
-- `rho=1`：每个通道按自己的 scene EV 使用 HDR 空间，高光色度保留最多；
+- `rho=0`：三个通道获得相同 HDR lift，只改变亮度，不改变 HDR base chroma；
+- `rho=1`：最大限度跟随各通道 scene EV；高饱和通道可以先于公共亮度进入 HDR shoulder；
 - 中间值：连续的 HDR path-to-white。
+
+不再用额外的 `w_Y` 乘法封死通道差值。`w_Y=0` 但某个 `w_c>0` 表示像素总体亮度还低，
+但一个高饱和通道已经进入 HDR shoulder；允许它改变色度是独立 HDR color geometry 的正常
+行为。随后仍归一回公共 tone target，因此 `rho` 不会变成第二个亮度旋钮。
 
 Blender HDR 脚本的 `HDR_purity=0.5` 只作为 `rho` 的第一组 A/B 初值，不能直接设成默认。
 
@@ -483,16 +515,20 @@ Blender HDR 脚本的 `HDR_purity=0.5` 只作为 `rho` 的第一组 A/B 初值�
 逐通道 lift 会改变亮度。为了让 `rho` 只决定 color geometry，必须归一回公共 tone target：
 
 ```text
-Y0       = luminance(f)
+Y0       = luminance_outset(f)
 Y_target = Y0 * 2^(H_budget*w_Y)
-Y_prop   = luminance(p)
+Y_prop   = luminance_outset(p)
 
 p <- p * Y_target / max(Y_prop, epsilon)
 ```
 
+这里的 formation-space 亮度行必须由实际路径 `Rec.2020_Y @ outset_matrix` 推导，不能用
+`inverse(inset_matrix)` 代替。darktable 的 purity restoration 与 unrotation 是独立参数，
+outset 有意不是 inset 的严格逆矩阵；用逆 inset 会把 `rho` 归一到一条像素实际不会经过的变换。
+
 由此得到：
 
-- `H_budget=0` 时严格回到当前 SDR formation；
+- `H_budget=0` 时严格回到 HDR 自己的 base formation；
 - `rho=0` 时归一化系数严格为 1；
 - 改 `rho` 不改变目标亮度；
 - 中性输入始终保持中性。
@@ -513,6 +549,13 @@ rho = rho_base
 
 约束：
 
+- LibRaw 路径还会用对齐的逐像素 CFA clip mask 修改 `rho`：单通道剪切只撤回该
+  通道的部分自由，两个及以上通道剪切时连续收敛到公共亮度路径；
+- RAW9 没有可与 Core Image 像素对齐的 CFA mask，因此只能使用更保守的全局 `rho`，
+  不伪造局部剪切证据；
+- 当前生产导出不因 `diagnostics=True` 而改变，所以在生产路径具有稳定的高光通道
+  SNR 统计之前，`snr_chroma_confidence` 保持中性 1.0，而不用诊断模式的可选数值改写成片。
+
 - 未剪切、SNR 充足、P3 压力低：允许较高 `rho`；
 - 单通道 CFA clip：降低对应颜色路径自由度，向可靠中性轴退让；
 - 多通道 clip：`rho -> 0`，不虚构高光颜色；
@@ -521,12 +564,12 @@ rho = rho_base
 
 ## 9. Rendering primaries 与 hue path
 
-第一版先保持当前 darktable base primaries、hue restore 和 outset，单独验证 HDR tone。之后才
-开放 HDR-specific geometry：
+第一版把当前 darktable base primaries、hue restore 和 outset 复制为 HDR geometry 的初值，
+但由 HDR plan 独立持有。之后可以单独演化：
 
 ```text
-M_in(H=0)  = current SDR inset
-M_out(H=0) = current SDR outset
+M_in,HDR(initial)  = current darktable-style inset
+M_out,HDR(initial) = current darktable-style outset
 ```
 
 任意 headroom-dependent 矩阵都必须满足：
@@ -577,6 +620,10 @@ lambda_max = min(1, lambda_neg, lambda_pos)
 - 中性轴不变；
 - 使用同一 luma 权重时 Y 不变；
 - 不做逐通道 clip。
+
+它还保持线性输出 RGB 中的 opponent direction，但这不等于色貌模型里的 perceptual hue。
+RGB 立方体中的中性轴射线经过非线性色貌模型后通常不是恒定 hue 轨迹。因此本文不再把它
+称为 hue-preserving projector；真正的感知色相约束需要 ACES 2 一类的 JMh/CAM 映射。
 
 生产版本可以在边界前增加 smooth knee，但必须以 projector 为上界：平滑版本不得产生比
 `lambda_max` 更大的 chroma。现有 SDR Oklab fitter 保持不动，HDR 使用独立函数。
@@ -644,7 +691,7 @@ class HdrColorGeometry:
 
 @dataclass(frozen=True)
 class HdrAgxPlan:
-    sdr_base: RenderPlan
+    formation: ToneCompressionPlan
     display: HdrDisplayTarget
     tone: HdrToneAllocation
     color: HdrColorGeometry
@@ -681,7 +728,7 @@ dngscan/hdr_agx_math.py       # smootherstep、tone allocation、float64 oracle
 dngscan/hdr_agx_plan.py       # RAW/scene/display -> immutable plan
 dngscan/hdr_agx.py            # formation runtime
 dngscan/hdr_color.py          # rho、HDR P3 color-volume fit
-dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
+dngscan/gainmap.py            # Core Image/Image I/O 封装与逐文件回读验收
 ```
 
 禁止重新建立笼统的 `hdr_render.py`，防止 tone、color、gain-map 再次混在一个文件。
@@ -692,11 +739,11 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 - `render.py`：增加独立 HDR dispatcher，不修改 SDR dispatcher；
 - `raw_io.py`：只暴露已有证据，不为 HDR 改解码像素；
 - `coreimage_decode.py`：不启用 Apple 默认 HDR look；
-- CLI/GUI：所有数学门通过以前不出现 HDR 选项。
+- CLI/GUI：只在 macOS 公共 API 可用时开放 HDR，并固定 P3、quality 100、4:4:4 和 AgX。
 
 ## 14. 分阶段实施
 
-### Phase 0：清理与冻结
+### Phase 0：清理与冻结（已完成）
 
 - 删除旧 ACES 2、SDR bridge、gain-map tone 实验；
 - 保留本文；
@@ -705,11 +752,11 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：仓库中没有可调用的旧 HDR 路径，SDR 像素不变。
 
-### Phase 1：纯数学 oracle
+### Phase 1：纯数学 oracle（已完成）
 
 新增 `hdr_agx_math.py` 和 `test_hdr_agx_math.py`，只处理一维 EV ramp：
 
-- float64 `T0` reference；
+- float64 `BH` reference；
 - smootherstep HDR allocation；
 - H=0 退化；
 - 单调、有界、knee C2；
@@ -718,16 +765,16 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：不读取 DNG，不产生图片，全部数学门通过。
 
-### Phase 2：中性 HDR formation
+### Phase 2：中性 HDR formation（已完成）
 
 - 在 neutral RGB ramp 上运行现有 inset/C1/outset；
 - 加公共 `w_Y` lift，固定 `rho=0`；
 - 输出 extended-linear Rec.2020/P3；
 - 不接 gain map。
 
-退出条件：中性保持中性，H=0 与 SDR float32 逐像素一致，夜景主体不变。
+退出条件：中性保持中性，H=0 回到 HDR base formation，夜景仍保持夜景曝光意图。
 
-### Phase 3：独立 color geometry
+### Phase 3：独立 color geometry（核心已完成）
 
 - 实现 `rho` 混合与 luminance renormalization；
 - 先用常数 rho 扫描 `0,0.25,0.5,0.75,1`；
@@ -737,7 +784,7 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：rho 不改变目标 Y，无 hue discontinuity，无逐通道硬裁。
 
-### Phase 4：RAW evidence compiler
+### Phase 4：RAW evidence compiler（部分完成）
 
 - `H_budget` 接 reliable tail；
 - `rho` 接 CFA clip/SNR/gamut pressure；
@@ -746,7 +793,10 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：相同 scene intent 下，LibRaw/RAW9 的主体亮度一致；证据差异只出现在可信高光。
 
-### Phase 5：双 rendition A/B
+当前边界：可靠尾部、CFA clip mask 和输出色域压力已接入；生产路径的通道高光
+SNR 和 hue-region policy 仍未接入，对应门控保持中性。
+
+### Phase 5：双 rendition A/B（已完成代码与样张验证）
 
 - 从同一 immutable bundle/plan 输出 SDR P3 和 HDR P3；
 - 禁止共享可变 `exposure_gain`；
@@ -755,10 +805,10 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：HDR 图本身成立，不依赖 gain map 阅读端掩盖问题。
 
-### Phase 6：Apple reference delivery
+### Phase 6：Apple reference delivery（已由直接 JPEG API 完成）
 
-先用 Core Image 的 SDR+HDR 双图 HEIF 写入 API 证明交付数学。理由是 Apple 已公开这条直接
-路径，可隔离 DRT 与 JPEG 封装问题。
+当前 macOS 公开 Core Image API 可以直接接收 SDR/HDR 双 rendition 并写入 ISO 21496-1
+JPEG，因此不再为验证而额外维护 HEIF 中间路径。
 
 - SDR base 为冻结 P3 SDR；
 - HDR alternate 为完成的 extended-linear P3；
@@ -767,16 +817,15 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 退出条件：线性 round-trip 误差达标、方向/profile/headroom 正确。
 
-### Phase 7：ISO 21496-1 JPEG
-
-只有 HEIF reference delivery 通过后才恢复 JPEG：
+### Phase 7：ISO 21496-1 JPEG（本机交付已完成，跨平台待验）
 
 - 探测当前 macOS 公共 API；
-- 验证 RGB signed log-ratio 是否保留；
+- 验证 RGB 辅助图和完整 HDR rendition 是否保留；
 - 不支持时明确失败，不降级成标记错误的 P3 JPEG；
 - Android/iOS/Chrome/Quick Look 实机读取。
 
-退出条件：容器检查、像素 round-trip、跨平台识别同时通过。
+本机每文件已检查容器、profile、RGB gain map、headroom 和像素 round-trip。完整
+退出条件仍需 Android/iOS/Chrome/Quick Look 的实机互认结果。
 
 ### Phase 8：性能与 UI
 
@@ -795,7 +844,7 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 采样 `e in [-16,+16]`，至少 65537 点；测试 `H={0,1,2,3,log2(10)}`：
 
-- H=0：float32 路径与现有 SDR 最大绝对误差 `<= 2e-7`；
+- H=0：allocation 输出与 HDR base formation 最大绝对误差 `<= 2e-7`；
 - EV=0：`abs(T(0)-0.18) <= 2e-6`；
 - 单调：`min(diff(T)) >= -2e-7`；
 - 上界：`max(T) <= 2^H + 2e-6`；
@@ -810,21 +859,27 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 - rho 扫描时 formation-space Y 相对误差 `<= 2e-5`；
 - P3 fit 后每通道 `[-2e-6, R+2e-6]`；
 - neutral-axis projector 的 Y 相对漂移 `<= 2e-6`；
-- hue ramp 相邻样本无大于 5 度的非输入跳变；
-- H=0 全彩 probe 与 SDR 最大绝对误差 `<= 3e-6`。
+- 输出 RGB opponent direction 连续，投影不得制造逐通道 clipping 的轴向折线；感知 hue
+  只做观测指标，不作为当前线性投影器已经保证的数学性质；
+- H=0 全彩 probe 必须 finite、中性轴不漂移，并落在 reference-white P3 体积内。
 
 ### 15.3 双 rendition
 
 - SDR 输出 hash 完全不变；
-- HDR 低于 knee 的线性 RGB 与 SDR 相对差 `<= 2e-5`；
+- 不设置 knee 以下的 SDR/HDR 像素误差门；分别验证两条 rendition 的 tone、色彩体积和
+  gain-map 全图 round-trip；
 - H_actual 不超过 H_budget；
-- 18% 灰、肤色主体和夜景 body 的亮度不随 H_display 改变；
+- 18% 灰、肤色主体和夜景 body 不得因 H_display 发生超过 `0.5 EV` 的无依据重曝光；
 - 不允许用 `max pixel` 单点通过 headroom 验收，同时报告 p99.9、p99.99 和 emitter peak。
 
 ### 15.4 Delivery
 
-- SDR-only 解码逐像素等于输入 SDR rendition 的编码结果；
-- HDR round-trip 在线性 P3 内：中位相对误差 `<= 0.5%`，p99 `<= 2%`；
+- SDR base 在编码前必须是冻结的 P3 SDR rendition；JPEG 解码端不要求逐字节
+  等于 Pillow 的 SDR 文件，因为 Core Image 使用不同 JPEG 编码器；逐文件回读的平均
+  通道码值误差 `<= 1`，像素最大通道误差 p99 `<= 4`、max `<= 12`；
+- HDR round-trip 覆盖整幅线性 P3：中位相对误差 `<= 1.5%`，p95 `<= 8%`，
+  p99 `<= 12%`，p99 色品误差 `<= 2%`；这组线是根据 Core Image quality 100 的灰阶极限与
+  真实样张标定的交付工程门，不是无损编码声明；
 - content headroom 元数据与解码测量差 `<= 0.05 EV`；
 - RGB gain map 不得静默变成单通道；
 - 文件写入成功不算通过，必须由独立读取端识别。
@@ -866,9 +921,10 @@ CFA clip 区域和 SDR/HDR 差值图。
 - body-protected knee 是否优于固定 diffuse knee；
 - broad highlight 与 sparse emitter 的窗口差异；
 - HDR-specific outset/rotation 是否必要；
+- 是否以 peak-aware JMh/CAM 压缩替换当前线性 P3 中性轴投影；
 - RAW9 aggregate color confidence 的保守上限；
 - 800 nit 还是 1000 nit 作为默认 authoring target；
-- JPEG RGB gain map 对负 log-ratio 的实际 round-trip 能力。
+- JPEG RGB gain map 在更广泛负 log-ratio/强色度样本上的跨平台 round-trip 能力。
 
 这些参数可以调，但不能破坏前述硬约束。
 
@@ -880,7 +936,7 @@ CFA clip 区域和 SDR/HDR 差值图。
 - 不让 HDR 自动曝光夜景；
 - 不用 gain map 修复错误的 HDR rendition；
 - 不在数学核稳定前写 C++/Metal；
-- 不在 round-trip 通过前把 HDR 选项放回 GUI。
+- 不把 macOS 本机 round-trip 写成已经完成 Android/Chrome 跨平台验收。
 
 这条路线保留了 darktable AgX 最有价值的部分：解析式 scene-to-display formation、rendering
 primaries、hue restore 与可解释参数；同时用 dngscan 能看到的 RAW 证据，限制 HDR 高光何时

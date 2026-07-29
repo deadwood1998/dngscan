@@ -213,10 +213,25 @@ def scene_tone_metrics(
         # the CFA mosaic. Use the full-resolution RAW clipped-cell rate as a rank-domain
         # constraint so those invented values cannot compile the global white endpoint.
         reliable = rank_trim_reconstructed_highlights(ev, reliable, analysis.cell_union_pct)
-    if int(np.count_nonzero(reliable)) < max(256, ev.size // 20):
+
+    # Keep evidence authority separate from the fallback needed to compile a usable SDR
+    # curve. If fewer than 5% (and at least 256) trustworthy samples remain, SDR may still
+    # use the broader distribution for a defensive endpoint, but that fallback is not
+    # allowed to call itself a reliable tail and grant HDR headroom.
+    min_reliable = max(256, ev.size // 20)
+    evidence_reliable = reliable.copy()
+    evidence_count = int(np.count_nonzero(evidence_reliable))
+    reliable_sample_pct = float(np.mean(evidence_reliable) * 100.0)
+    reliable_tail_p9999 = (
+        float(np.percentile(ev[evidence_reliable], 99.99))
+        if evidence_count >= min_reliable
+        else float("nan")
+    )
+
+    if int(np.count_nonzero(reliable)) < min_reliable:
         reliable = above_floor if int(np.count_nonzero(above_floor)) >= 256 else np.ones_like(above_floor)
     reliable_ev = ev[reliable]
-    if reliable_ev.size < max(256, ev.size // 20):
+    if reliable_ev.size < min_reliable:
         reliable_ev = ev
         reliable = np.ones((ev.shape[0],), dtype=bool)
 
@@ -224,13 +239,12 @@ def scene_tone_metrics(
         float(v) for v in np.percentile(reliable_ev, [1.0, 5.0, 50.0, 95.0, 99.0, 99.9])
     ]
     tail_p9999 = float(np.percentile(ev, 99.99))
-    reliable_tail_p9999 = float(np.percentile(reliable_ev, 99.99))
     tail0 = float(np.mean(ev > 0.0) * 100.0)
     tail2 = float(np.mean(ev > 2.0) * 100.0)
     extremity = tail2 / max(tail0, 1e-4)
     sparse_emitter = bool(tail0 < 3.0 and extremity > 0.12)
     return SceneToneMetrics(
-        reliable_sample_pct=float(np.mean(reliable) * 100.0),
+        reliable_sample_pct=reliable_sample_pct,
         body_ev_p1=p1,
         body_ev_p5=p5,
         body_ev_p50=p50,

@@ -98,7 +98,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--hdr-drt",
         choices=HDR_DRT_CHOICES,
         default=DEFAULT_HDR_DRT,
-        help="HDR display rendering transform（当前仅 agx=darktable 式 HDR AgX；中性 formation 已实现，色彩几何与交付未完成）",
+        help="HDR display rendering transform（当前仅 agx=dngscan 对 darktable AgX formation 的 HDR 扩展）",
     )
     parser.add_argument(
         "--hdr-debug-dir",
@@ -255,6 +255,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error(
             "Ultrahdr 第一版不支持 display look/filter；请使用 --grade none"
         )
+    if args.output_format == "ultrahdr" and abs(float(args.highlight_fade)) > 1e-9:
+        parser.error(
+            "HDR 尚未定义 SDR 显示侧的高光褪白算子；"
+            "请使用 --highlight-fade 0"
+        )
+    if args.output_format == "ultrahdr" and args.tone_core != "agx":
+        parser.error("HDR 输出当前只实现 AgX tone core；请使用 --tone-core agx")
     if args.decoder == "coreimage" and args.tone_core == "gated":
         # gated is defined as "RAW evidence gates the colour path"; the Core Image
         # pipeline has no per-pixel CFA evidence, so the combination is meaningless

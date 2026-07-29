@@ -364,8 +364,11 @@ function updateToneCoreUi(){
 function updateFormatUi(){
   const hdr=$("#format").value==="ultrahdr";
   $("#hdrBlock").style.display=hdr?"flex":"none";
-  if(hdr){$("#gamut").value="p3";$("#chroma").value="444";$("#quality").value="100";}
-  $("#gamut").disabled=hdr;$("#chroma").disabled=hdr;$("#quality").disabled=hdr;
+  if(hdr){$("#gamut").value="p3";$("#chroma").value="444";$("#quality").value="100";$("#toneCore").value="agx";}
+  $("#gamut").disabled=hdr;$("#chroma").disabled=hdr;$("#quality").disabled=hdr;$("#toneCore").disabled=hdr;
+  $("#highlightFade").disabled=hdr;
+  $("#highlightFadeBlock").title=hdr?"HDR 色彩几何独立处理高光，不使用 SDR 显示侧褪白。":"";
+  updateToneCoreUi();
 }
 async function checkHdrBackend(){
   const option=[...$("#format").options].find(o=>o.value==="ultrahdr");
@@ -599,7 +602,8 @@ function payload(){
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:+$("#sceneTransformStrength").value,
     punch:+$("#punch").value,
     midtoneBrightness:+$("#midtoneBrightness").value,midtoneContrast:+$("#midtoneContrast").value,
-    shadowTransition:+$("#shadowTransition").value,highlightTransition:+$("#highlightTransition").value,highlightFade:+$("#highlightFade").value,
+    shadowTransition:+$("#shadowTransition").value,highlightTransition:+$("#highlightTransition").value,
+    highlightFade:$("#format").value==="ultrahdr"?0:+$("#highlightFade").value,
     hdrHeadroom:+$("#hdrHeadroom").value,ev:+$("#ev").value,quality:+$("#quality").value,
     outdir:$("#outdir").value.trim(),png:$("#png").checked
   };

@@ -5,12 +5,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 from dngscan.analysis import analyze
 from dngscan.color import srgb_decode
 from dngscan.gainmap import (
+    _base_roundtrip_error,
     _roundtrip_error,
     apple_gainmap_backend_status,
     inspect_gainmap_jpeg,
@@ -22,7 +24,7 @@ from dngscan.raw_io import load_raw
 from dngscan.render import render_output_u8
 from dngscan.tone import build_render_plan
 
-SIGMA = Path("/Users/itoshikigen/Pictures/_SDI0150.DNG")
+SIGMA = Path.home() / "Pictures" / "_SDI0150.DNG"
 _BACKEND_OK, _BACKEND_WHY = apple_gainmap_backend_status()
 
 
@@ -34,10 +36,22 @@ class AlternatePackingTests(unittest.TestCase):
         self.assertEqual(out.shape, (10, 10, 4))
         self.assertTrue(bool(np.all(out[..., 3] == np.float16(1.0))))
 
-    def test_negatives_are_resolved_only_at_the_encode_boundary(self) -> None:
-        """Earlier they are legitimate out-of-gamut colour carried by both renditions."""
+    def test_packer_defensively_clamps_an_invalid_negative_input(self) -> None:
+        """The HDR projector should prevent this; packing still guards external callers."""
         rgb = np.array([[[-0.05, 0.4, 0.2]]], dtype=np.float32)
         self.assertEqual(float(to_gainmap_alternate(rgb, 8.0)[0, 0, 0]), 0.0)
+
+    def test_hdr_diagnostic_encoder_does_not_repeat_sdr_finalization(self) -> None:
+        from tools.hdr_ab import _encode_hdr_diagnostic
+
+        linear = np.full((3, 4, 3), 0.25, dtype=np.float32)
+        with mock.patch(
+            "tools.hdr_ab.finalize_output_linear",
+            side_effect=AssertionError("SDR finalizer must not run"),
+        ):
+            encoded = _encode_hdr_diagnostic(linear, "p3")
+        self.assertEqual(encoded.shape, linear.shape)
+        self.assertEqual(encoded.dtype, np.uint8)
 
     def test_peak_is_enforced(self) -> None:
         rgb = np.full((4, 4, 3), 20.0, dtype=np.float32)
@@ -55,6 +69,28 @@ class RoundtripErrorTests(unittest.TestCase):
             except Exception:
                 return  # An exception is an acceptable failure mode here.
             self.assertEqual(out["chroma_error"], float("inf"))
+
+    def test_reference_white_and_below_are_part_of_the_gate(self) -> None:
+        intended = np.full((4, 4, 4), 0.25, dtype=np.float16)
+        intended[..., 3] = np.float16(1.0)
+        expanded = intended.copy()
+        expanded[..., 0] = np.float16(0.35)
+        with mock.patch(
+            "dngscan.gainmap._read_expanded_hdr_rgba_half", return_value=expanded
+        ):
+            out = _roundtrip_error(Path("unused.jpg"), intended)
+        self.assertGreater(out["median_relative_error"], 0.1)
+        self.assertGreater(out["p99_relative_error"], 0.1)
+
+    def test_sdr_base_shape_mismatch_cannot_pass(self) -> None:
+        with mock.patch("PIL.Image.open") as opened:
+            opened.return_value.__enter__.return_value.convert.return_value = np.zeros(
+                (2, 3, 3), dtype=np.uint8
+            )
+            out = _base_roundtrip_error(
+                Path("unused.jpg"), np.zeros((3, 2, 3), dtype=np.uint8)
+            )
+        self.assertEqual(out["base_mean_code_error"], float("inf"))
 
 
 @unittest.skipUnless(_BACKEND_OK, f"gain-map backend unavailable: {_BACKEND_WHY}")
@@ -116,6 +152,13 @@ class EndToEndDeliveryTests(unittest.TestCase):
             # An L008 gain map cannot carry independent per-channel geometry.
             self.assertNotIn(str(probe["gainmap_pixel_format"]), ("", "L008"))
             self.assertGreater(probe["headroom"], 1.0)
+            self.assertLessEqual(info["median_relative_error"], 0.015)
+            self.assertLessEqual(info["p95_relative_error"], 0.08)
+            self.assertLessEqual(info["p99_relative_error"], 0.12)
+            self.assertLessEqual(info["headroom_error_ev"], 0.05)
+            self.assertLessEqual(info["base_mean_code_error"], 1.0)
+            self.assertLessEqual(info["base_p99_code_error"], 4.0)
+            self.assertLessEqual(info["base_max_code_error"], 12.0)
             # Declared headroom must not exceed what the scene was allowed.
             self.assertLessEqual(
                 float(np.log2(probe["headroom"])), info["budget_headroom_ev"] + 1e-3
@@ -143,8 +186,10 @@ class EndToEndDeliveryTests(unittest.TestCase):
         bundle = load_raw(SIGMA, scene_half_size=True)
         analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
         plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
-        # A white endpoint at the knee leaves no allocation window at all.
-        flat = dataclasses.replace(plan, tone=dataclasses.replace(plan.tone, white_ev=2.5))
+        # HDR owns its white endpoint, so changing the SDR one must not control this gate.
+        # Remove the actual RAW-authoritative tail instead.
+        no_tail = dataclasses.replace(plan.scene, reliable_tail_ev_p9999=float("nan"))
+        flat = dataclasses.replace(plan, scene=no_tail)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "flat.jpg"
             with self.assertRaises(RuntimeError):

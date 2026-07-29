@@ -51,9 +51,10 @@ OUTPUT_GAMUT_LABELS = {"srgb": "sRGB", "p3": "Display P3"}
 JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr")
 
 
-# HDR authoring policy. Apple defines headroom as a ratio and does not mandate an
-# absolute reference-white luminance. 100 nit matches the Blender HDR AgX reference and
-# dngscan's SDR normalization; 800/4000 nit are project defaults, not format limits.
+# HDR authoring policy. Apple defines headroom as a ratio and does not mandate an absolute
+# reference-white luminance. dngscan uses 100 nit as its authoring convention because its
+# SDR reference white is normalized to 1.0; 800/4000 nit are project defaults, not AgX or
+# ISO 21496-1 constants and not format limits.
 HDR_REFERENCE_WHITE_NITS = 100.0
 DEFAULT_HDR_HEADROOM_EV = 3.0
 DEFAULT_HDR_PEAK_NITS = HDR_REFERENCE_WHITE_NITS * (2.0 ** DEFAULT_HDR_HEADROOM_EV)
@@ -67,9 +68,9 @@ DIFFUSE_WHITE_EV = math.log2(1.0 / 0.18)
 # of dngscan's legacy rounded XYZ matrix: that inverse is intentionally frozen for SDR
 # pixel compatibility and its Y row does not sum to exactly one.
 REC2020_LUMA = (0.2627, 0.6780, 0.0593)
-# HDR display rendering transforms. "agx" is the darktable-style HDR AgX being
-# built per docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md; it is the only intended DRT, and
-# HDR output stays suspended until its math gates pass.
+# HDR display rendering transforms. "agx" is dngscan's HDR extension around darktable's
+# AgX formation, described by docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md. darktable itself does
+# not define this extended-P3 HDR allocation or the gain-map delivery contract.
 HDR_DRT_CHOICES = ("agx",)
 DEFAULT_HDR_DRT = "agx"
 

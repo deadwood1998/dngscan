@@ -224,7 +224,8 @@ class SceneToneMetrics:
     sparse_emitter_tail: bool
     raw_clip_union_pct: float
     # Same percentile as tail_ev_p9999, excluding RAW sites with exhausted CFA headroom.
-    # This is the only tail statistic allowed to set a global white endpoint.
+    # This is the only tail statistic allowed to set a global white endpoint or grant
+    # HDR display budget. It is NaN when too little trustworthy evidence remains.
     reliable_tail_ev_p9999: float = float("nan")
 
 
@@ -385,9 +386,14 @@ class HdrColorGeometry:
 
 @dataclass(frozen=True)
 class HdrAgxPlan:
-    """Immutable HDR plan compiled beside, never inside, the SDR plan."""
+    """Immutable HDR DRT plan compiled from the shared scene analysis.
 
-    sdr_base: RenderPlan
+    ``formation`` belongs to the HDR branch.  It may initially inherit numerical
+    parameters from the scene's SDR plan, but the HDR renderer never treats SDR pixels as
+    its baseline and is free to evolve its own curve and colour geometry.
+    """
+
+    formation: ToneCompressionPlan
     display: HdrDisplayTarget
     tone: HdrToneAllocation
     color: HdrColorGeometry

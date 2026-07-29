@@ -42,7 +42,33 @@ class GainMapInterfaceTests(unittest.TestCase):
         self.assertEqual(args.chroma, "444")
         self.assertEqual(args.hdr_drt, "agx")
 
+    def test_cli_hdr_rejects_non_agx_tone_core(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["photo.dng", "--output-format", "ultrahdr", "--tone-core", "lum"])
+
+    def test_cli_hdr_rejects_sdr_highlight_fade(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(
+                ["photo.dng", "--output-format", "ultrahdr", "--highlight-fade", "0.1"]
+            )
+
 class AppleGainMapWriterTests(unittest.TestCase):
+    def test_writer_rejects_non_finite_hdr_before_core_image(self) -> None:
+        from dngscan.gainmap import write_apple_gainmap_jpeg
+
+        base = np.zeros((2, 2, 3), dtype=np.uint8)
+        hdr = np.ones((2, 2, 4), dtype=np.float16)
+        hdr[0, 0, 0] = np.float16(np.nan)
+        with self.assertRaisesRegex(ValueError, "NaN/Inf"):
+            write_apple_gainmap_jpeg(
+                base,
+                hdr,
+                Path("unused.jpg"),
+                100,
+                3.0,
+                _verify_roundtrip_capability=False,
+            )
+
     def test_backend_status_reports_api_availability_only(self) -> None:
         """Replaces a gate that asserted HDR stays paused, which the AgX core now lifts.
 

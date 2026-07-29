@@ -3,15 +3,14 @@
 
 The HDR rendition is a second AgX rendered from the same scene-linear data, not the SDR
 image with gain applied. What this module owns is only the question of how the extra
-display stops are spent along the EV axis:
+display stops are spent along the EV axis of the HDR branch:
 
-    TH(e) = T0(e) * 2 ** (H_budget * S(u))
+    TH(e) = BH(e) * 2 ** (H_budget * S(u))
 
-`T0` is the frozen SDR response, `S` a quintic smootherstep over the window between the
-knee and the plan's white endpoint, and `H_budget` the number of extra stops this scene
-justifies. That shape is chosen because `S`, `S'` and `S''` all vanish at both ends, so
-the HDR lift joins the SDR curve at the knee with matching value, slope and curvature --
-no seam near diffuse white, which is exactly where a seam would be visible.
+`BH` is the HDR branch's own base formation response, `S` a quintic smootherstep over the
+window between the knee and the plan's white endpoint, and `H_budget` the number of extra
+stops this scene justifies. `S`, `S'` and `S''` vanish at both ends, so allocation joins
+the HDR base smoothly. It does not impose equality with the independently rendered SDR.
 
 Why not simply stretch the existing curve: with dngscan's contrast 3.0, current gamma 2.2
 and the upstream reference window, holding the pivot fixed while reaching a 1000/100 HDR
@@ -44,7 +43,7 @@ MINIMUM_WINDOW_EV = 0.5
 # Temporary aesthetic cap, in added log2-output EV per scene EV. It is deliberately not
 # identified with AgX contrast=3.0: AgX contrast is an encoded-curve slope in normalized
 # x, so the two 3.0 values live in different coordinate systems. This value needs EDR
-# corpus calibration before production HDR can be enabled.
+# corpus calibration before it should be treated as a stable imaging parameter.
 MAX_LIFT_RATE = 3.0
 
 
@@ -187,6 +186,11 @@ def compile_budget(
     sensor never recorded. A scene whose tail sits at diffuse white gets zero, which is
     the point: HDR capacity is not a target every frame must reach.
     """
+    if not all(
+        math.isfinite(float(value))
+        for value in (reliable_tail_ev, knee_ev, white_ev, display_headroom_ev)
+    ):
+        return 0.0
     window = allocation_window(knee_ev, white_ev)
     if window <= float(minimum_window_ev):
         return 0.0
@@ -205,15 +209,15 @@ def lift_stops(scene_ev, knee_ev: float, white_ev: float, budget_ev: float):
     return float(budget_ev) * smootherstep(u)
 
 
-def apply_hdr_allocation(sdr_response, scene_ev, knee_ev: float, white_ev: float, budget_ev: float):
-    """TH(e) = T0(e) * 2**(H*S(u)).
+def apply_hdr_allocation(hdr_base_response, scene_ev, knee_ev: float, white_ev: float, budget_ev: float):
+    """TH(e) = BH(e) * 2**(H*S(u)).
 
     Monotonicity follows from the product rule directly -- both TH' terms are non-negative
-    when T0, T0' and S' are -- and deliberately not from the log-derivative form, which
-    divides by T0 and so invents a singularity at the black end where T0 is legitimately 0.
+    when the HDR base, its derivative and S' are -- and deliberately not from the
+    log-derivative form, which divides by the base and invents a singularity at black.
     """
-    t0 = np.asarray(sdr_response, dtype=np.float64)
-    return t0 * np.exp2(lift_stops(scene_ev, knee_ev, white_ev, budget_ev))
+    base = np.asarray(hdr_base_response, dtype=np.float64)
+    return base * np.exp2(lift_stops(scene_ev, knee_ev, white_ev, budget_ev))
 
 
 def achieved_headroom_ev(hdr_response) -> float:

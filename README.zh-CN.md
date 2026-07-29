@@ -528,17 +528,52 @@ SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4
 代价是色度分辨率。Display P3 会嵌入 ICC profile，找不到 profile 就停止导出，不写未标记
 的宽色域数据。
 
-HDR 目前暂停，生产输出仍然只有 SDR。旧的 ACES 2-derived bridge 和 gain-map 写入代码保留为
-实验材料，但既不作为可用功能，也不代表接下来的算法方向；当前后端门禁仍会阻止它写出看似
-成功、实际无法正确 round-trip 的文件。
+HDR 输出是可选的 Apple ISO 21496-1 gain-map JPEG，目前只在 macOS/Core Image 后端
+可用，并且只接 AgX tone core。它不是把 SDR 成片直接放大：同一份 scene-linear
+Rec.2020 在 display formation 前分成 SDR AgX 与 HDR AgX 两条独立 DRT。两者共享拍摄曝光
+意图和 RAW 分析，但 HDR 自己持有 tone plan、色彩几何和扩展 P3 投影，不要求 knee 以下与
+SDR 逐像素一致。
 
-重新确定的方向是：从同一份 scene-linear 输入分别求解 SDR 和 HDR 两条 darktable-style
-AgX。HDR 不是 `SDR × gain`，也不是把 ACES DRT 插在 SDR AgX 之后。它要保持同一中灰和场景
-意图，同时针对 reference white 以上的显示空间独立求解 C1 shoulder、rendering primaries、
-path-to-white 与 P3 峰值边界；最后 Core Image 只负责封装已经完成的 SDR/HDR rendition。
-完整的数学约束、数据模型和验收门记录在
-[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md)。这部分暂不接线，
-先把 RAW9 scene-linear 输入和现有 SDR 路径稳定下来。
+HDR 可用余量不是用户所选屏幕容量的同义词。屏幕容量只是上限；真正的画面预算由
+RAW 剪切证据筛过的可靠高光尾部决定。LibRaw 用逐像素 CFA mask，RAW9 则按全分辨率
+剪切 cell 比例从亮度顶部做保守的 rank trim。没有足够 RAW 证据时预算就是 0，导出会明确失败，
+不会用重建高光或 SDR white endpoint 冒充传感器信息。额外亮度在 HDR AgX 的
+inset/per-channel formation 曲线之后、hue restore/outset 之前分配；逐像素 CFA 剪切
+mask 会撤回不可信通道的独立色度路径，最后用保持 Y 的中性轴投影收进扩展 P3
+`[0, peak]` 色彩体积，不做逐通道硬裁。这里保持的是线性 P3 的 opponent direction，不是
+严格的感知色相。ACES 2 在色貌模型 JMh 中完成更强的色相约束；dngscan 当前投影器刻意更
+简单，这也是 HDR 仍需实机标定的边界之一。
+
+Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每个文件写完后
+都会重新展开 HDR 像素，检查 P3 profile、4:4:4、RGB 辅助图、声明 headroom 与全图
+像素/色品误差；任一门禁不过就不会保留输出文件。现在 HDR 不支持 display look/filter，
+因为这些 SDR 算子还没有独立 HDR 定义。数学约束和验收线在
+[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md)。
+
+### HDR 对比
+
+下面是 SDR 诊断图，不是 HDR 屏幕截图。下排 HDR 面板会按实测 headroom 主动降曝光，把
+reference white 以上的细节压回普通网页可显示的范围，所以它理应比上排 SDR 更暗。
+
+| RAW9 / LibRaw，日间 | RAW9 / LibRaw，室内灯光 |
+|---|---|
+| ![RAW9 与 LibRaw 的 SDR/HDR AgX 日间对比](docs/assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg) | ![RAW9 与 LibRaw 的 SDR/HDR AgX 室内对比](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg) |
+
+| RAW9 AgX / neutral，日间 | RAW9 AgX / neutral，室内灯光 |
+|---|---|
+| ![RAW9 AgX 与 neutral 的 SDR/HDR 日间对比](docs/assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg) | ![RAW9 AgX 与 neutral 的 SDR/HDR 室内对比](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg) |
+
+[完整对比页](docs/HDR_COMPARISONS.md)包含 12 张图和当时记录的 metrics。Core Image/ISO
+在 macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩参数的 EDR 样张标定
+仍需要真机完成。
+
+这次 HDR 边界核对使用了 Apple 的 [Adaptive HDR 与 Core Image
+流程](https://developer.apple.com/videos/play/wwdc2024/10177/)、Android 的
+[libultrahdr gain-map 数学](https://android.googlesource.com/platform/external/libultrahdr/+/refs/heads/main/lib/include/ultrahdr/gainmapmath.h)、[darktable AgX
+处理顺序](https://docs.darktable.org/usermanual/development/en/module-reference/processing-modules/agx/)，
+以及 ACES 2 公布的 [chroma](https://docs.acescentral.com/system-components/output-transforms/technical-details/chroma-compression/)
+和 [gamut](https://docs.acescentral.com/system-components/output-transforms/technical-details/gamut-compression/)
+compression 说明。它们定义职责边界和参照方法，不会把 dngscan 自己的阈值变成上游常数。
 
 ## 快速开始
 
@@ -572,6 +607,10 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # 高光重建 + Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO 21496-1 HDR gain-map JPEG（macOS、Display P3、仅 AgX）
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3
 
 # RAW 分析图和 CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv

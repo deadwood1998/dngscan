@@ -6,12 +6,16 @@ import unittest
 
 import numpy as np
 
+from dngscan.agx import formation_matrices
+from dngscan.constants import REC2020_LUMA, RGB_TO_XYZ
 from dngscan.hdr_color import (
     apply_channel_lift,
     channel_lift_weights,
     fit_hdr_color_volume,
     neutral_axis_lambda,
     output_luma_weights,
+    formation_luma_weights,
+    raw_gated_channel_separation,
 )
 
 KNEE, WHITE, BUDGET = 2.4739311883324122, 6.5, 3.0
@@ -29,7 +33,7 @@ def _formation(n: int = 40000, seed: int = 4) -> np.ndarray:
 
 
 class ChannelLiftIdentityTests(unittest.TestCase):
-    """The four identities section 8.3 requires, all exact rather than approximate."""
+    """Tone/color separation identities of the independent HDR formation."""
 
     def test_zero_budget_returns_the_formation_untouched(self) -> None:
         f, s = _formation(), _scene()
@@ -45,6 +49,21 @@ class ChannelLiftIdentityTests(unittest.TestCase):
         expected = f * np.exp2(np.float32(BUDGET) * weights)
         out = apply_channel_lift(f, s, KNEE, WHITE, BUDGET, 0.0, P3_LUMA)
         self.assertTrue(bool(np.array_equal(out, expected)))
+
+    def test_bright_channel_can_take_an_independent_path_below_luma_knee(self) -> None:
+        # Luminance is below the common knee while red itself is well above it. An HDR DRT
+        # may change chroma here; forcing identity would make SDR's scalar knee authoritative
+        # over the independent HDR colour formation.
+        scene = np.repeat(np.array([[3.0, 0.05, 0.05]], dtype=np.float32), 2000, axis=0)
+        formation = np.repeat(np.array([[0.30, 0.10, 0.10]], dtype=np.float32), 2000, axis=0)
+        common = channel_lift_weights(scene, KNEE, WHITE, 0.0)
+        separated = channel_lift_weights(scene, KNEE, WHITE, 0.5)
+        self.assertTrue(bool(np.all(common == 0.0)))
+        self.assertGreater(float(separated[:, 0].max()), 0.0)
+
+        out = apply_channel_lift(formation, scene, KNEE, WHITE, BUDGET, 0.5, P3_LUMA)
+        self.assertFalse(bool(np.array_equal(out, formation)))
+        np.testing.assert_allclose(out @ P3_LUMA, formation @ P3_LUMA, atol=2e-7, rtol=0.0)
 
     def test_rho_does_not_move_luminance(self) -> None:
         """The whole point: rho is a colour control, not a second tone control."""
@@ -80,6 +99,33 @@ class ChannelLiftIdentityTests(unittest.TestCase):
         self.assertLess(sats[0], sats[1])
         self.assertLess(sats[1], sats[2])
 
+    def test_cfa_masks_gate_the_corresponding_channel_and_multiclip(self) -> None:
+        masks = np.array([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32)
+        rho = raw_gated_channel_separation(0.5, masks)
+        np.testing.assert_allclose(rho[0], [0.25, 0.5, 0.5], atol=0.0, rtol=0.0)
+        np.testing.assert_allclose(rho[1], [0.0, 0.0, 0.0], atol=0.0, rtol=0.0)
+
+    def test_channel_ev_can_be_measured_in_inset_space(self) -> None:
+        scene = np.full((1, 3), 2.0, dtype=np.float32)
+        inset = np.array([[8.0, 0.5, 0.5]], dtype=np.float32)
+        direct = channel_lift_weights(scene, KNEE, WHITE, 1.0)
+        formed = channel_lift_weights(scene, KNEE, WHITE, 1.0, channel_scene_rgb=inset)
+        self.assertFalse(bool(np.array_equal(direct, formed)))
+        self.assertGreater(float(formed[0, 0]), float(formed[0, 1]))
+
+    def test_formation_luma_uses_the_actual_outset_not_inverse_inset(self) -> None:
+        class Plan:
+            agx_primaries = "base"
+
+        inset, outset = formation_matrices(Plan())
+        got = formation_luma_weights(outset)
+        expected = np.asarray(REC2020_LUMA, dtype=np.float64) @ outset
+        expected /= expected.sum()
+        wrong = np.asarray(REC2020_LUMA, dtype=np.float64) @ np.linalg.inv(inset)
+        wrong /= wrong.sum()
+        np.testing.assert_allclose(got, expected, atol=5e-8, rtol=0.0)
+        self.assertGreater(float(np.max(np.abs(got - wrong))), 0.05)
+
 
 class GamutProjectorTests(unittest.TestCase):
     def test_ceiling_is_enforced(self) -> None:
@@ -88,16 +134,11 @@ class GamutProjectorTests(unittest.TestCase):
         out = fit_hdr_color_volume(rgb, 8.0, "p3")
         self.assertLessEqual(float(np.max(out)), 8.0 + 1e-5)
 
-    def test_floor_is_left_to_the_sdr_path(self) -> None:
-        """Negatives survive here on purpose.
-
-        The SDR render carries out-of-gamut negatives at this stage too and resolves them
-        at quantisation. Clamping them here would make the two renditions differ by
-        something other than the HDR lift, and that difference is what a gain map encodes.
-        """
+    def test_floor_is_enforced_by_neutral_axis_projection(self) -> None:
         rgb = np.array([[-0.05, 0.4, 0.2]], dtype=np.float32)
         out = fit_hdr_color_volume(rgb, 8.0, "p3")
-        self.assertTrue(bool(np.array_equal(out, rgb)))
+        self.assertGreaterEqual(float(np.min(out)), 0.0)
+        self.assertFalse(bool(np.array_equal(out, np.clip(rgb, 0.0, 8.0))))
 
     def test_in_gamut_pixels_are_bit_identical(self) -> None:
         """Reconstructing them as y + 1.0*(arr-y) is not exact in float32."""
@@ -118,12 +159,18 @@ class GamutProjectorTests(unittest.TestCase):
         y_in, y_out = rgb @ P3_LUMA, out @ P3_LUMA
         inside = (y_in > 1e-3) & (y_in < 8.0)
         rel = np.abs(y_out[inside] - y_in[inside]) / y_in[inside]
-        # ~3e-5 floor is structural: the P3 luma row sums to 1.0000274, so the chroma
-        # vector is not exactly iso-luminant.
-        self.assertLess(float(np.max(rel)), 1e-4)
+        self.assertLess(float(np.max(rel)), 2e-6)
+
+    def test_luma_weights_keep_the_neutral_axis_exact(self) -> None:
+        self.assertAlmostEqual(float(np.sum(P3_LUMA)), 1.0, places=7)
+
+    def test_luma_weight_normalisation_does_not_mutate_sdr_matrices(self) -> None:
+        before = np.array(RGB_TO_XYZ["P3"], copy=True)
+        _ = output_luma_weights("p3")
+        self.assertTrue(bool(np.array_equal(RGB_TO_XYZ["P3"], before)))
 
     def test_projection_reduces_chroma_rather_than_clipping_channels(self) -> None:
-        """Per-channel clipping would shift hue; scaling toward neutral does not."""
+        """The output-RGB opponent direction is stable, unlike per-channel clipping."""
         rgb = np.array([[20.0, 4.0, 1.0]], dtype=np.float32)
         out = fit_hdr_color_volume(rgb, 8.0, "p3")
         clipped = np.minimum(rgb, 8.0)

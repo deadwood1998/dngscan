@@ -673,19 +673,61 @@ does not alter the tone plan. 4:2:2 and 4:2:0 are available when smaller files m
 the cost of chroma resolution. Display P3 embeds an ICC profile and export stops if that
 profile is unavailable rather than writing untagged wide-gamut values.
 
-HDR is paused; SDR is the only production output. The old ACES 2-derived bridge and
-gain-map writer remain as experiment material, not as a supported feature or the intended
-algorithm. The backend gate still prevents them from writing a file that appears valid but
-cannot reproduce its HDR rendition through a real round-trip.
+HDR output is an optional Apple ISO 21496-1 gain-map JPEG, currently available only through
+the macOS/Core Image backend and only with the AgX tone core. It does not amplify the
+finished SDR image. The same scene-linear Rec.2020 buffer splits before display formation
+into independent SDR and HDR AgX DRTs. They share capture exposure intent and RAW analysis,
+but HDR owns its tone plan, colour geometry, and extended-P3 projection; pixel equality
+below an SDR knee is not a constraint.
 
-The revised direction is to solve two darktable-style AgX transforms from the same
-scene-linear input: one for SDR and one for HDR. HDR is neither `SDR × gain` nor an ACES
-DRT placed after SDR AgX. It keeps the same scene intent and middle gray while independently
-solving the C1 shoulder, rendering primaries, path-to-white, and peak-aware P3 boundary
-above reference white. Core Image then packages two already completed renditions. The full
-design, equations, data model, and test gates are recorded in
-[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md). It will
-not be wired up until the RAW9 scene-linear handoff and existing SDR path are settled.
+Selected display headroom is a ceiling, not a target. The actual budget comes from a
+reliable highlight tail filtered by RAW clipping evidence. LibRaw uses its aligned
+per-pixel CFA mask; RAW9 conservatively rank-trims the luminance tail by the full-resolution
+clipped-cell fraction. Insufficient evidence means zero budget and an explicitly refused
+HDR export; reconstructed highlights and the SDR white endpoint cannot
+stand in for sensor evidence. The lift is inserted after HDR AgX inset/per-channel formation
+and before hue restore/outset. Per-pixel CFA clipping withdraws independent colour paths
+from unreliable channels, and a Y-preserving neutral-axis projection fits the result into
+the extended P3 `[0, peak]` colour volume without per-channel hard clipping. That last step
+preserves a linear-P3 opponent direction, not a strict perceptual hue. ACES 2 does the
+stronger job in a colour-appearance JMh space; dngscan's current projector is intentionally
+simpler and remains one of the HDR calibration boundaries.
+
+Core Image only packages the two completed SDR/HDR renditions as an RGB gain map. Every
+written file is expanded again and checked for its P3 profile, 4:4:4 base, RGB auxiliary
+image, declared headroom, and whole-frame pixel/chromaticity error. A failed gate leaves no
+output file. Display looks and filters remain unavailable in HDR because those SDR
+operators do not yet have an independent HDR definition. The equations and acceptance
+gates are documented in
+[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md).
+
+### HDR comparisons
+
+These are SDR diagnostic sheets, not screenshots of an HDR display. The lower HDR panels
+are deliberately exposed down by their measured headroom so detail above reference white
+fits on this page; they are expected to look darker than the SDR panels.
+
+| RAW9 / LibRaw, daylight | RAW9 / LibRaw, indoor light |
+|---|---|
+| ![RAW9 and LibRaw SDR/HDR AgX daylight comparison](docs/assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg) | ![RAW9 and LibRaw SDR/HDR AgX indoor comparison](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg) |
+
+| RAW9 AgX / neutral, daylight | RAW9 AgX / neutral, indoor light |
+|---|---|
+| ![RAW9 AgX and neutral SDR/HDR daylight comparison](docs/assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg) | ![RAW9 AgX and neutral SDR/HDR indoor comparison](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg) |
+
+The [complete comparison gallery](docs/HDR_COMPARISONS.md) contains all twelve sheets and
+the captured metrics. Core Image/ISO delivery round-trips on macOS; Android/Chrome
+interoperability and EDR corpus calibration of the project-specific colour parameters still
+need physical-device testing.
+
+The HDR boundary was reviewed against Apple's [Adaptive HDR and Core Image
+workflow](https://developer.apple.com/videos/play/wwdc2024/10177/), Android's
+[libultrahdr gain-map math](https://android.googlesource.com/platform/external/libultrahdr/+/refs/heads/main/lib/include/ultrahdr/gainmapmath.h), the [darktable AgX processing
+order](https://docs.darktable.org/usermanual/development/en/module-reference/processing-modules/agx/),
+and ACES 2's published [chroma](https://docs.acescentral.com/system-components/output-transforms/technical-details/chroma-compression/)
+and [gamut](https://docs.acescentral.com/system-components/output-transforms/technical-details/gamut-compression/)
+compression notes. These sources define the contracts and comparison points; they do not
+turn dngscan's project-specific thresholds into upstream constants.
 
 ## Quick start
 
@@ -723,6 +765,10 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # Highlight reconstruction and Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO 21496-1 HDR gain-map JPEG (macOS, Display P3, AgX only)
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3
 
 # RAW analysis dashboard and CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv

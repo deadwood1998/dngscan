@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Look at what the HDR AgX allocation did, on a screen that cannot show HDR.
 
-Phase 2 produces an extended-linear P3 rendition with values above 1.0, and Phase 6/7
-have not built the delivery that would let a display receive it. So this renders the
-comparison instead of exporting it, three panels per frame:
+This diagnostic renders the extended-linear P3 result onto an SDR sheet so the allocation
+can be inspected without depending on an EDR display, three panels per frame:
 
     SDR            what ships today
     HDR -H_act     the HDR rendition exposed down by its own achieved headroom, which
@@ -17,9 +16,8 @@ highlights hold detail the SDR panel has already compressed. Highlights that loo
 same in both mean the scene had no reliable tail to spend, which is a correct outcome,
 not a broken render.
 
-Nothing here writes a deliverable file: an HDR rendition that no verified pipeline can
-package is a diagnostic, and treating a viewable JPEG of one as a product is exactly the
-confusion the suspended export gate exists to prevent.
+The sheet itself is only a diagnostic. Production HDR output is the ISO gain-map JPEG
+written by the main exporter and verified by expanding that exact file back to linear P3.
 
 Usage:
     python tools/hdr_ab.py photo.dng [more.dng ...] --out out/
@@ -44,15 +42,33 @@ from dngscan.hdr_agx import achieved_headroom, hdr_lift_factor, scene_render_to_
 from dngscan.hdr_agx_plan import compile_hdr_agx_plan, describe_hdr_plan
 from dngscan.models import HdrDisplayTarget
 from dngscan.raw_io import load_raw
-from dngscan.render import quantize_final_output_linear_to_u8, scene_render_to_display_linear
+from dngscan.render import (
+    finalize_output_linear,
+    quantize_final_output_linear_to_u8,
+    scene_render_to_display_linear,
+)
 from dngscan.tone import build_render_plan
 
 LUMA = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
 
 
-def _encode(linear: np.ndarray, gamut: str = "p3") -> np.ndarray:
-    """Display-linear -> 8-bit through the pipeline's own encoder, dither included."""
-    return quantize_final_output_linear_to_u8(np.clip(linear, 0.0, 1.0), gamut)
+def _encode_sdr(linear: np.ndarray, gamut: str = "p3", color_plan=None) -> np.ndarray:
+    """Finish an SDR rendition, then encode it with the production quantizer."""
+    finalized = finalize_output_linear(linear, gamut, color_plan=color_plan)
+    return quantize_final_output_linear_to_u8(finalized, gamut)
+
+
+def _encode_hdr_diagnostic(linear: np.ndarray, gamut: str = "p3") -> np.ndarray:
+    """Encode an exposure-normalized, already-finalized HDR rendition for an SDR sheet.
+
+    ``scene_render_to_hdr_display_linear`` has already applied HDR colour-volume fitting.
+    Running ``finalize_output_linear`` here would apply the SDR highlight retreat and gamut
+    fit a second time, so the comparison would no longer describe the exported HDR pixels.
+    """
+    normalized = np.nan_to_num(
+        np.asarray(linear, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0
+    )
+    return quantize_final_output_linear_to_u8(np.clip(normalized, 0.0, 1.0), gamut)
 
 
 def _lift_map_u8(lift: np.ndarray, budget_ev: float) -> np.ndarray:
@@ -106,7 +122,8 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
         hdr_plan,
     )
 
-    y_sdr, y_hdr = sdr @ LUMA, hdr @ LUMA
+    sdr_final = finalize_output_linear(sdr, "p3", color_plan=plan.color)
+    y_sdr, y_hdr = sdr_final @ LUMA, hdr @ LUMA
     body = (y_sdr > 0.02) & (y_sdr < 0.5)
     body_delta = (
         float(np.log2(np.median(y_hdr[body]) / np.median(y_sdr[body]))) if np.any(body) else 0.0
@@ -114,8 +131,11 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
 
     sheet = _panel(
         [
-            ("SDR", _encode(sdr)),
-            (f"HDR  -{actual:.2f}EV", _encode(hdr * np.float32(exposure))),
+            ("SDR", _encode_sdr(sdr, color_plan=plan.color)),
+            (
+                f"HDR  -{actual:.2f}EV",
+                _encode_hdr_diagnostic(hdr * np.float32(exposure)),
+            ),
             (f"lift map  0..{hdr_plan.tone.budget_headroom_ev:.2f}EV", _lift_map_u8(lift, hdr_plan.tone.budget_headroom_ev)),
         ]
     )
@@ -172,7 +192,10 @@ def main(argv: list[str]) -> int:
         )
     if rows:
         worst = max(abs(r["body_delta_ev"]) for r in rows)
-        print(f"\n  largest scene-body shift across frames: {worst:+.6f} EV (must be ~0)")
+        print(
+            f"\n  largest scene-body shift across frames: {worst:+.6f} EV "
+            "(independent-HDR guard: <0.5 EV)"
+        )
         print(f"  panels written to {args.out}/")
     return 0
 

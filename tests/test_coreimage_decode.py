@@ -14,7 +14,7 @@ from dngscan import coreimage_decode
 from dngscan.models import RawBundle
 from dngscan.retreat import clip_masks_for_shape, resize_clip_masks
 
-PICTURES = Path("/Users/itoshikigen/Pictures")
+PICTURES = Path.home() / "Pictures"
 SIGMA_DNG = PICTURES / "_SDI0150.DNG"
 SIGMA_VERTICAL_DNG = PICTURES / "_SDI0165.DNG"
 FUJI_RAF = PICTURES / "DSCF0614.RAF"

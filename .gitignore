@@ -36,6 +36,8 @@ dngscan_assets/*
 *_smart*.jpg
 *_agx*.jpg
 *_tony*.jpg
+# Curated, privacy-checked comparison sheets used by the public documentation.
+!docs/assets/hdr-comparisons/*.jpg
 test_output/compare_results.json
 
 # Editor / OS / tooling

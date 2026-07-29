@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Compile an HdrAgxPlan from an SDR plan, RAW evidence and a display target.
+"""Compile an independent HdrAgxPlan from scene analysis and a display target.
 
-The HDR plan is compiled *beside* the SDR plan and never mutates it: the SDR rendition
-has to stay byte-identical whether or not an HDR one is also produced, and sharing a
-mutable plan is the usual way that guarantee is lost.
+The existing RenderPlan is used as an immutable carrier of shared scene intent. HDR copies
+the relevant starting parameters into its own formation plan, derives its own white endpoint
+from the reliable scene tail, and never consumes SDR pixels.
 
 Only quantities whose meaning is already established are read. The reliable tail decides
 how many stops the scene justifies, so reconstructed highlights cannot buy display range
@@ -13,6 +13,7 @@ an HDR capacity must not re-expose a night scene.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from ._deps import np
 from .hdr_agx_math import (
@@ -35,24 +36,34 @@ from .models import (
 def reliable_tail_ev(plan: RenderPlan) -> float:
     """Scene EV of the highest luminance still backed by unclipped RAW evidence.
 
-    Falls back to the unfiltered tail only when the reliable one is unavailable, and to
-    the white endpoint if neither is: an absent measurement must not read as an infinite
-    tail and hand out headroom on the strength of nothing.
+    There is deliberately no fallback to the reconstructed tail or the compiled white
+    endpoint. Neither is RAW evidence, so using either would turn a missing measurement
+    into positive HDR budget.
     """
     scene = getattr(plan, "scene", None)
     if scene is None:
-        return float(plan.tone.white_ev)
-    for name in ("reliable_tail_ev_p9999", "tail_ev_p9999"):
-        value = getattr(scene, name, None)
-        if value is not None and np.isfinite(value):
-            return float(value)
-    return float(plan.tone.white_ev)
+        return float("nan")
+    value = getattr(scene, "reliable_tail_ev_p9999", None)
+    if value is not None and np.isfinite(value):
+        return float(value)
+    return float("nan")
 
 
 # Prototype ceiling on channel separation. Not a calibrated value: the design lists
 # Blender's HDR_purity=0.5 as a probe starting point whose semantics are not the same
 # thing, so this stays a conservative cap until an EDR corpus says otherwise.
 RHO_BASE = 0.5
+
+# Project calibration policy, not values defined by darktable, AgX, Apple, ACES or
+# ISO 21496-1. Naming them keeps a future EDR-corpus calibration from hiding in arithmetic.
+MULTICHANNEL_CLIP_ZERO_CONFIDENCE_PCT = 10.0
+P3_PRESSURE_ZERO_CONFIDENCE_PCT = 20.0
+UNALIGNED_DECODER_RHO_CAP = 0.25
+NORMAL_WHITE_MARGIN_EV = 0.30
+SPARSE_EMITTER_WHITE_MARGIN_EV = 0.50
+NORMAL_MINIMUM_WHITE_EV = 3.00
+SPARSE_EMITTER_MINIMUM_WHITE_EV = 3.50
+MAXIMUM_WHITE_EV = 8.50
 
 
 def compile_channel_separation(
@@ -89,7 +100,9 @@ def compile_channel_separation(
     # Multi-channel clipping is the decisive one: single-channel clipping still leaves two
     # measured channels to place the hue. 10 % of the frame is treated as total loss of
     # confidence, which is deliberately strict for a first cut.
-    raw_confidence = float(np.clip(1.0 - multi_pct / 10.0, 0.0, 1.0))
+    raw_confidence = float(
+        np.clip(1.0 - multi_pct / MULTICHANNEL_CLIP_ZERO_CONFIDENCE_PCT, 0.0, 1.0)
+    )
 
     # The design also lists an SNR confidence factor, and it is deliberately not applied
     # here. snr1_dr is only populated when analyze() runs with diagnostics=True, which a
@@ -100,16 +113,18 @@ def compile_channel_separation(
 
     gamut = getattr(analysis, "gamut_out_pct", None) or {}
     out_pct = float(gamut.get("Display P3", gamut.get("P3", 0.0)) or 0.0)
-    gamut_confidence = float(np.clip(1.0 - out_pct / 20.0, 0.0, 1.0))
+    gamut_confidence = float(
+        np.clip(1.0 - out_pct / P3_PRESSURE_ZERO_CONFIDENCE_PCT, 0.0, 1.0)
+    )
 
     rho = float(rho_base) * raw_confidence * gamut_confidence
     if str(scene_decoder) != "libraw":
-        rho = min(rho, 0.25)
+        rho = min(rho, UNALIGNED_DECODER_RHO_CAP)
     return float(np.clip(rho, 0.0, 1.0))
 
 
 def compile_hdr_agx_plan(
-    sdr_plan: RenderPlan,
+    scene_plan: RenderPlan,
     target: HdrDisplayTarget | None = None,
     analysis: Analysis | None = None,
     scene_decoder: str = "libraw",
@@ -125,8 +140,22 @@ def compile_hdr_agx_plan(
     """
     display = target if target is not None else HdrDisplayTarget()
     knee = float(DIFFUSE_WHITE_EV if knee_ev is None else knee_ev)
-    white = float(sdr_plan.tone.white_ev)
-    tail = reliable_tail_ev(sdr_plan)
+    tail = reliable_tail_ev(scene_plan)
+    scene = getattr(scene_plan, "scene", None)
+    sparse = bool(getattr(scene, "sparse_emitter_tail", False))
+    white_margin = SPARSE_EMITTER_WHITE_MARGIN_EV if sparse else NORMAL_WHITE_MARGIN_EV
+    minimum_white = SPARSE_EMITTER_MINIMUM_WHITE_EV if sparse else NORMAL_MINIMUM_WHITE_EV
+    white = (
+        float(
+            np.clip(
+                max(tail + white_margin, minimum_white),
+                minimum_white,
+                MAXIMUM_WHITE_EV,
+            )
+        )
+        if math.isfinite(tail)
+        else minimum_white
+    )
     headroom = float(display.display_headroom_ev)
 
     budget = compile_budget(
@@ -156,15 +185,26 @@ def compile_hdr_agx_plan(
     )
     color = HdrColorGeometry(
         channel_separation=rho,
-        raw_clip_retreat=float(sdr_plan.color.raw_clip_retreat_strength)
-        if getattr(sdr_plan, "color", None) is not None
+        raw_clip_retreat=float(scene_plan.color.raw_clip_retreat_strength)
+        if getattr(scene_plan, "color", None) is not None
         else 0.0,
-        snr_gate=0.0,
-        hue_restore=float(sdr_plan.tone.hue_restore),
-        primaries_preset=str(sdr_plan.tone.agx_primaries),
+        # Neutral until a production-path per-channel tail SNR metric exists. Keeping this
+        # explicit is safer than making render output depend on diagnostics=True.
+        snr_gate=1.0,
+        hue_restore=float(scene_plan.tone.hue_restore),
+        primaries_preset=str(scene_plan.tone.agx_primaries),
         gamut_fit_margin=0.0,
     )
-    return HdrAgxPlan(sdr_base=sdr_plan, display=display, tone=tone, color=color)
+    # Give the HDR branch its own formation plan. Parameters unrelated to the output target
+    # start from shared scene intent, while the white endpoint is independently compiled
+    # above. Later HDR-specific contrast/shoulder tuning cannot mutate SDR.
+    formation = replace(
+        scene_plan.tone,
+        tone_core="agx",
+        white_ev=white,
+        dynamic_range_ev=white - float(scene_plan.tone.black_ev),
+    )
+    return HdrAgxPlan(formation=formation, display=display, tone=tone, color=color)
 
 
 def describe_hdr_plan(plan: HdrAgxPlan) -> str:
@@ -172,8 +212,13 @@ def describe_hdr_plan(plan: HdrAgxPlan) -> str:
     tone = plan.tone
     window = tone.white_ev - tone.knee_ev
     if tone.budget_headroom_ev <= 0.0:
+        tail_text = (
+            f"{tone.reliable_tail_ev:+.2f}EV"
+            if math.isfinite(tone.reliable_tail_ev)
+            else "不可用"
+        )
         return (
-            f"HDR: 无预算（可靠尾部 {tone.reliable_tail_ev:+.2f}EV，窗宽 {window:.2f}EV，"
+            f"HDR: 无预算（可靠尾部 {tail_text}，窗宽 {window:.2f}EV，"
             f"显示容量 +{tone.display_headroom_ev:.2f}EV）"
         )
     rate = (

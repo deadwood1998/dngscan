@@ -67,9 +67,10 @@ def export_ultrahdr_jpeg(
 ) -> dict[str, Any]:
     """Write a Display P3 JPEG carrying an ISO 21496-1 gain map.
 
-    Both renditions come from the same scene-linear buffer and the same AgX core, so the
-    gain map encodes only the HDR allocation, and a viewer that ignores it sees the
-    photograph that ships today.
+    Both renditions come from the same scene-linear buffer, then enter independent SDR and
+    HDR display formations. The gain map is only their delivery representation; it does
+    not constrain the HDR rendition to match SDR below a knee. A viewer that ignores it
+    still sees the existing SDR photograph.
 
     That base is the same *rendition* as an ordinary SDR export -- the identical
     render_output_u8 call on the identical plan -- but not the same bytes. Core Image
@@ -107,6 +108,11 @@ def export_ultrahdr_jpeg(
         )
         if not isinstance(plan, _RenderPlan):
             raise RuntimeError("Ultrahdr 需要完整 RenderPlan")
+        if abs(float(plan.color.display_highlight_chroma_retreat)) > 1e-9:
+            raise RuntimeError(
+                "HDR 尚未定义 SDR 显示侧的高光褪白算子；"
+                "请将 highlight fade 设为 0"
+            )
 
         target = HdrDisplayTarget(peak_nits=100.0 * float(2.0 ** float(hdr_headroom)))
         hdr_plan = compile_hdr_agx_plan(
@@ -126,9 +132,9 @@ def export_ultrahdr_jpeg(
         hdr_linear = scene_render_to_hdr_display_linear(
             bundle, plan, hdr_plan, output_gamut, scene_transform, scene_transform_strength
         )
-        # The container is told the headroom the render reached, not the one it was
-        # allowed. Declaring unused capacity would invite a viewer to stretch into range
-        # this photograph never used.
+        # A robust p99.99 headroom is useful for the report, but it is not the container
+        # declaration. The writer derives Apple content headroom from the exact finite peak
+        # of the packed rendition and verifies it after round-trip.
         actual = achieved_headroom(hdr_linear)
         peak = float(2.0 ** hdr_plan.tone.display_headroom_ev)
         info = write_apple_gainmap_jpeg(
