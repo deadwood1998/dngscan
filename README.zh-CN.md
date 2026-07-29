@@ -111,7 +111,33 @@ flowchart TB
     CFA -.-> SPATIAL
     META -.-> SCALE
     SCENE -.-> REPORTS
+
+    classDef source fill:#5b21b6,stroke:#7c3aed,stroke-width:2px,color:#f5f3ff
+    classDef evidence fill:#78350f,stroke:#b45309,stroke-width:1.5px,color:#fffbeb
+    classDef libraw fill:#075985,stroke:#0284c7,stroke-width:1.5px,color:#f0f9ff
+    classDef apple fill:#134e4a,stroke:#0d9488,stroke-width:1.5px,color:#f0fdfa
+    classDef pixels fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
+    classDef contract fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
+    classDef intent fill:#7c2d12,stroke:#ea580c,stroke-width:1.5px,color:#fff7ed
+    classDef plan fill:#14532d,stroke:#22c55e,stroke-width:2.5px,color:#f0fdf4
+    classDef aside fill:#3f3f46,stroke:#71717a,stroke-width:1px,color:#fafafa,stroke-dasharray:4 3
+    classDef choice fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fffbeb
+
+    class RAW source
+    class SELECT choice
+    class CFA,META evidence
+    class LR,LRRGB,LRREF libraw
+    class CIPROBE,CI,CIRGB,ALIGN apple
+    class SCALE,SCENE pixels
+    class ANALYSIS,SPATIAL,METRICS,SAMPLE contract
+    class EV,CONTROLS intent
+    class COMPILE,PLAN plan
+    class REPORTS aside
 ```
+
+配色标记的是**来源**，这是最容易在阅读中丢失的信息：琥珀色是去马赛克前读到的 RAW 证据，
+蓝色是 LibRaw 解码器，青色是 Apple 的，灰色是两者共同汇入的契约层，橙色是人给出的意图，
+绿色是编译完成、下游必须遵守的 plan。
 
 第二张图展开真正的渲染过程。SDR 与 HDR 共享 capture、scene intent、曝光和可选前馈，随后在
 显示形成之前分叉；HDR 不会把已经完成的 SDR 像素当作 tone-map 输入。
@@ -187,7 +213,27 @@ flowchart TB
     ALT --> PACKAGE
     PACKAGE --> VERIFY["回读验证<br/>P3 profile、4:4:4、RGB gain map、声明余量<br/>SDR 码值误差 + 展开后 HDR 亮度/色度误差"]
     VERIFY --> HDRJPEG["原子替换后的 HDR gain-map JPEG"]
+
+    classDef shared fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
+    classDef sdrpath fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
+    classDef hdrpath fill:#4c1d95,stroke:#a78bfa,stroke-width:1.5px,color:#f5f3ff
+    classDef choice fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fffbeb
+    classDef optional fill:#3f3f46,stroke:#71717a,stroke-width:1px,color:#fafafa,stroke-dasharray:4 3
+    classDef deliver fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#f0fdf4
+    classDef gate fill:#7f1d1d,stroke:#ef4444,stroke-width:2.5px,color:#fef2f2
+
+    class SCENE,SCALE,PREFEED,PLAN,MASKS shared
+    class RETREAT,AGX,GATED,LUM,NEUTRAL,FORMED,OUTPUT,FIT,ENCODE sdrpath
+    class HDRPLAN,HRETREAT,HINSET,LIFT,HFINISH,HP3,HVOLUME,ALT hdrpath
+    class CORE,FORMAT choice
+    class FILTER,GRADE,LOOKPOLICY optional
+    class SDRJPEG,BASE,PACKAGE,HDRJPEG deliver
+    class VERIFY gate
 ```
+
+紫色是 HDR 分支，蓝色是 SDR。两者只在左侧的灰色共享节点和右侧的封装处相遇——**没有任何
+箭头从完成的 SDR 像素指向 HDR 分支**，这正是整个分叉要保证的性质。红色节点是唯一能否决
+成品文件的关卡：它重新读回已写出的内容，与文件声称承载的 rendition 比对。
 
 这几个层次是刻意分开的。Tone 层只负责亮度关系和显示动态范围；Color geometry 层负责
 色相路径、色度压缩与向白过渡；Capture 层提供事实，但不直接决定口味。这样调整某个环节

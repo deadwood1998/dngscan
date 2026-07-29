@@ -122,7 +122,34 @@ flowchart TB
     CFA -.-> SPATIAL
     META -.-> SCALE
     SCENE -.-> REPORTS
+
+    classDef source fill:#5b21b6,stroke:#7c3aed,stroke-width:2px,color:#f5f3ff
+    classDef evidence fill:#78350f,stroke:#b45309,stroke-width:1.5px,color:#fffbeb
+    classDef libraw fill:#075985,stroke:#0284c7,stroke-width:1.5px,color:#f0f9ff
+    classDef apple fill:#134e4a,stroke:#0d9488,stroke-width:1.5px,color:#f0fdfa
+    classDef pixels fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
+    classDef contract fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
+    classDef intent fill:#7c2d12,stroke:#ea580c,stroke-width:1.5px,color:#fff7ed
+    classDef plan fill:#14532d,stroke:#22c55e,stroke-width:2.5px,color:#f0fdf4
+    classDef aside fill:#3f3f46,stroke:#71717a,stroke-width:1px,color:#fafafa,stroke-dasharray:4 3
+    classDef choice fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fffbeb
+
+    class RAW source
+    class SELECT choice
+    class CFA,META evidence
+    class LR,LRRGB,LRREF libraw
+    class CIPROBE,CI,CIRGB,ALIGN apple
+    class SCALE,SCENE pixels
+    class ANALYSIS,SPATIAL,METRICS,SAMPLE contract
+    class EV,CONTROLS intent
+    class COMPILE,PLAN plan
+    class REPORTS aside
 ```
+
+Colour marks provenance, which is the thing that is easy to lose: amber is RAW evidence
+read before demosaic, blue is the LibRaw decoder, teal is Apple's, grey is the shared
+contract both feed, orange is the intent a person supplies, and green is the compiled
+plan everything downstream must obey.
 
 The second graph expands the actual render. SDR and HDR share capture, scene intent,
 exposure, and the optional prefeed, then split before display formation. HDR never uses
@@ -199,7 +226,29 @@ flowchart TB
     ALT --> PACKAGE
     PACKAGE --> VERIFY["Read-back verification<br/>P3 profile, 4:4:4, RGB gain map, declared headroom<br/>SDR code error + expanded HDR luminance/chroma error"]
     VERIFY --> HDRJPEG["Atomic HDR gain-map JPEG"]
+
+    classDef shared fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
+    classDef sdrpath fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
+    classDef hdrpath fill:#4c1d95,stroke:#a78bfa,stroke-width:1.5px,color:#f5f3ff
+    classDef choice fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fffbeb
+    classDef optional fill:#3f3f46,stroke:#71717a,stroke-width:1px,color:#fafafa,stroke-dasharray:4 3
+    classDef deliver fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#f0fdf4
+    classDef gate fill:#7f1d1d,stroke:#ef4444,stroke-width:2.5px,color:#fef2f2
+
+    class SCENE,SCALE,PREFEED,PLAN,MASKS shared
+    class RETREAT,AGX,GATED,LUM,NEUTRAL,FORMED,OUTPUT,FIT,ENCODE sdrpath
+    class HDRPLAN,HRETREAT,HINSET,LIFT,HFINISH,HP3,HVOLUME,ALT hdrpath
+    class CORE,FORMAT choice
+    class FILTER,GRADE,LOOKPOLICY optional
+    class SDRJPEG,BASE,PACKAGE,HDRJPEG deliver
+    class VERIFY gate
 ```
+
+Purple is the HDR branch, blue the SDR one. They meet only at the grey shared nodes on
+the left and at packaging on the right — there is no arrow from a finished SDR pixel into
+the HDR branch, which is the property the whole split exists to guarantee. The red node
+is the only gate that can reject a finished file: it re-reads what was written and
+compares it against the rendition it claims to carry.
 
 These layers are deliberately separate. Tone controls luminance relationships and the
 display dynamic range. Color geometry controls hue paths, chroma compression, and the
