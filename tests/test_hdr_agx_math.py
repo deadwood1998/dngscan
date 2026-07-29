@@ -17,6 +17,7 @@ from dngscan.hdr_agx_math import (
     apply_hdr_allocation,
     clamp_budget_to_lift_rate,
     compile_budget,
+    hdr_encoded_pivot_slope,
     lift_stops,
     max_lift_rate,
     smootherstep,
@@ -196,35 +197,62 @@ class AllocationPropertyTests(unittest.TestCase):
 
 
 class SingleCurveImpossibilityTests(unittest.TestCase):
+    def test_hdr_pivot_slope_preserves_linear_contrast(self) -> None:
+        """The closed form, checked against the linear derivatives it is defined by.
+
+        Everything here is in the *encoded* curve domain. The pivot slope is not
+        q_pivot/x_pivot -- that mistake is what makes 0.8427 look unreproducible.
+        """
+        gamma, ratio, s_sdr = 2.2, 10.0, 2.4
+        q_sdr = 0.18 ** (1.0 / gamma)
+        q_hdr = (0.18 / ratio) ** (1.0 / gamma)
+        self.assertAlmostEqual(q_sdr, 0.45865645, places=8)
+        self.assertAlmostEqual(q_hdr, 0.16104307, places=8)
+        # The relation that makes the q^(g-1) factors cancel.
+        self.assertAlmostEqual(q_hdr, q_sdr * ratio ** (-1.0 / gamma), places=15)
+
+        s_hdr = hdr_encoded_pivot_slope(s_sdr, ratio, gamma)
+        self.assertAlmostEqual(s_hdr, 0.8426860162, places=9)
+        # Long form before simplification must agree bit for bit.
+        long_form = s_sdr * q_sdr ** (gamma - 1.0) / (ratio * q_hdr ** (gamma - 1.0))
+        self.assertEqual(s_hdr, long_form)
+        # And the property it was solved for: equal linear contrast at the pivot.
+        dy_sdr = gamma * q_sdr ** (gamma - 1.0) * s_sdr
+        dy_hdr = ratio * gamma * q_hdr ** (gamma - 1.0) * s_hdr
+        self.assertAlmostEqual(dy_sdr, dy_hdr, places=12)
+
     def test_stretching_one_c1_curve_to_hdr_has_no_solution(self) -> None:
         """Fossilise the refutation so the idea cannot quietly return.
 
-        Writing Y_hdr = R*q^gamma keeps mid gray fixed but then requires the encoded
-        shoulder to climb from q_pivot to 1 over the remaining window. A concave
-        shoulder's slope only falls, so its average over that span cannot exceed its
-        slope at the pivot -- and here it must be several times larger. The contradiction
-        is structural: no choice of target_white, pivot encoding or curve gamma removes it.
-
-        Two of the design doc's figures reproduce exactly (q_pivot and the required
-        average shoulder slope). Its third, a pivot slope of 0.842686, does not follow
-        from any derivation stated in the document, so this test asserts the inequality
-        that carries the argument rather than a constant it cannot re-derive.
+        Matching SDR contrast at the pivot forces the HDR encoded slope *down* by
+        R^(-1/gamma), while reaching encoded white over the remaining window demands an
+        average slope well above it. A concave shoulder's slope only falls, so no such
+        curve exists. Structural: no choice of target_white, pivot encoding or curve
+        gamma removes it, which is why HDR needs a separate allocation layer.
         """
-        black_ev, white_ev, gamma, ratio = -10.0, 6.5, 2.2, 10.0
-        span = white_ev - black_ev
-        pivot_x = (0.0 - black_ev) / span
+        black_ev, white_ev, gamma, ratio, s_sdr = -10.0, 6.5, 2.2, 10.0, 2.4
+        pivot_x = (0.0 - black_ev) / (white_ev - black_ev)
+        q_hdr = (0.18 / ratio) ** (1.0 / gamma)
 
-        q_pivot = (0.18 / ratio) ** (1.0 / gamma)
-        self.assertAlmostEqual(q_pivot, 0.161043, places=5)
-
-        average_shoulder_slope = (1.0 - q_pivot) / (1.0 - pivot_x)
+        pivot_slope = hdr_encoded_pivot_slope(s_sdr, ratio, gamma)
+        average_shoulder_slope = (1.0 - q_hdr) / (1.0 - pivot_x)
+        self.assertAlmostEqual(pivot_slope, 0.842686, places=5)
         self.assertAlmostEqual(average_shoulder_slope, 2.129660, places=5)
+        self.assertAlmostEqual(average_shoulder_slope / pivot_slope, 2.527228, places=5)
+        self.assertGreater(average_shoulder_slope, pivot_slope)
 
-        # Slope at the pivot, taken as the secant from the black end -- an upper bound for
-        # a convex-then-concave curve, which makes the contradiction conservative.
-        pivot_slope_bound = q_pivot / pivot_x
-        self.assertLess(pivot_slope_bound, average_shoulder_slope)
-        self.assertGreater(average_shoulder_slope / pivot_slope_bound, 2.5)
+    def test_pivot_slope_is_not_a_universal_constant(self) -> None:
+        """0.8427 holds only at R=10, gamma=2.2, s_sdr=2.4 and equal windows."""
+        base = hdr_encoded_pivot_slope(2.4, 10.0, 2.2)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(2.4, 8.0, 2.2), base, places=3)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(2.4, 10.0, 2.4), base, places=3)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(3.0, 10.0, 2.2), base, places=3)
+        # No HDR expansion means no slope change at all.
+        self.assertAlmostEqual(hdr_encoded_pivot_slope(2.4, 1.0, 2.2), 2.4, places=12)
+        # A longer HDR window scales the requirement proportionally.
+        self.assertAlmostEqual(
+            hdr_encoded_pivot_slope(2.4, 10.0, 2.2, window_ratio=2.0), base * 2.0, places=12
+        )
 
     def test_the_allocation_solves_what_the_single_curve_cannot(self) -> None:
         """Same target, reached without asking the shoulder to steepen."""

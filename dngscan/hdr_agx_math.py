@@ -48,6 +48,32 @@ MINIMUM_WINDOW_EV = 0.5
 MAX_LIFT_RATE = 3.0
 
 
+def hdr_encoded_pivot_slope(
+    sdr_encoded_slope: float,
+    peak_ratio: float,
+    curve_gamma: float,
+    window_ratio: float = 1.0,
+) -> float:
+    """Encoded-curve slope an HDR pivot would need to match SDR linear contrast.
+
+    Used only to show that a single stretched curve cannot work. Both curves must put
+    Y=0.18 at the pivot, so with Y_sdr = q^g and Y_hdr = R*q^g the encoded pivot values
+    differ by R^(-1/g). Requiring equal dY/de there and substituting that relation
+    collapses the whole expression to
+
+        s_hdr = s_sdr * R^(-1/g)
+
+    -- the q^(g-1) factors cancel exactly. `window_ratio` carries the HDR/SDR EV window
+    length ratio when the two windows differ; at equal windows it is 1.
+
+    This is an *encoded* slope, not a linear-luminance one. Conflating the two is what
+    makes 0.8427 look impossible to reproduce: it is not q_pivot/x_pivot.
+    """
+    return float(sdr_encoded_slope) * float(peak_ratio) ** (-1.0 / float(curve_gamma)) * float(
+        window_ratio
+    )
+
+
 def smootherstep(u):
     """Quintic 6u^5-15u^4+10u^3, clamped to [0,1].
 
