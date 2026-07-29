@@ -1,25 +1,24 @@
 # dngscan
 
-这是我给自己写的一个 RAW 转 JPEG 小工具。
+这是一个用途很窄的个人 RAW 转 JPEG 小工具。
 
-我很喜欢 AgX 处理数码影像的方式，尤其是它的高光和高纯度颜色，但我通常只想把一张
-RAW 用 AgX 显影出来，并不想每次都打开一整套修图软件。darktable 的 scene-linear
-管线是这个项目的基础，只是对我来说，它作为完整编辑器提供的东西远远超过了这件事本身。
+出发点是对 AgX 处理数码影像方式的偏好，尤其是它的高光和高纯度颜色；实际需求则很窄：
+把一张 RAW 用 AgX 显影出来，而不是每次都打开一整套修图软件。darktable 的 scene-linear
+管线是项目基础，但完整编辑器提供的内容远远超过了这件事本身。
 
 所以 dngscan 只做这一条路径：读取 RAW，分析传感器真正记录下来的信号，在
 scene-linear Rec.2020 中形成图像，用 RAW 分析结果编译 tone plan，再经由 AgX 压缩成
 sRGB 或 Display P3 JPEG。它不是修图工具，更像一个非常偏科的数码显影器，或者一个
 信号与算法处理的小玩具。
 
-这个仓库公开主要是为了让认识的朋友也能拿去用。有兴趣的人可以自己折腾代码、参数和
-不同相机的数据。
+仓库公开主要是为了方便认识的朋友使用；代码、参数和不同相机的数据都可以自由折腾。
 
 [English](README.md) · [许可证](LICENSE) · [第三方声明](NOTICE.md)
 
-## 我为什么要单独做这条管线
+## 为什么单独做这条管线
 
-我一直觉得 darktable 的 scene-referred 管线很像一间信号处理实验室，乐趣就在于理解每个
-模块怎样改变信号。dngscan 从里面取出一条我最常用的路径：LibRaw 解释、scene-linear
+darktable 的 scene-referred 管线很像一间信号处理实验室，理解每个模块怎样改变信号正是
+其中的重要部分。dngscan 从里面取出与目标最相关的路径：LibRaw 解释、scene-linear
 Rec.2020，以及 darktable GPL `agx` 模块里的曲线构造与原色几何。AgX 本身来自 Troy
 Sobotka，并在 Blender / EaryChow 生态里发展；这里主要通过 darktable 面向照片的实现来
 继承它。
@@ -32,51 +31,173 @@ darktable 的 AgX 模块工作在去马赛克、白平衡和曝光之后的浮�
 真实信号还是高光重建。dngscan 是一体化的小管线，可以在去马赛克前保存这些证据，再用
 它们区分可靠的场景主体、传感器尾部和已经丢失的高光信息。
 
-我对“自动”的理解也建立在这里。自动判断不是替照片决定审美，而是把可以测量的东西交给
+这里的“自动”也建立在同一原则上。自动判断不是替照片决定审美，而是把可以测量的东西交给
 测量：黑白电平、逐通道 CFA 剪切、噪声底、可用动态范围、亮度主体和高光尾部。这些信息
 可以决定曲线需要容纳多少 scene EV、什么时候允许色度向白退让，以及什么时候不应该相信
 一个重建出来的像素。
 
 曝光补偿、白平衡、风格和 LUT 是另一回事。它们表达的是拍摄意图或个人口味，因此留在
-这套自动分析之外，作为明确的选择。我并不要求曝光与白平衡永远不能动，只是不希望内容
-自适应算法在没有说明的情况下把夜景拉成灰色，或者把现场光本来的颜色抹掉。
+这套自动分析之外，作为明确的选择。曝光与白平衡不必永远不动；约束在于内容自适应算法
+不能在没有说明的情况下把夜景拉成灰色，或者把现场光本来的颜色抹掉。
 
 ## 管线
 
-```text
-RAW / DNG
-  |
-  +-- Capture evidence（始终由 LibRaw 在去马赛克前读取）
-  |     black / white level
-  |     逐通道 CFA 剪切与满阱余量
-  |     噪声可信度与可用动态范围
-  |
-  +-- Scene decoder（独立选择轴）
-  |     LibRaw：去马赛克 + 所选高光模式 + 空间 CFA mask
-  |     Core Image：RAW 9 重建 + DNG opcode，只接收聚合 CFA 证据
-  |
-scene-linear Rec.2020
-  |
-  +-- 可选的相机响应前馈
-  |
-  +-- Tone
-  |     black point / white point / pivot
-  |     contrast / toe / shoulder / view brightness
-  |
-  +-- Color geometry
-  |     AgX inset / outset / hue path
-  |     RAW clip retreat / punch / gamut fit
-  |     可选风格或本地 LUT
-  |
-  +-- Delivery
-        sRGB / Display P3
-        8-bit TPDF dither
-        JPEG 质量与色度采样
+第一张图从采集证据与解码像素开始，一直画到不可变的 render plan。实线表示图像数据流，
+虚线表示证据或控制信息。
+
+```mermaid
+flowchart TB
+    RAW["RAW / DNG"]
+
+    subgraph EVIDENCE["1. Capture 证据 - 始终由 LibRaw 在去马赛克前读取"]
+        direction TB
+        CFA["可见 CFA 马赛克与颜色索引<br/>raw_image_visible / raw_colors_visible"]
+        META["元数据<br/>black 与逐通道 white level<br/>camera/daylight WB、BaselineExposure、方向"]
+    end
+
+    subgraph DECODERS["2. Scene 像素形成 - 解码器是独立选择轴"]
+        direction TB
+        SELECT{"Scene decoder"}
+        LR["LibRaw<br/>camera 或 daylight WB<br/>去马赛克选择<br/>clip / blend / reconstruct"]
+        LRRGB["带方向的 linear Rec.2020 uint16<br/>关闭 auto-bright"]
+        CIPROBE["CIRAWFilter 能力探测<br/>RAW 9 或显式 RAW 8/7 回退"]
+        CI["中性的 Core Image RAW 配方<br/>RAW 9：CoreML 重建 + 降噪<br/>旧版本：对应系统解码器<br/>高光恢复、镜头校正、DNG opcode"]
+        CIRGB["extended-linear Rec.2020 RGBAh<br/>保留负分量与 1 以上数值"]
+        LRREF["仅 aligned 模式<br/>half-size LibRaw reconstruct 参考"]
+        ALIGN["Core Image 尺度策略<br/>aligned：解码后 G 中位比<br/>或 unity / 旧 measured"]
+        SELECT --> LR --> LRRGB
+        SELECT --> CIPROBE --> CI --> CIRGB --> ALIGN
+        LRREF --> ALIGN
+    end
+
+    subgraph CONTRACT["3. 统一 scene 契约与分析"]
+        direction TB
+        SCALE["Scene scale contract<br/>存储尺度与 WB 余量<br/>文件 BaselineExposure 配方<br/>可选 Core Image 对齐标量"]
+        SCENE["RawBundle scene frame<br/>scene_rec2020_render + scene_scale<br/>scene-linear Rec.2020 交接"]
+        ANALYSIS["Analysis<br/>按饱和堆积或 metadata 解析逐通道 full well<br/>硬 threshold、clip%、2x2 拓扑与 ceiling<br/>噪声底 / 可选诊断 SNR / 可用 DR<br/>解码后 XYZ-Y-EV 与输出色域压力"]
+        SPATIAL["解析后的空间 RAW 证据 - 仅 LibRaw 几何<br/>95-99% mask 按实测 full well 刷新<br/>headroom / clip class / SNR guidance<br/>Core Image 几何不借用这些 mask"]
+        EV["Intent exposure<br/>固定 EV0 中灰锚点 x 2^EV<br/>手动 EV 或显式亮度参考搜索"]
+        SAMPLE["Plan 采样<br/>scene scale + intent exposure<br/>可选且随 WB 适配的 scene 前馈"]
+        METRICS["SceneToneMetrics<br/>可靠主体与完整尾部分离<br/>LibRaw 按空间 mask 排除<br/>Core Image 按聚合比例 rank trim<br/>点状发光体分类"]
+        CONTROLS["渲染意图<br/>输出色域、tone core、AgX primaries<br/>前馈、punch 与有界明暗微调"]
+        COMPILE["分别编译<br/>SceneToneMetrics<br/>ToneCompressionPlan<br/>ColorGeometryPlan"]
+        PLAN["不可变 RenderPlan"]
+        REPORTS["可选六面板 / CSV / 文本报告"]
+
+        SCALE --> SCENE
+        SCENE --> ANALYSIS
+        ANALYSIS --> SPATIAL
+        SCENE --> SAMPLE
+        EV --> SAMPLE
+        SAMPLE --> METRICS
+        METRICS --> COMPILE
+        CONTROLS --> COMPILE
+        COMPILE --> PLAN
+        ANALYSIS -.-> METRICS
+        SPATIAL -.-> METRICS
+        ANALYSIS -.-> COMPILE
+        ANALYSIS -.-> EV
+        ANALYSIS -.-> REPORTS
+    end
+
+    RAW --> CFA
+    RAW --> META
+    RAW --> SELECT
+    RAW --> LRREF
+    LRRGB --> SCALE
+    ALIGN --> SCALE
+    CFA -.-> ANALYSIS
+    META -.-> ANALYSIS
+    CFA -.-> SPATIAL
+    META -.-> SCALE
+    SCENE -.-> REPORTS
+```
+
+第二张图展开真正的渲染过程。SDR 与 HDR 共享 capture、scene intent、曝光和可选前馈，随后在
+显示形成之前分叉；HDR 不会把已经完成的 SDR 像素当作 tone-map 输入。
+
+```mermaid
+flowchart TB
+    SCENE["存储态 scene-linear Rec.2020 frame"]
+    SCALE["解释 scene 单位<br/>stored / scene_scale x 固定锚点 x 2^EV"]
+    PREFEED["可选 scene-linear 相机响应前馈<br/>随 WB 适配；plan 编译时使用同一变换"]
+    PLAN["RenderPlan<br/>+ 独立的 Analysis 证据"]
+    MASKS["逐像素 CFA mask 与 guidance<br/>仅存在于 LibRaw 几何"]
+    LOOKPOLICY["可选本地 look 的 plan override<br/>AgX hue restore 与 target black/white"]
+
+    SCENE --> SCALE --> PREFEED
+
+    subgraph SDR["4A. SDR 显示分支"]
+        direction TB
+        RETREAT["曲线前可选 RAW clip retreat<br/>只在存在空间 CFA 证据时作用"]
+        CORE{"SDR tone core"}
+        AGX["agx<br/>inset -> 逐通道 darktable 式 C1<br/>linearize -> hue restore -> outset -> punch"]
+        GATED["gated - LibRaw 实验<br/>亮度 C1 是唯一亮度权威<br/>AgX 颜色候选先对齐到同一 Y<br/>按 RAW 余量 / 剪切 / SNR / gamut 加权混合"]
+        LUM["lum 对照<br/>Y / power / max norm -> scene C1<br/>恢复原始 RGB 比例"]
+        NEUTRAL["neutral 诊断<br/>固定 Y-ratio sigmoid<br/>不编译 scene endpoint，不使用 AgX 几何"]
+        FORMED["显示形成后的 linear Rec.2020"]
+        OUTPUT["Rec.2020 -> linear sRGB 或 Display P3"]
+        FILTER["可选 display LUT renderer<br/>display-fed FPE 或并行 scene-fed 输出变换<br/>与本地 look 互斥"]
+        GRADE["可选本地 Oklab 色度 look<br/>+ 可选显示侧高光褪色"]
+        FIT["最终权威 Oklab 保色相 gamut fit"]
+        ENCODE["sRGB/P3 OETF -> 确定性 TPDF 抖动 -> uint8"]
+
+        RETREAT --> CORE
+        CORE --> AGX --> FORMED
+        CORE --> GATED --> FORMED
+        CORE --> LUM --> FORMED
+        CORE --> NEUTRAL --> FORMED
+        FORMED --> OUTPUT
+        FORMED --> FILTER
+        OUTPUT --> GRADE
+        FILTER --> GRADE
+        GRADE --> FIT --> ENCODE
+    end
+
+    subgraph HDR["4B. 独立 HDR AgX 分支 - 仅支持 AgX"]
+        direction TB
+        HDRPLAN["编译 HdrAgxPlan<br/>HDR 自有 formation white endpoint<br/>可靠 RAW 尾部 -> knee / window / lift budget<br/>显示容量 + 通道分离权限"]
+        HRETREAT["HDR 自有 RAW clip retreat"]
+        HINSET["AgX inset + HDR 逐通道 C1 formation"]
+        LIFT["formation 内的 HDR allocation<br/>公共亮度进度 + rho 通道进度<br/>smootherstep 提升，CFA 剪切会局部收回权限"]
+        HFINISH["Hue restore + outset + punch"]
+        HP3["Rec.2020 -> extended-linear Display P3"]
+        HVOLUME["HDR color-volume fit<br/>可靠尾部限制峰值<br/>保持 linear Y 与 RGB opponent direction"]
+        ALT["Float16 RGB HDR alternate rendition"]
+
+        HDRPLAN --> HRETREAT --> HINSET --> LIFT --> HFINISH --> HP3 --> HVOLUME --> ALT
+    end
+
+    PREFEED --> RETREAT
+    PREFEED --> HRETREAT
+    RETREAT --> FILTER
+    PLAN -.-> RETREAT
+    PLAN -.-> LOOKPOLICY
+    LOOKPOLICY -.-> CORE
+    PLAN -.-> HDRPLAN
+    MASKS -.-> RETREAT
+    MASKS -.-> GATED
+    MASKS -.-> HRETREAT
+    MASKS -.-> LIFT
+
+    ENCODE --> FORMAT{"输出格式"}
+    FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
+    FORMAT -->|HDR| BASE["HDR 模式的 SDR 底图<br/>Display P3、quality 100、4:4:4<br/>禁用 look / filter / highlight fade"]
+    BASE --> PACKAGE["Core Image ISO 21496-1 写入<br/>RGB 辅助 gain map + content headroom"]
+    ALT --> PACKAGE
+    PACKAGE --> VERIFY["回读验证<br/>P3 profile、4:4:4、RGB gain map、声明余量<br/>SDR 码值误差 + 展开后 HDR 亮度/色度误差"]
+    VERIFY --> HDRJPEG["原子替换后的 HDR gain-map JPEG"]
 ```
 
 这几个层次是刻意分开的。Tone 层只负责亮度关系和显示动态范围；Color geometry 层负责
 色相路径、色度压缩与向白过渡；Capture 层提供事实，但不直接决定口味。这样调整某个环节
 时，至少能知道画面为什么发生变化。
+
+Core Image 在图里出现两次，但用途完全不同：`CIRAWFilter` 是可选的 scene decoder，
+`CIContext` 则是 HDR 容器写入器。选择 LibRaw 不妨碍使用 Apple gain-map 导出；选择 RAW 9
+也不等于直接采用 Apple 原生成片作为 HDR DRT。两种情况下，dngscan 自己的 SDR/HDR
+formation 都位于 scene 解码与 JPEG 交付之间。预览 proxy 与 C++/NumPy 分块只改变分辨率或
+执行方式，不改变上述顺序；全分辨率导出沿用相同的 plan 语义。
 
 ### 架构契约
 
@@ -321,7 +442,7 @@ RAW 9 随系统分发，一次 macOS 更新就可能换掉模型，而 `decoderV
 tone curve 对亮度与纯度的重新分配，所以 WB 与 DRT 在管线里保持独立。AsShot 相对日光
 乘子的偏离也会写入分析结果，它既是白平衡数据，也是拍摄现场光源留下的信息。
 
-我不把显示器前的肉眼判断当作绝对白点测量：眼睛已经适应了显示器和房间环境。Hunt、
+显示器前已经适应环境的肉眼不能作为绝对白点测量。Hunt、
 Stevens、Abney、Bezold–Brücke 等色貌效应还会让亮度和纯度变化被感知成色相或冷暖变化，
 肤色、天空和植物这些记忆色也不是简单的色度学目标。看见“偏色”时，先区分它来自光源、
 相机配平，还是 tone/color geometry，通常比直接转动色温更有用。
@@ -335,8 +456,8 @@ LibRaw 的三种选择处理的是重建后的观感：
 - `reconstruct` 根据幸存通道估算丢失通道，可以恢复连续结构，但色度属于推断。
 - 重建色相往往会向幸存通道偏移，因此连续不等于色彩真实。
 
-我一般用 `reconstruct` 出照片，用 `clip` 检查传感器和算法本身。无论选哪一个，RAW
-剪切证据都不会改变。
+日常出片通常以 `reconstruct` 为实用默认，检查传感器和算法本身时则更适合用 `clip`。
+无论选哪一个，RAW 剪切证据都不会改变。
 
 LibRaw 会把 `blend` 和 `reconstruct` 的 uint16 整幅缩暗，倍数正好是归一化后的最大
 白平衡增益，目的是给名义白点以上的重建值留容器码值。dngscan 现在把这段余量记进
@@ -402,7 +523,7 @@ shoulder 的位置并消耗高光余量；中间调亮度是显示侧的内部�
 同时保持数值与一阶导数连续。black/white EV、contrast、toe/shoulder power 和 latitude
 由 tone plan 提供，但 EV 0 到 18% 的校准锚点保持稳定。
 
-我选择这条结构，是因为只把场景 min/max 塞进一条普通 sigmoid 很容易让少数灯源定义
+采用这条结构，是因为只把场景 min/max 塞进一条普通 sigmoid 很容易让少数灯源定义
 white EV，结果就是高光很刺眼而主体仍然偏暗。C1 端点和主体/尾部分离，让“场景有多宽”
 与“主要内容应该落在哪里”成为两件不同的事。
 
@@ -483,16 +604,15 @@ RAW headroom retreat 只在去马赛克前 CFA 表明通道接近或到达 full-
 方向压回边界，而不是简单逐通道 clip。这样 AgX 或 P3 保下来的高光颜色不会在最后一步突然
 崩成硬原色。
 
-## 我还在保留的前馈实验
+## 保留的前馈实验
 
-我很喜欢“在进入 AgX 之前，先用测量数据补偿相机某些可重复缺陷”这个想法。更进一步，
+这个实验始于“在进入 AgX 之前，先用测量数据补偿相机某些可重复缺陷”的想法。更进一步，
 如果两套传感器与滤镜栈的光谱响应都测得足够清楚，也可以在原相机真正记录到的信息范围内，
 近似另一台相机的部分响应关系。
 
-项目里的 ARRI-like 前馈来自一个很私人的目标：我想看看能不能让 Sigma fp 稍微靠近我在
-ARRI 画面里喜欢的肤色——血色撑起来的温润感，以及偏冷 cyan 环境带来的衬托。我最初的
-猜想与 ALEV 滤镜栈较宽松的红光/近红外响应有关，而 fp/IMX410 本身也有不同的滤镜和洋红
-行为。
+项目里的 ARRI-like 前馈来自一个主观目标：让 Sigma fp 稍微靠近这个实验预期的 ARRI 肤色，
+也就是血色撑起来的温润感，以及偏冷 cyan 环境带来的衬托。最初的猜想与 ALEV 滤镜栈
+较宽松的红光/近红外响应有关，而 fp/IMX410 本身也有不同的滤镜和洋红行为。
 
 现在这份实现把公开的相机 SSF、光源 SPD 和材料反射谱做光谱积分，对皮肤、植物、cyan、
 中性与洋红等材料类别拟合受约束的 3×3 映射，再用 `(R/G, B/G)` 色度平面上的软窗口限制
@@ -507,15 +627,15 @@ ALEV III SSF 数字化自 Leonhardt & Brendel 的 CIC23 论文。ARRI 在论文�
 相机”。
 
 它有很明确的物理边界：如果两种材料在 fp 上已经成为同色异谱，逐像素矩阵不可能重新创造
-它们在 ALEV 上本应有的区别。而且传感器滤镜栈存在个体差异，严肃标定应该针对手上的每一台
-相机。我没有可控光源、标准靶和光谱设备，所以现有结果更接近一个克制的几何颜色映射，离
-我最初想要的 ARRI 肤色仍有距离。数据来源、假设、CSV 和拟合报告放在
+它们在 ALEV 上本应有的区别。而且传感器滤镜栈存在个体差异，严肃标定应该针对实际使用的
+每一台相机。目前缺少可控光源、标准靶和光谱设备，所以现有结果更接近一个克制的几何颜色映射，
+离最初设定的 ARRI 肤色目标仍有距离。数据来源、假设、CSV 和拟合报告放在
 [`dngscan_assets/spectral/`](dngscan_assets/spectral/) 里。
 
 ## 风格与 LUT
 
-仓库自带一个我自己写的 `optic_warm_cyan`，因为我平时确实喜欢用。它是 AgX 之后的 Oklab
-色度场，不是厂商 LUT，也不冒充相机前馈。
+仓库自带一个本地设计且日常使用的 `optic_warm_cyan`。它是 AgX 之后的 Oklab 色度场，
+不是厂商 LUT，也不冒充相机前馈。
 
 代码还留了 Kodak 2383、RED IPP2 和 Sony LC-709TypeA 的可选 `.cube` 槽位。合法拥有的
 LUT 可以放进 `dngscan_assets/vendor_luts/` 下对应路径，GUI 会自动识别；仓库本身不分发
@@ -595,7 +715,7 @@ scene buffer。全分辨率导出放在一次性工作进程中，结束后大�
 
 macOS 缓存默认在 `~/Library/Caches/dngscan/preview-v1`，上限 768 MB，旧条目自动淘汰。
 
-我通常从 EV 0、`AgX`、`base` 原色、camera WB 和 reconstruct 高光开始，再根据照片本身
+一个实用起点是 EV 0、`AgX`、`base` 原色、camera WB 和 reconstruct 高光，再根据照片本身
 调整。quality 100 和 4:4:4 是默认输出。
 
 ### CLI

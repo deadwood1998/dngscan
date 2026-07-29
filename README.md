@@ -1,28 +1,27 @@
 # dngscan
 
-This is a small RAW-to-JPEG tool I wrote for myself.
+dngscan is a small personal RAW-to-JPEG tool.
 
-I like what AgX does to digital images, especially its highlights and highly saturated
-colors, but I usually only want to develop one RAW through AgX rather than open a full
-photo editor. darktable's scene-linear pipeline is the foundation of this project; it
-simply contains far more than I need for this particular job.
+The starting point is a preference for how AgX handles digital images, especially
+highlights and highly saturated colors, combined with a narrow use case: developing one
+RAW through AgX without opening a full photo editor. darktable's scene-linear pipeline is
+the foundation of the project, but a complete editor contains far more than this job needs.
 
 dngscan follows that one path: read the RAW, analyse the signal the sensor actually
 recorded, form the image in scene-linear Rec.2020, compile a tone plan from the RAW
 analysis, and compress it through AgX into an sRGB or Display P3 JPEG. It is not a photo
-editor. I think of it as a very narrow digital developer, or a small signal-and-algorithm
-toy.
+editor. It is a very narrow digital developer, or a small signal-and-algorithm toy.
 
 The repository is public mainly so friends can use it too. Anyone interested can tinker
 with the code, parameters, and data from other cameras.
 
 [中文说明](README.zh-CN.md) · [License](LICENSE) · [Third-party notices](NOTICE.md)
 
-## Why I made a separate pipeline
+## Why a separate pipeline
 
-I have always thought of darktable's scene-referred pipeline as a signal-processing
-laboratory, where much of the pleasure comes from understanding what every module does
-to the signal. dngscan takes out the path I use most: LibRaw interpretation,
+darktable's scene-referred pipeline works well as a signal-processing laboratory, where
+much of the interest comes from understanding what every module does to the signal.
+dngscan isolates the path most relevant to this goal: LibRaw interpretation,
 scene-linear Rec.2020, and the curve construction and primary geometry from darktable's
 GPL `agx` module. AgX originated with Troy Sobotka and developed through the Blender /
 EaryChow ecosystem; this project mainly inherits it through darktable's photographic
@@ -47,47 +46,172 @@ chroma may retreat toward white, and when a reconstructed pixel should not be tr
 
 Exposure compensation, white balance, looks, and LUTs are different. They express
 capture intent or taste, so they remain explicit choices outside the automatic AgX
-analysis. I do not require exposure and white balance to remain untouched; I only do
-not want a content-adaptive algorithm silently turning a night scene gray or removing
-the color of its original light.
+analysis. Exposure and white balance do not have to remain untouched; the constraint is
+that a content-adaptive algorithm must not silently turn a night scene gray or remove the
+color of its original light.
 
 ## Pipeline
 
-```text
-RAW / DNG
-  |
-  +-- Capture evidence (always read before demosaic through LibRaw)
-  |     black / white level
-  |     per-channel CFA clipping and headroom
-  |     noise confidence and usable dynamic range
-  |
-  +-- Scene decoder (independent choice)
-  |     LibRaw: demosaic + selected highlight mode + spatial CFA masks
-  |     Core Image: RAW 9 reconstruction + DNG opcodes, aggregate CFA evidence only
-  |
-scene-linear Rec.2020
-  |
-  +-- optional camera-response prefeed
-  |
-  +-- Tone
-  |     black point / white point / pivot
-  |     contrast / toe / shoulder / view brightness
-  |
-  +-- Color geometry
-  |     AgX inset / outset / hue path
-  |     RAW clip retreat / punch / gamut fit
-  |     optional look or local LUT
-  |
-  +-- Delivery
-        sRGB / Display P3
-        8-bit TPDF dither
-        JPEG quality and chroma sampling
+The first graph follows capture evidence and decoded pixels until they become an
+immutable render plan. Solid arrows carry image data; dotted arrows carry evidence or
+control data.
+
+```mermaid
+flowchart TB
+    RAW["RAW / DNG"]
+
+    subgraph EVIDENCE["1. Capture evidence - always LibRaw, before demosaic"]
+        direction TB
+        CFA["Visible CFA mosaic + color index<br/>raw_image_visible / raw_colors_visible"]
+        META["Metadata<br/>black and per-channel white levels<br/>camera/daylight WB, BaselineExposure, orientation"]
+    end
+
+    subgraph DECODERS["2. Scene pixel formation - independent decoder choice"]
+        direction TB
+        SELECT{"Scene decoder"}
+        LR["LibRaw<br/>camera or daylight WB<br/>demosaic selection<br/>clip / blend / reconstruct"]
+        LRRGB["Oriented linear Rec.2020 uint16<br/>no auto-bright"]
+        CIPROBE["CIRAWFilter capability probe<br/>RAW 9 or explicit RAW 8/7 fallback"]
+        CI["Neutral Core Image RAW recipe<br/>RAW 9: CoreML reconstruction + denoise<br/>older versions: system decoder<br/>highlight recovery, lens correction, DNG opcodes"]
+        CIRGB["Extended-linear Rec.2020 RGBAh<br/>signed components and values above 1 retained"]
+        LRREF["aligned mode only<br/>half-size LibRaw reconstruct reference"]
+        ALIGN["Core Image scale policy<br/>aligned: decoded-G median ratio<br/>or unity / legacy measured"]
+        SELECT --> LR --> LRRGB
+        SELECT --> CIPROBE --> CI --> CIRGB --> ALIGN
+        LRREF --> ALIGN
+    end
+
+    subgraph CONTRACT["3. Common scene contract and analysis"]
+        direction TB
+        SCALE["Scene scale contract<br/>storage and WB headroom scale<br/>file BaselineExposure recipe<br/>optional Core Image alignment scalar"]
+        SCENE["RawBundle scene frame<br/>scene_rec2020_render + scene_scale<br/>scene-linear Rec.2020 handoff"]
+        ANALYSIS["Analysis<br/>resolve per-channel full well from saturation pile or metadata<br/>hard thresholds, clip%, 2x2 topology and ceilings<br/>noise floor / optional diagnostic SNR / usable DR<br/>decoded XYZ-Y-EV and output-gamut pressure"]
+        SPATIAL["Resolved spatial RAW evidence - LibRaw geometry only<br/>95-99% masks refreshed to measured full well<br/>headroom / clip class / SNR guidance<br/>dropped rather than borrowed by Core Image geometry"]
+        EV["Intent exposure<br/>fixed EV0 mid-gray anchor x 2^EV<br/>manual EV or explicit brightness-reference search"]
+        SAMPLE["Planning sample<br/>scene scale + intent exposure<br/>optional WB-aware scene prefeed"]
+        METRICS["SceneToneMetrics<br/>reliable body vs complete tail<br/>spatial mask exclusion on LibRaw<br/>aggregate rank trim on Core Image<br/>sparse-emitter classification"]
+        CONTROLS["Render intent<br/>output gamut, tone core, AgX primaries<br/>prefeed, punch and bounded tone biases"]
+        COMPILE["Compile independent plans<br/>SceneToneMetrics<br/>ToneCompressionPlan<br/>ColorGeometryPlan"]
+        PLAN["Immutable RenderPlan"]
+        REPORTS["Optional dashboard / CSV / text report"]
+
+        SCALE --> SCENE
+        SCENE --> ANALYSIS
+        ANALYSIS --> SPATIAL
+        SCENE --> SAMPLE
+        EV --> SAMPLE
+        SAMPLE --> METRICS
+        METRICS --> COMPILE
+        CONTROLS --> COMPILE
+        COMPILE --> PLAN
+        ANALYSIS -.-> METRICS
+        SPATIAL -.-> METRICS
+        ANALYSIS -.-> COMPILE
+        ANALYSIS -.-> EV
+        ANALYSIS -.-> REPORTS
+    end
+
+    RAW --> CFA
+    RAW --> META
+    RAW --> SELECT
+    RAW --> LRREF
+    LRRGB --> SCALE
+    ALIGN --> SCALE
+    CFA -.-> ANALYSIS
+    META -.-> ANALYSIS
+    CFA -.-> SPATIAL
+    META -.-> SCALE
+    SCENE -.-> REPORTS
+```
+
+The second graph expands the actual render. SDR and HDR share capture, scene intent,
+exposure, and the optional prefeed, then split before display formation. HDR never uses
+the completed SDR pixels as its tone-map input.
+
+```mermaid
+flowchart TB
+    SCENE["Stored scene-linear Rec.2020 frame"]
+    SCALE["Interpret scene units<br/>stored / scene_scale x fixed anchor x 2^EV"]
+    PREFEED["Optional scene-linear camera-response prefeed<br/>WB-adapted; also used while compiling the plan"]
+    PLAN["RenderPlan<br/>+ Analysis as separate evidence"]
+    MASKS["Per-pixel CFA masks and guidance<br/>LibRaw geometry only"]
+    LOOKPOLICY["Optional local-look plan overrides<br/>AgX hue restore and target black/white"]
+
+    SCENE --> SCALE --> PREFEED
+
+    subgraph SDR["4A. SDR display branch"]
+        direction TB
+        RETREAT["Optional RAW clip retreat before the curve<br/>only where spatial CFA evidence exists"]
+        CORE{"SDR tone core"}
+        AGX["agx<br/>inset -> per-channel darktable-style C1<br/>linearize -> hue restore -> outset -> punch"]
+        GATED["gated - LibRaw experiment<br/>luminance C1 is brightness authority<br/>Y-aligned AgX color candidate<br/>RAW headroom / clip / SNR / gamut weighted blend"]
+        LUM["lum comparison<br/>Y / power / max norm -> scene C1<br/>restore original RGB ratio"]
+        NEUTRAL["neutral diagnostic<br/>fixed Y-ratio sigmoid<br/>no scene endpoint compilation, no AgX geometry"]
+        FORMED["Display-formed linear Rec.2020"]
+        OUTPUT["Rec.2020 -> linear sRGB or Display P3"]
+        FILTER["Optional display LUT renderer<br/>display-fed FPE or parallel scene-fed output transform<br/>mutually exclusive with local look"]
+        GRADE["Optional local Oklab chroma look<br/>+ optional display-side highlight fade"]
+        FIT["Authoritative Oklab hue-preserving gamut fit"]
+        ENCODE["sRGB/P3 OETF -> deterministic TPDF dither -> uint8"]
+
+        RETREAT --> CORE
+        CORE --> AGX --> FORMED
+        CORE --> GATED --> FORMED
+        CORE --> LUM --> FORMED
+        CORE --> NEUTRAL --> FORMED
+        FORMED --> OUTPUT
+        FORMED --> FILTER
+        OUTPUT --> GRADE
+        FILTER --> GRADE
+        GRADE --> FIT --> ENCODE
+    end
+
+    subgraph HDR["4B. Independent HDR AgX branch - AgX only"]
+        direction TB
+        HDRPLAN["Compile HdrAgxPlan<br/>HDR-owned formation white endpoint<br/>reliable RAW tail -> knee / window / lift budget<br/>display capacity + channel-separation permission"]
+        HRETREAT["HDR-owned RAW clip retreat"]
+        HINSET["AgX inset + HDR per-channel C1 formation"]
+        LIFT["HDR allocation inside formation<br/>common luminance progress + rho channel progress<br/>smootherstep lift, locally withdrawn by CFA clipping"]
+        HFINISH["Hue restore + outset + punch"]
+        HP3["Rec.2020 -> extended-linear Display P3"]
+        HVOLUME["HDR color-volume fit<br/>reliable-tail peak ceiling<br/>preserve linear Y and RGB opponent direction"]
+        ALT["Float16 RGB HDR alternate rendition"]
+
+        HDRPLAN --> HRETREAT --> HINSET --> LIFT --> HFINISH --> HP3 --> HVOLUME --> ALT
+    end
+
+    PREFEED --> RETREAT
+    PREFEED --> HRETREAT
+    RETREAT --> FILTER
+    PLAN -.-> RETREAT
+    PLAN -.-> LOOKPOLICY
+    LOOKPOLICY -.-> CORE
+    PLAN -.-> HDRPLAN
+    MASKS -.-> RETREAT
+    MASKS -.-> GATED
+    MASKS -.-> HRETREAT
+    MASKS -.-> LIFT
+
+    ENCODE --> FORMAT{"Output format"}
+    FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
+    FORMAT -->|HDR| BASE["HDR mode SDR base<br/>Display P3, quality 100, 4:4:4<br/>look/filter/highlight-fade disabled"]
+    BASE --> PACKAGE["Core Image ISO 21496-1 writer<br/>RGB auxiliary gain map + content headroom"]
+    ALT --> PACKAGE
+    PACKAGE --> VERIFY["Read-back verification<br/>P3 profile, 4:4:4, RGB gain map, declared headroom<br/>SDR code error + expanded HDR luminance/chroma error"]
+    VERIFY --> HDRJPEG["Atomic HDR gain-map JPEG"]
 ```
 
 These layers are deliberately separate. Tone controls luminance relationships and the
 display dynamic range. Color geometry controls hue paths, chroma compression, and the
 path to white. Capture supplies evidence without directly deciding taste. When one
 stage changes the image, its reason should remain identifiable.
+
+Core Image appears twice for unrelated jobs: `CIRAWFilter` is an optional scene decoder,
+while `CIContext` is the HDR container writer. Selecting LibRaw does not prevent Apple
+gain-map export, and selecting RAW 9 does not turn Apple's native render into the HDR DRT.
+In both cases dngscan's own SDR/HDR formation still sits between scene decoding and JPEG
+delivery. Preview proxies and streamed C++/NumPy chunks change resolution or execution,
+not this ordering; full-resolution export uses the same plan semantics.
 
 ### Architecture contract
 
@@ -415,7 +539,7 @@ why WB and the DRT remain separate stages. The AsShot deviation from the dayligh
 multipliers is also written into the analysis: it is both WB data and evidence about the
 light at capture.
 
-I do not treat an adapted eye in front of a display as an absolute white-point meter.
+An adapted eye in front of a display is not an absolute white-point meter.
 Hunt, Stevens, Abney, and Bezold-Brücke appearance effects can make changes in luminance
 and purity look like changes in hue or warmth, while memory colors such as skin, sky,
 and foliage are not simple colorimetric targets. When something looks “off,” separating
@@ -433,8 +557,9 @@ LibRaw's three choices affect the appearance after reconstruction:
   continuous structure, but its chroma is inferred.
 - Its hue often leans toward the surviving channel, so continuity is not color truth.
 
-I generally use `reconstruct` for photographs and `clip` when inspecting the sensor or
-the algorithm itself. The saved RAW clipping evidence is unchanged in every case.
+For normal photographs, `reconstruct` is the practical default; `clip` is more useful when
+inspecting the sensor or the algorithm itself. The saved RAW clipping evidence is unchanged
+in every case.
 
 LibRaw stores `blend` and `reconstruct` darker in uint16 by exactly the normalized peak
 white-balance multiplier, reserving container codes for reconstructed values above
@@ -618,17 +743,17 @@ target sRGB/P3 gamut back along Oklab chroma rather than clipping each RGB chann
 keeps highlight colors retained by AgX or P3 from collapsing into hard primaries at the
 last step.
 
-## The prefeed experiment I am keeping
+## The prefeed experiment
 
-I like the idea of compensating repeatable camera defects from measurements before the
-image reaches AgX. If two sensor and filter-stack responses are measured well enough,
-the same layer can also approximate some response relationships of another camera,
-within the information the original sensor actually recorded.
+The experiment starts from compensating repeatable camera defects with measurements
+before the image reaches AgX. If two sensor and filter-stack responses are measured well
+enough, the same layer can also approximate some response relationships of another
+camera, within the information the original sensor actually recorded.
 
-The included ARRI-like prefeed came from a personal goal: I wanted to see whether the
-Sigma fp could move a little toward the skin I like in ARRI footage, with blood warmth
-set against a cooler cyan field. My original suspicion involved the ALEV filter stack's
-red/near-IR behavior and the different filter and magenta behavior of the fp/IMX410.
+The included ARRI-like prefeed came from a subjective target: moving the Sigma fp a little
+toward the warm skin and cooler cyan field associated here with ARRI footage. The original
+hypothesis involved the ALEV filter stack's red/near-IR behavior and the different filter
+and magenta behavior of the fp/IMX410.
 
 The current implementation integrates public camera SSFs, illuminant SPDs, and material
 reflectance spectra. It fits constrained 3x3 mappings for skin, foliage, cyan, neutral,
@@ -648,15 +773,16 @@ substitutions explicit rather than treating “same CMOS” as “same camera.�
 There is a firm physical limit. If two materials have already become metameric on the
 fp, a per-pixel matrix cannot recreate the distinction they would have shown on ALEV.
 Sensor stacks also vary between individual bodies, so serious calibration should target
-the exact camera in hand. I do not have controlled illuminants, targets, or spectral
-equipment, and the present result is closer to a restrained geometric color mapping
-than the ARRI skin response I originally wanted. Sources, assumptions, CSV data, and
-fit reports are in [`dngscan_assets/spectral/`](dngscan_assets/spectral/).
+the exact camera in hand. Controlled illuminants, targets, and spectral equipment were
+not available for this calibration, so the present result is closer to a restrained
+geometric color mapping than the original ARRI skin target. Sources, assumptions, CSV
+data, and fit reports are in [`dngscan_assets/spectral/`](dngscan_assets/spectral/).
 
 ## Looks and LUTs
 
-The repository includes one look I wrote, `optic_warm_cyan`, because I actually use it.
-It is an Oklab chroma field after AgX, not a vendor LUT and not a camera prefeed.
+The repository includes one locally designed and regularly used look,
+`optic_warm_cyan`. It is an Oklab chroma field after AgX, not a vendor LUT and not a
+camera prefeed.
 
 The code also keeps optional `.cube` slots for Kodak 2383, RED IPP2, and Sony
 LC-709TypeA. Legally obtained LUTs can be placed in the corresponding paths under
@@ -752,9 +878,9 @@ server.
 On macOS the cache defaults to `~/Library/Caches/dngscan/preview-v1`, is limited to
 768 MB, and evicts older entries automatically.
 
-I normally start at EV 0 with `AgX`, `base` primaries, camera WB, and highlight
-reconstruction, then adjust from the photograph itself. Quality 100 and 4:4:4 are the
-default output settings.
+A practical starting point is EV 0 with `AgX`, `base` primaries, camera WB, and highlight
+reconstruction, followed by adjustments based on the photograph. Quality 100 and 4:4:4
+are the default output settings.
 
 ### CLI
 
