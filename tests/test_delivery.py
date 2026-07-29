@@ -64,6 +64,14 @@ class DeliveryProfileTests(unittest.TestCase):
             )
 
 
+    def test_cli_ultrahdr_heic_sets_heic_container(self) -> None:
+        args = parse_args(
+            ["photo.dng", "--output-format", "ultrahdr-heic", "--jpeg", "out.jpg"]
+        )
+        self.assertEqual(args.delivery.container, "heic")
+        self.assertEqual(args.jpeg_quality, 100)
+
+
 class ShareEncodeLiveTests(unittest.TestCase):
     def test_share_profile_writes_iso_gainmap(self) -> None:
         available, reason = apple_gainmap_backend_status()
@@ -109,6 +117,47 @@ class ShareEncodeLiveTests(unittest.TestCase):
             )
             self.assertLess(path.stat().st_size, Path(td, "archive.jpg").stat().st_size)
             self.assertEqual(archive["chroma_subsampling"], "4:4:4")
+
+    def test_heic_archive_writes_iso_gainmap(self) -> None:
+        from dngscan.gainmap import write_apple_gainmap_heic
+
+        available, reason = apple_gainmap_backend_status()
+        if not available:
+            self.skipTest(reason)
+
+        h, w = 32, 64
+        ramp = np.linspace(0, 255, w, dtype=np.uint8)
+        base = np.empty((h, w, 3), dtype=np.uint8)
+        base[:, :, 0] = ramp[None, :]
+        base[:, :, 1] = np.minimum(ramp[None, :], 220)
+        base[:, :, 2] = np.minimum(ramp[None, :], 180)
+        linear = srgb_decode(base.astype(np.float32) / 255.0)
+        gain = np.exp2(np.linspace(0.0, 3.0, w, dtype=np.float32))[None, :, None]
+        hdr = np.empty((h, w, 4), dtype=np.float16)
+        hdr[:, :, :3] = np.clip(linear * gain, 0.0, 8.0).astype(np.float16)
+        hdr[:, :, 3] = np.float16(1.0)
+        profile = resolve_delivery_profile("archive", container="heic")
+
+        with tempfile.TemporaryDirectory() as td:
+            heic_path = Path(td) / "archive.heic"
+            jpeg_path = Path(td) / "archive.jpg"
+            heic = write_apple_gainmap_heic(
+                base, hdr, heic_path, 100, 3.0, delivery=profile
+            )
+            jpeg = write_apple_gainmap_jpeg(
+                base,
+                hdr,
+                jpeg_path,
+                100,
+                3.0,
+                delivery=resolve_delivery_profile("archive", container="jpeg"),
+            )
+            self.assertTrue(heic["has_iso_gainmap"])
+            self.assertEqual(heic["delivery_container"], "heic")
+            self.assertEqual(heic["chroma_subsampling"], "4:4:4")
+            self.assertNotEqual(heic["gainmap_pixel_format"], "L008")
+            self.assertLess(heic_path.stat().st_size, jpeg_path.stat().st_size)
+            self.assertEqual(jpeg["delivery_container"], "jpeg")
 
 
 if __name__ == "__main__":

@@ -10,8 +10,14 @@ from .color import output_gamut_label, output_icc_profile_bytes
 from .constants import (
     DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, HDR_DRT_CHOICES,
 )
-from .delivery import DeliveryProfile, FinishedPair, resolve_delivery_profile
-from .gainmap import apple_gainmap_backend_status, encode_finished_pair_jpeg
+from .delivery import (
+    DeliveryProfile,
+    FinishedPair,
+    container_for_output_format,
+    is_hdr_output_format,
+    resolve_delivery_profile,
+)
+from .gainmap import apple_gainmap_backend_status, encode_finished_pair
 from .models import Analysis, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import render_output_u8
 
@@ -68,31 +74,14 @@ def export_ultrahdr_jpeg(
     delivery: DeliveryProfile | None = None,
     chroma: str = "444",
 ) -> dict[str, Any]:
-    """Write a Display P3 JPEG carrying an ISO 21496-1 gain map.
-
-    Both renditions come from the same scene-linear buffer, then enter independent SDR and
-    HDR display formations. The gain map is only their delivery representation; it does
-    not constrain any HDR pixel region to match SDR. A viewer that ignores it
-    still sees the existing SDR photograph.
-
-    That base is the same *rendition* as an ordinary SDR export -- the identical
-    render_output_u8 call on the identical plan -- but not the same bytes. Core Image
-    writes this file while Pillow writes the SDR one, and two JPEG encoders do not agree
-    bit for bit. On a high-ISO frame the same intended pixels differed by up to 30/255,
-    while signed channel bias remained 0.13/255 and 8x8-block p99 error 0.94/255. Delivery
-    therefore gates low-frequency rendition fidelity rather than treating sensor noise as
-    a colour transform.
-
-    Display looks and filters are refused rather than dropped: they are SDR operators with
-    no HDR meaning yet, and silently ignoring them would make the two renditions disagree
-    for a reason no diagnostic would surface.
-    """
+    """Write Display P3 Ultrahdr (JPEG or HEIC) carrying an ISO 21496-1 gain map."""
     output_gamut = "p3"
     profile = delivery or resolve_delivery_profile(
         "archive" if int(quality) >= 98 and str(chroma) == "444" else "share",
         quality=int(quality),
         chroma=str(chroma),
     )
+    container_label = "HEIC" if profile.container == "heic" else "JPEG"
     if str(hdr_drt) not in HDR_DRT_CHOICES:
         raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（可选：{'/'.join(HDR_DRT_CHOICES)}）")
     if look != "none" or display_filter != "none":
@@ -102,7 +91,7 @@ def export_ultrahdr_jpeg(
         )
     supported, reason = apple_gainmap_backend_status()
     if not supported:
-        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {reason}")
+        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR {container_label}: {reason}")
 
     try:
         from .grade import RENDER_MODE
@@ -136,9 +125,6 @@ def export_ultrahdr_jpeg(
 
         from .hdr_agx import render_ultrahdr_agx_pair
 
-        # One shared intent walk: scale / scene transform / retreat once, then fork into
-        # independent SDR and HDR display formations. Avoids paying for two full-resolution
-        # scene preps on every Ultrahdr export.
         base_u8, hdr_linear = render_ultrahdr_agx_pair(
             bundle,
             analysis,
@@ -148,9 +134,6 @@ def export_ultrahdr_jpeg(
             scene_transform,
             scene_transform_strength,
         )
-        # A robust p99.99 headroom is useful for the report, but it is not the container
-        # declaration. The writer derives Apple content headroom from the exact finite peak
-        # of the packed rendition and verifies it after round-trip.
         actual = achieved_headroom(hdr_linear)
         peak = float(2.0 ** hdr_plan.tone.display_headroom_ev)
         pair = FinishedPair(
@@ -159,10 +142,8 @@ def export_ultrahdr_jpeg(
             display_headroom_ev=float(hdr_plan.tone.display_headroom_ev),
             output_gamut=output_gamut,
         )
-        info = encode_finished_pair_jpeg(pair, out_path, profile)
+        info = encode_finished_pair(pair, out_path, profile)
         info["hdr_plan"] = describe_hdr_plan(hdr_plan)
-        # All four headrooms, never one standing in for another: capacity, what the RAW
-        # tail earned, what the compiled shoulder carries, and what pixels reached.
         info["display_headroom_ev"] = float(hdr_plan.tone.display_headroom_ev)
         info["requested_headroom_ev"] = float(hdr_plan.tone.requested_headroom_ev)
         info["rendered_headroom_ev"] = float(hdr_plan.tone.rendered_headroom_ev)
@@ -177,7 +158,9 @@ def export_ultrahdr_jpeg(
     except RuntimeError:
         raise
     except Exception as exc:
-        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {exc}") from exc
+        raise RuntimeError(
+            f"Cannot export Apple ISO gain-map HDR {container_label}: {exc}"
+        ) from exc
 
 
 def export_srgb_jpeg(
@@ -239,7 +222,24 @@ def export_jpeg(
     delivery: DeliveryProfile | None = None,
     chroma: str = "444",
 ) -> Any:
-    if output_format == "ultrahdr":
+    if is_hdr_output_format(output_format):
+        cont = container_for_output_format(output_format)
+        profile = delivery
+        if profile is None:
+            profile = resolve_delivery_profile(
+                "archive" if int(quality) >= 98 and str(chroma) == "444" else "share",
+                quality=int(quality),
+                chroma=str(chroma),
+                container=cont,
+            )
+        elif profile.container != cont:
+            profile = DeliveryProfile(
+                name=profile.name,
+                quality=profile.quality,
+                chroma=profile.chroma,
+                container=cont,
+                tolerances=profile.tolerances,
+            )
         return export_ultrahdr_jpeg(
             path,
             out_path,
@@ -259,7 +259,7 @@ def export_jpeg(
             agx_primaries,
             punch_scale,
             hdr_drt=hdr_drt,
-            delivery=delivery,
+            delivery=profile,
             chroma=chroma,
         )
     if output_format != "sdr":

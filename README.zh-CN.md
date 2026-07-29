@@ -86,6 +86,10 @@ python -m dngscan photo.dng --jpeg photo_p3.jpg \
 python -m dngscan photo.dng --jpeg photo_hdr.jpg \
   --output-format ultrahdr --hdr-headroom 3
 
+# 同内容 HEIC 容器（通常更小；路径为 .jpg 时会自动改成 .heic）
+python -m dngscan photo.dng --jpeg photo_hdr.heic \
+  --output-format ultrahdr-heic --hdr-headroom 3
+
 # RAW 分析图和 CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
 
@@ -761,8 +765,9 @@ SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4
 代价是色度分辨率。Display P3 会嵌入 ICC profile，找不到 profile 就停止导出，不写未标记
 的宽色域数据。
 
-HDR 输出是可选的 Apple ISO 21496-1 gain-map JPEG，目前只在 macOS/Core Image 后端
-可用，并且只接 AgX tone core。它不是把 SDR 成片直接放大：同一份 scene-linear
+HDR 输出是可选的 Apple ISO 21496-1 gain-map 封装（JPEG 或 HEIC），目前只在
+macOS/Core Image 后端可用，并且只接 AgX tone core。HEIC 与 JPEG 共用同一套 formation
+masters，只换最后一跳编码（通常更小）。它不是把 SDR 成片直接放大：同一份 scene-linear
 Rec.2020 在 display formation 前分成 SDR AgX 与 HDR AgX 两条独立 DRT。两者共享拍摄曝光
 意图和 RAW 分析，但 HDR 自己持有 tone curve、色彩几何和扩展 P3 投影，不要求任何像素区域
 与 SDR 成片一致。

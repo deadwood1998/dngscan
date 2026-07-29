@@ -97,6 +97,10 @@ python -m dngscan photo.dng --jpeg photo_p3.jpg \
 python -m dngscan photo.dng --jpeg photo_hdr.jpg \
   --output-format ultrahdr --hdr-headroom 3
 
+# Same formation, HEIC container (usually smaller; auto .heic if path ends in .jpg)
+python -m dngscan photo.dng --jpeg photo_hdr.heic \
+  --output-format ultrahdr-heic --hdr-headroom 3
+
 # RAW analysis dashboard and CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
 
@@ -915,8 +919,10 @@ does not alter the tone plan. 4:2:2 and 4:2:0 are available when smaller files m
 the cost of chroma resolution. Display P3 embeds an ICC profile and export stops if that
 profile is unavailable rather than writing untagged wide-gamut values.
 
-HDR output is an optional Apple ISO 21496-1 gain-map JPEG, currently available only through
-the macOS/Core Image backend and only with the AgX tone core. It does not amplify the
+HDR output is an optional Apple ISO 21496-1 gain-map package (JPEG or HEIC), currently
+available only through the macOS/Core Image backend and only with the AgX tone core. HEIC
+uses the same formation masters; only the last encode hop changes (usually smaller files).
+It does not amplify the
 finished SDR image. The same scene-linear Rec.2020 buffer splits before display formation
 into independent SDR and HDR AgX DRTs. They share capture exposure intent and RAW analysis,
 but HDR owns its tone curve, colour geometry, and extended-P3 projection; no pixel region

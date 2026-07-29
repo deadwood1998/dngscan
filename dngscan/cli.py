@@ -22,6 +22,8 @@ from .constants import (
 from .delivery import (
     DEFAULT_DELIVERY_PROFILE,
     DELIVERY_PROFILE_CHOICES,
+    container_for_output_format,
+    is_hdr_output_format,
     resolve_delivery_profile,
 )
 from .export import chroma_to_subsampling, export_jpeg
@@ -99,7 +101,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--output-format",
         choices=JPEG_OUTPUT_FORMATS,
         default="sdr",
-        help="JPEG 输出格式: sdr=普通 JPEG；ultrahdr=Apple 原生 ISO 21496-1 HDR JPEG（P3 SDR 底图）",
+        help=(
+            "输出格式: sdr=普通 JPEG；ultrahdr=Apple ISO gain-map JPEG；"
+            "ultrahdr-heic=同内容 HEIC 容器（通常更小）"
+        ),
     )
     parser.add_argument(
         "--hdr-headroom",
@@ -264,22 +269,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ):
         if not -1.0 <= getattr(args, _name) <= 1.0:
             parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
-    if args.output_format == "ultrahdr" and args.grade != "none":
+    if is_hdr_output_format(args.output_format) and args.grade != "none":
         parser.error(
             "Ultrahdr 第一版不支持 display look/filter；请使用 --grade none"
         )
-    if args.output_format == "ultrahdr" and abs(float(args.highlight_fade)) > 1e-9:
+    if is_hdr_output_format(args.output_format) and abs(float(args.highlight_fade)) > 1e-9:
         parser.error(
             "HDR 尚未定义 SDR 显示侧的高光褪白算子；"
             "请使用 --highlight-fade 0"
         )
-    if args.output_format == "ultrahdr" and args.tone_core != "agx":
+    if is_hdr_output_format(args.output_format) and args.tone_core != "agx":
         parser.error("HDR 输出当前只实现 AgX tone core；请使用 --tone-core agx")
     try:
         args.delivery = resolve_delivery_profile(
             args.delivery_profile,
             quality=args.jpeg_quality,
             chroma=args.chroma,
+            container=container_for_output_format(args.output_format),
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -310,7 +316,7 @@ def main(argv: list[str]) -> int:
         if not args.path.is_file():
             raise FileNotFoundError(f"Input path is not a file: {args.path}")
         require_dependencies()
-        if args.output_format == "ultrahdr":
+        if is_hdr_output_format(args.output_format):
             from .gainmap import apple_gainmap_backend_status
 
             available, reason = apple_gainmap_backend_status()
@@ -368,7 +374,7 @@ def main(argv: list[str]) -> int:
             diagnostics=diagnostics_requested,
             gamut_names=None
             if diagnostics_requested
-            else (output_gamut_space("p3" if args.output_format == "ultrahdr" else args.output_gamut),),
+            else (output_gamut_space("p3" if is_hdr_output_format(args.output_format) else args.output_gamut),),
         )
         look, look_strength, display_filter, filter_strength = resolve_grade(
             args.grade, args.grade_strength
@@ -376,7 +382,7 @@ def main(argv: list[str]) -> int:
 
         ev_input = parse_ev_value(args.ev)
         auto_ev_result: AutoEvResult | None = None
-        jpeg_output_gamut = "p3" if args.output_format == "ultrahdr" else args.output_gamut
+        jpeg_output_gamut = "p3" if is_hdr_output_format(args.output_format) else args.output_gamut
         if is_ev_auto(ev_input):
             if args.jpeg is None and not scan_requested:
                 raise ValueError("--ev auto 需要同时导出 JPEG（--jpeg）或诊断图（--scan / --out）")
@@ -406,6 +412,9 @@ def main(argv: list[str]) -> int:
             plot_dashboard(bundle, analysis, y, ev, out_path, auto_ev=auto_ev_result)
 
         jpeg_path = args.jpeg
+        if jpeg_path is not None and args.output_format == "ultrahdr-heic":
+            if jpeg_path.suffix.lower() in {".jpg", ".jpeg", ""}:
+                jpeg_path = jpeg_path.with_suffix(".heic")
         jpeg_icc_embedded = False
         render_plan = (
             build_render_plan(
@@ -505,10 +514,12 @@ def main(argv: list[str]) -> int:
             args.scene_transform,
             args.scene_transform_strength,
         )
-        if jpeg_path is not None and args.output_format == "ultrahdr":
+        if jpeg_path is not None and is_hdr_output_format(args.output_format):
+            container = "HEIC" if args.output_format == "ultrahdr-heic" else "JPEG"
             print(
-                f"JPEG HDR: Apple Core Image ISO 21496-1；Display P3 SDR 底图；"
-                f"darktable 式 HDR AgX RGB gain map；capacity=+{args.hdr_headroom:.2f}EV"
+                f"{container} HDR: Apple Core Image ISO 21496-1；Display P3 SDR 底图；"
+                f"darktable 式 HDR AgX RGB gain map；capacity=+{args.hdr_headroom:.2f}EV；"
+                f"delivery={args.delivery_profile}"
             )
         return 0
     except Exception as exc:

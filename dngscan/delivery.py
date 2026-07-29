@@ -14,6 +14,7 @@ from typing import Any
 
 DELIVERY_PROFILE_CHOICES = ("archive", "share")
 DEFAULT_DELIVERY_PROFILE = "archive"
+DELIVERY_CONTAINER_CHOICES = ("jpeg", "heic")
 
 # Share defaults for Ultrahdr / SDR when the user picks the profile without overriding
 # quality/chroma. Archive keeps the historical q100 / 444 Ultrahdr defaults.
@@ -124,13 +125,26 @@ def resolve_delivery_profile(
         raise ValueError("JPEG quality 必须在 1-100 之间")
     if str(c) not in ("444", "422", "420"):
         raise ValueError(f"未知 chroma：{c}")
+    cont = str(container or "jpeg").strip().lower()
+    if cont not in DELIVERY_CONTAINER_CHOICES:
+        raise ValueError(
+            f"未知 delivery container：{container}（可选：{'/'.join(DELIVERY_CONTAINER_CHOICES)}）"
+        )
     return DeliveryProfile(
         name=key,
         quality=int(q),
         chroma=str(c),
-        container=str(container),
+        container=cont,
         tolerances=tolerances,
     )
+
+
+def is_hdr_output_format(output_format: str) -> bool:
+    return str(output_format) in ("ultrahdr", "ultrahdr-heic")
+
+
+def container_for_output_format(output_format: str) -> str:
+    return "heic" if str(output_format) == "ultrahdr-heic" else "jpeg"
 
 
 def profile_from_encode_settings(quality: int, chroma: str) -> DeliveryProfile:

@@ -48,7 +48,8 @@ OUTPUT_GAMUT_SPACES = {"srgb": "sRGB", "p3": "P3"}
 OUTPUT_GAMUT_LABELS = {"srgb": "sRGB", "p3": "Display P3"}
 
 
-JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr")
+JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr", "ultrahdr-heic")
+HDR_OUTPUT_FORMATS = ("ultrahdr", "ultrahdr-heic")
 
 
 # HDR authoring policy. Apple defines headroom as a ratio and does not mandate an absolute

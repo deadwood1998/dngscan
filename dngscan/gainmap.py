@@ -67,6 +67,11 @@ def _apple_gainmap_api_status() -> tuple[bool, str]:
         return False, "当前 macOS/PyObjC 不暴露 ISO gain-map 编码 API：" + ", ".join(missing)
     if not hasattr(Quartz.CIContext, "writeJPEGRepresentationOfImage_toURL_colorSpace_options_error_"):
         return False, "当前 Core Image 不支持直接写入 HDR JPEG"
+    if not hasattr(
+        Quartz.CIContext,
+        "writeHEIFRepresentationOfImage_toURL_format_colorSpace_options_error_",
+    ):
+        return False, "当前 Core Image 不支持直接写入 HDR HEIC"
     context = Quartz.CIContext.contextWithOptions_(
         {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
     )
@@ -271,17 +276,61 @@ def _hdr_roundtrip_is_acceptable(
     )
 
 
-def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
-    """JPEG-domain error of the SDR rendition seen by gain-map-unaware readers.
+def _read_primary_rgb_u8(path: Path) -> Any:
+    """Decode the primary SDR image without requiring Pillow HEIC support.
 
-    Raw per-pixel error is content-dependent because JPEG is lossy even at quality 100;
-    high-ISO noise is especially expensive. Signed channel bias and 8x8 block means expose
-    an actual colour/tone transform while discounting zero-mean DCT-scale texture loss.
+    JPEG still goes through Pillow when available (matches historical base gates). HEIC
+    always uses ImageIO via Core Image so macOS can verify the gain-map unaware view.
     """
-    from PIL import Image
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        try:
+            from PIL import Image
 
-    with Image.open(path) as image:
-        decoded = np.asarray(image.convert("RGB"), dtype=np.uint8)
+            with Image.open(path) as image:
+                return np.asarray(image.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            pass
+
+    import Quartz  # type: ignore
+    from Foundation import NSURL  # type: ignore
+
+    url = NSURL.fileURLWithPath_(str(path))
+    image = Quartz.CIImage.imageWithContentsOfURL_(url)
+    if image is None:
+        raise RuntimeError(f"无法解码主图：{path}")
+    extent = image.extent()
+    width = int(round(float(extent.size.width)))
+    height = int(round(float(extent.size.height)))
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"主图尺寸无效：{path}")
+    p3 = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceDisplayP3)
+    context = Quartz.CIContext.contextWithOptions_(
+        {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
+    )
+    if context is None or p3 is None:
+        raise RuntimeError("Core Image 无法创建主图解码上下文")
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
+        image,
+        rgba,
+        int(rgba.strides[0]),
+        extent,
+        Quartz.kCIFormatRGBA8,
+        p3,
+    )
+    return np.ascontiguousarray(rgba[:, :, :3])
+
+
+def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
+    """Encoded-domain error of the SDR rendition seen by gain-map-unaware readers.
+
+    Raw per-pixel error is content-dependent because lossy codecs remain lossy even at
+    quality 100; high-ISO noise is especially expensive. Signed channel bias and 8x8
+    block means expose an actual colour/tone transform while discounting zero-mean
+    high-frequency texture loss.
+    """
+    decoded = np.asarray(_read_primary_rgb_u8(path), dtype=np.uint8)
     intended = np.asarray(intended_rgb_u8, dtype=np.uint8)
     if decoded.shape != intended.shape:
         return {
@@ -372,14 +421,14 @@ def _ciimage_from_rgba(array: Any, pixel_format: int, color_space: Any) -> tuple
     return image, data
 
 
-def inspect_gainmap_jpeg(path: Path) -> dict[str, Any]:
-    """Read the properties needed to prove an Apple-written ISO gain-map JPEG."""
+def inspect_gainmap_file(path: Path) -> dict[str, Any]:
+    """Read the properties needed to prove an Apple-written ISO gain-map file."""
     import Quartz  # type: ignore
     from Foundation import NSURL  # type: ignore
 
     source = Quartz.CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(str(path)), None)
     if source is None:
-        raise RuntimeError(f"ImageIO 无法读取输出 JPEG：{path}")
+        raise RuntimeError(f"ImageIO 无法读取输出文件：{path}")
     primary = Quartz.CGImageSourceCopyPropertiesAtIndex(source, 0, None) or {}
     file_props = Quartz.CGImageSourceCopyProperties(source, None) or {}
     contents = file_props.get(Quartz.kCGImagePropertyFileContentsDictionary, {})
@@ -408,6 +457,11 @@ def inspect_gainmap_jpeg(path: Path) -> dict[str, Any]:
     }
 
 
+def inspect_gainmap_jpeg(path: Path) -> dict[str, Any]:
+    """Backward-compatible alias for JPEG/HEIC ISO gain-map inspection."""
+    return inspect_gainmap_file(path)
+
+
 def write_apple_gainmap_jpeg(
     base_rgb_u8: Any,
     hdr_rgba_half: Any,
@@ -419,16 +473,74 @@ def write_apple_gainmap_jpeg(
     chroma: str = "444",
     _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
-    """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map.
-
-    ``delivery`` selects encode quality and round-trip gates. Formation masters are
-    unchanged: softer profiles only change the last JPEG hop.
-    """
+    """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map."""
     profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
+    if profile.container != "jpeg":
+        profile = DeliveryProfile(
+            name=profile.name,
+            quality=profile.quality,
+            chroma=profile.chroma,
+            container="jpeg",
+            tolerances=profile.tolerances,
+        )
+    return write_apple_gainmap_file(
+        base_rgb_u8,
+        hdr_rgba_half,
+        out_path,
+        hdr_headroom_ev,
+        delivery=profile,
+        _verify_roundtrip_capability=_verify_roundtrip_capability,
+    )
+
+
+def write_apple_gainmap_heic(
+    base_rgb_u8: Any,
+    hdr_rgba_half: Any,
+    out_path: Path,
+    quality: int,
+    hdr_headroom_ev: float,
+    *,
+    delivery: DeliveryProfile | None = None,
+    chroma: str = "444",
+    _verify_roundtrip_capability: bool = True,
+) -> dict[str, Any]:
+    """Write and validate a Display P3 HEIC carrying an ISO 21496-1 gain map."""
+    profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
+    profile = DeliveryProfile(
+        name=profile.name,
+        quality=profile.quality,
+        chroma=profile.chroma,
+        container="heic",
+        tolerances=profile.tolerances,
+    )
+    return write_apple_gainmap_file(
+        base_rgb_u8,
+        hdr_rgba_half,
+        out_path,
+        hdr_headroom_ev,
+        delivery=profile,
+        _verify_roundtrip_capability=_verify_roundtrip_capability,
+    )
+
+
+def write_apple_gainmap_file(
+    base_rgb_u8: Any,
+    hdr_rgba_half: Any,
+    out_path: Path,
+    hdr_headroom_ev: float,
+    *,
+    delivery: DeliveryProfile,
+    _verify_roundtrip_capability: bool = True,
+) -> dict[str, Any]:
+    """Write JPEG or HEIC ISO gain-map packaging from finished formation masters."""
+    profile = delivery
     quality = int(profile.quality)
     tolerances = profile.tolerances
+    container = str(profile.container)
+    if container not in ("jpeg", "heic"):
+        raise ValueError(f"不支持的 gain-map 容器：{container}")
     if not 1 <= quality <= 100:
-        raise ValueError("JPEG quality 必须在 1-100 之间")
+        raise ValueError("编码 quality 必须在 1-100 之间")
 
     base = np.asarray(base_rgb_u8)
     hdr = np.asarray(hdr_rgba_half)
@@ -467,10 +579,6 @@ def write_apple_gainmap_jpeg(
     hdr_image, hdr_data = _ciimage_from_rgba(hdr, Quartz.kCIFormatRGBAh, linear_p3)
     base_image = base_image.imageBySettingContentHeadroom_(1.0)
     requested_headroom = float(2.0 ** float(hdr_headroom_ev))
-    # Apple content headroom describes the actual encoded range, so use the finite pixel
-    # maximum here. The p99.99 value reported by export.py is an image-analysis diagnostic,
-    # not container metadata: declaring that percentile would clip valid brighter pixels
-    # when Core Image adapts the file to a display with less headroom.
     actual_headroom = float(np.max(hdr[:, :, :3]))
     if actual_headroom > requested_headroom * 1.001:
         raise RuntimeError(
@@ -501,46 +609,57 @@ def write_apple_gainmap_jpeg(
     }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex}.tmp.jpg")
+    suffix = ".heic" if container == "heic" else ".jpg"
+    temp_path = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex}.tmp{suffix}")
+    label = "HEIC" if container == "heic" else "JPEG"
     try:
-        result = context.writeJPEGRepresentationOfImage_toURL_colorSpace_options_error_(
-            base_image,
-            NSURL.fileURLWithPath_(str(temp_path)),
-            p3,
-            options,
-            None,
-        )
+        url = NSURL.fileURLWithPath_(str(temp_path))
+        if container == "heic":
+            result = context.writeHEIFRepresentationOfImage_toURL_format_colorSpace_options_error_(
+                base_image,
+                url,
+                Quartz.kCIFormatRGBA8,
+                p3,
+                options,
+                None,
+            )
+        else:
+            result = context.writeJPEGRepresentationOfImage_toURL_colorSpace_options_error_(
+                base_image,
+                url,
+                p3,
+                options,
+                None,
+            )
         success, error = result if isinstance(result, tuple) else (bool(result), None)
         if not success:
-            raise RuntimeError(f"Core Image 写入 ISO gain-map JPEG 失败：{error}")
+            raise RuntimeError(f"Core Image 写入 ISO gain-map {label} 失败：{error}")
 
-        # Keep no-copy backing arrays alive until Core Image has finished the lazy graph.
         _ = (base_data, hdr_data, base_rgba, hdr)
-        info = inspect_gainmap_jpeg(temp_path)
+        info = inspect_gainmap_file(temp_path)
         if not info["has_iso_gainmap"]:
-            raise RuntimeError("Core Image 输出不含 ISO 21496-1 gain map")
+            raise RuntimeError(f"Core Image 输出不含 ISO 21496-1 gain map")
         if info["profile"] != "Display P3":
-            raise RuntimeError(f"HDR JPEG 底图色彩配置错误：{info['profile'] or '无 ICC'}")
+            raise RuntimeError(f"HDR {label} 底图色彩配置错误：{info['profile'] or '无 ICC'}")
         if tolerances.require_chroma_444 and info["chroma_subsampling"] != "4:4:4":
             raise RuntimeError(
-                f"HDR JPEG 主图未保持 4:4:4：{info['chroma_subsampling'] or '未知'}"
+                f"HDR {label} 主图未保持 4:4:4：{info['chroma_subsampling'] or '未知'}"
             )
         fmt = str(info["gainmap_pixel_format"] or "")
-        # RGB gain maps are required for independent HDR color geometry. Reject L008.
         if fmt in ("", "L008"):
             raise RuntimeError(
-                f"HDR JPEG gain map 不是 RGB 辅助图（got {fmt or '未知'}）；"
+                f"HDR {label} gain map 不是 RGB 辅助图（got {fmt or '未知'}）；"
                 "独立 HDR color geometry 需要 RGB gain map"
             )
         if info["headroom"] <= 1.0:
-            raise RuntimeError("HDR JPEG 未声明有效的扩展动态范围")
+            raise RuntimeError(f"HDR {label} 未声明有效的扩展动态范围")
         headroom_error_ev = abs(
             float(np.log2(max(float(info["headroom"]), 1e-9) / actual_headroom))
         )
         info["headroom_error_ev"] = headroom_error_ev
         if headroom_error_ev > 0.05:
             raise RuntimeError(
-                "HDR JPEG 声明余量与 alternate 峰值不一致："
+                f"HDR {label} 声明余量与 alternate 峰值不一致："
                 f"误差={headroom_error_ev:.4f} EV；已丢弃该文件"
             )
         base_roundtrip = _base_roundtrip_error(temp_path, base)
@@ -554,10 +673,6 @@ def write_apple_gainmap_jpeg(
                 f"通道偏差={base_roundtrip['base_channel_bias_code_error']:.3f}，"
                 f"8x8块p99={base_roundtrip['base_block_p99_code_error']:.3f}；已丢弃该文件"
             )
-        # Verify the pixels that were actually written, not a synthetic stand-in. This is
-        # the guarantee that matters -- that this file, read back, is the rendition it
-        # claims to be -- and it is strictly stronger than any capability probe, which can
-        # only answer for its own test pattern.
         roundtrip = _roundtrip_error(temp_path, hdr)
         info.update(roundtrip)
         if not _hdr_roundtrip_is_acceptable(roundtrip, tolerances):
@@ -577,6 +692,7 @@ def write_apple_gainmap_jpeg(
         info["delivery_profile"] = profile.name
         info["delivery_quality"] = quality
         info["delivery_chroma_requested"] = profile.chroma
+        info["delivery_container"] = container
         return info
     finally:
         try:
@@ -585,18 +701,34 @@ def write_apple_gainmap_jpeg(
             pass
 
 
-def encode_finished_pair_jpeg(
+def encode_finished_pair(
     pair: FinishedPair,
     out_path: Path,
     delivery: DeliveryProfile,
 ) -> dict[str, Any]:
     """Encode formation masters with a delivery profile. No re-formation."""
-    return write_apple_gainmap_jpeg(
+    return write_apple_gainmap_file(
         pair.sdr_rgb_u8,
         pair.hdr_rgba_f16,
         out_path,
-        delivery.quality,
         pair.display_headroom_ev,
         delivery=delivery,
-        chroma=delivery.chroma,
     )
+
+
+def encode_finished_pair_jpeg(
+    pair: FinishedPair,
+    out_path: Path,
+    delivery: DeliveryProfile,
+) -> dict[str, Any]:
+    """JPEG-only alias kept for callers that predate HEIC delivery."""
+    jpeg_delivery = delivery
+    if delivery.container != "jpeg":
+        jpeg_delivery = DeliveryProfile(
+            name=delivery.name,
+            quality=delivery.quality,
+            chroma=delivery.chroma,
+            container="jpeg",
+            tolerances=delivery.tolerances,
+        )
+    return encode_finished_pair(pair, out_path, jpeg_delivery)

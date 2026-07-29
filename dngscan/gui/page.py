@@ -265,7 +265,8 @@ GRADE_OPTIONS
       <label>格式</label>
       <select id="format">
         <option value="sdr">SDR JPEG</option>
-        <option value="ultrahdr">HDR gain-map · Apple</option>
+        <option value="ultrahdr">HDR gain-map · JPEG</option>
+        <option value="ultrahdr-heic">HDR gain-map · HEIC</option>
       </select>
     </div>
     <div style="flex:1;min-width:160px">
@@ -377,7 +378,7 @@ function applyDeliveryDefaults(){
   $("#chroma").disabled=archive;
 }
 function updateFormatUi(){
-  const hdr=$("#format").value==="ultrahdr";
+  const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
   $("#hdrBlock").style.display=hdr?"flex":"none";
   if(hdr){$("#gamut").value="p3";$("#toneCore").value="agx";}
   $("#gamut").disabled=hdr;$("#toneCore").disabled=hdr;
@@ -388,17 +389,20 @@ function updateFormatUi(){
 }
 async function checkHdrBackend(){
   const option=[...$("#format").options].find(o=>o.value==="ultrahdr");
+  const optionHeic=[...$("#format").options].find(o=>o.value==="ultrahdr-heic");
   try{
     const response=await fetch("/hdr-status");const status=await response.json();
-    if(status.available){option.disabled=false;return;}
-    option.disabled=true;option.textContent="HDR gain-map · 当前不可用";
+    if(status.available){option.disabled=false;optionHeic.disabled=false;return;}
+    option.disabled=true;option.textContent="HDR JPEG · 当前不可用";
+    optionHeic.disabled=true;optionHeic.textContent="HDR HEIC · 当前不可用";
     $("#hdrHint").textContent=status.reason||"HDR 后端未通过回读验证。";
-    if($("#format").value==="ultrahdr"){
+    if(["ultrahdr","ultrahdr-heic"].includes($("#format").value)){
       $("#format").value="sdr";updateFormatUi();saveSettings();
       setStatus(status.reason||"HDR 后端未通过回读验证，已切回 SDR。","warn");
     }
   }catch(error){
-    option.disabled=true;option.textContent="HDR gain-map · 探测失败";
+    option.disabled=true;option.textContent="HDR JPEG · 探测失败";
+    optionHeic.disabled=true;optionHeic.textContent="HDR HEIC · 探测失败";
   }
 }
 function setEvLabel(){const v=+$("#ev").value;$("#evval").textContent=(v>=0?"+":"")+v.toFixed(2);}
@@ -439,7 +443,7 @@ function toneCoreText(j){
 }
 function highlightText(v){return ({clip:"保持剪切",blend:"高光混合",reconstruct:"高光重建"})[v]||v;}
 function gamutText(v){return ({srgb:"sRGB",p3:"Display P3"})[v]||v;}
-function formatText(v){return ({sdr:"SDR JPEG",ultrahdr:"HDR gain-map JPEG"})[v]||v;}
+function formatText(v){return ({sdr:"SDR JPEG",ultrahdr:"HDR gain-map JPEG","ultrahdr-heic":"HDR gain-map HEIC"})[v]||v;}
 function decoderText(j){
   if(j.decoder!=="coreimage")return "";
   const version=(j.decoder_version||"").replace(/\\.dng$/i,"");
@@ -623,7 +627,7 @@ function payload(){
     punch:+$("#punch").value,
     midtoneBrightness:+$("#midtoneBrightness").value,midtoneContrast:+$("#midtoneContrast").value,
     shadowTransition:+$("#shadowTransition").value,highlightTransition:+$("#highlightTransition").value,
-    highlightFade:$("#format").value==="ultrahdr"?0:+$("#highlightFade").value,
+    highlightFade:["ultrahdr","ultrahdr-heic"].includes($("#format").value)?0:+$("#highlightFade").value,
     hdrHeadroom:+$("#hdrHeadroom").value,ev:+$("#ev").value,quality:+$("#quality").value,
     outdir:$("#outdir").value.trim(),png:$("#png").checked
   };

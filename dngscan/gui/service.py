@@ -323,7 +323,7 @@ def parse_job_params(params: dict) -> tuple[Path, str, str, str, float, float, i
     output_format = str(params.get("format", "sdr"))
     if output_format not in dg.JPEG_OUTPUT_FORMATS:
         raise ValueError(f"未知输出格式：{output_format}")
-    if output_format == "ultrahdr":
+    if dg.is_hdr_output_format(output_format):
         gamut = "p3"
     ev = float(params.get("ev", 0.0))
     hdr_headroom = float(params.get("hdrHeadroom", dg.DEFAULT_HDR_HEADROOM_EV))
@@ -514,10 +514,10 @@ def run_preview(params: dict) -> dict:
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
-    if output_format == "ultrahdr" and abs(float(adjustments.highlight_fade)) > 1e-9:
+    if dg.is_hdr_output_format(output_format) and abs(float(adjustments.highlight_fade)) > 1e-9:
         raise RuntimeError("HDR 尚未定义显示侧高光褪白；请将该项恢复为自动")
     tone_core, lum_norm = parse_tone_core(params)
-    if output_format == "ultrahdr" and tone_core != "agx":
+    if dg.is_hdr_output_format(output_format) and tone_core != "agx":
         raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     cached = PREVIEW_STORE.get(
@@ -615,8 +615,8 @@ def export_suffix_parts(
         parts.append(highlight)
     if gamut != "srgb":
         parts.append(gamut)
-    if output_format == "ultrahdr":
-        parts.append("hdr")
+    if dg.is_hdr_output_format(output_format):
+        parts.append("hdr_heic" if output_format == "ultrahdr-heic" else "hdr")
     if grade != "none":
         parts.append(grade.replace(":", "_"))
         if abs(float(grade_strength) - 1.0) > 1e-6:
@@ -633,7 +633,7 @@ def run_export(params: dict) -> dict:
     inp, highlight, gamut, output_format, ev, hdr_headroom, quality, want_png, outdir_arg, ev_auto = parse_job_params(
         params
     )
-    if output_format == "ultrahdr":
+    if dg.is_hdr_output_format(output_format):
         available, reason = dg.apple_gainmap_backend_status()
         if not available:
             raise RuntimeError(reason)
@@ -648,6 +648,7 @@ def run_export(params: dict) -> dict:
             delivery_name,
             quality=int(params["quality"]) if params.get("quality") is not None else None,
             chroma=chroma if params.get("chroma") is not None else None,
+            container=dg.container_for_output_format(output_format),
         )
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
@@ -662,7 +663,7 @@ def run_export(params: dict) -> dict:
         highlight = "reconstruct"
         demosaic = "auto"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
-    if output_format == "ultrahdr" and (look != "none" or display_filter != "none"):
+    if dg.is_hdr_output_format(output_format) and (look != "none" or display_filter != "none"):
         raise RuntimeError(
             "Ultrahdr 第一版仅支持 look=none 与 display_filter=none；"
             "现有 display look/filter 尚未 HDR 化"
@@ -670,10 +671,10 @@ def run_export(params: dict) -> dict:
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
-    if output_format == "ultrahdr" and abs(float(adjustments.highlight_fade)) > 1e-9:
+    if dg.is_hdr_output_format(output_format) and abs(float(adjustments.highlight_fade)) > 1e-9:
         raise RuntimeError("HDR 尚未定义显示侧高光褪白；请将该项恢复为自动")
     tone_core, lum_norm = parse_tone_core(params)
-    if output_format == "ultrahdr" and tone_core != "agx":
+    if dg.is_hdr_output_format(output_format) and tone_core != "agx":
         raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     bundle = dg.load_raw(
@@ -739,14 +740,15 @@ def run_export(params: dict) -> dict:
         lum_norm,
         agx_primaries,
     )
-    jpg_path = outdir / f"{inp.stem}_{suffix}.jpg"
+    out_ext = ".heic" if output_format == "ultrahdr-heic" else ".jpg"
+    out_path = outdir / f"{inp.stem}_{suffix}{out_ext}"
     with RENDER_LOCK:
         # Intent exposure already applied via with_intent_exposure above; do not
         # mutate a shared bundle in place under the lock.
         icc_profile = dg.output_icc_profile_bytes(gamut)
         export_result = dg.export_jpeg(
             path=inp,
-            out_path=jpg_path,
+            out_path=out_path,
             quality=quality,
             bundle=bundle,
             analysis=analysis,
@@ -771,10 +773,14 @@ def run_export(params: dict) -> dict:
         )
         hdr_export_info = export_result if isinstance(export_result, dict) else None
         rendered_u8 = export_result[1] if isinstance(export_result, tuple) else None
+        if rendered_u8 is None and output_format == "ultrahdr-heic":
+            from dngscan.gainmap import _read_primary_rgb_u8
+
+            rendered_u8 = _read_primary_rgb_u8(out_path)
         if rendered_u8 is not None:
             metrics = output_luminance_metrics_u8(rendered_u8, gamut, ev)
         else:
-            metrics = output_luminance_metrics(jpg_path, gamut, ev)
+            metrics = output_luminance_metrics(out_path, gamut, ev)
         metrics.update(
             estimate_ev_headroom(
                 bundle,
@@ -798,20 +804,20 @@ def run_export(params: dict) -> dict:
         preview = (
             preview_b64_from_u8(rendered_u8, icc_profile=icc_profile, width=1280)
             if rendered_u8 is not None
-            else make_preview_b64(jpg_path, icc_profile=icc_profile)
+            else make_preview_b64(out_path, icc_profile=icc_profile)
         )
         if auto_ev_result is not None:
             np = dg.np
             if rendered_u8 is None:
                 from PIL import Image
 
-                with Image.open(jpg_path) as im:
+                with Image.open(out_path) as im:
                     rendered_u8 = np.asarray(im.convert("RGB"), dtype=np.uint8)
             annotated = annotate_preview_rgb_u8(
                 rendered_u8, dg.auto_ev_overlay_lines(auto_ev_result)
             )
             preview = preview_b64_from_u8(annotated, icc_profile=icc_profile, width=1280)
-        saved = [str(jpg_path)]
+        saved = [str(out_path)]
 
         if want_png:
             png_path = outdir / f"{inp.stem}_{suffix}_scan.png"
@@ -827,8 +833,14 @@ def run_export(params: dict) -> dict:
         "gain": bundle.exposure_gain,
         "ev": ev,
         "ev_auto": auto_ev_payload(auto_ev_result),
-        "format": "HDR gain-map JPEG" if output_format == "ultrahdr" else "SDR JPEG",
-        "hdr_headroom": hdr_headroom if output_format == "ultrahdr" else 0.0,
+        "format": (
+            "HDR gain-map HEIC"
+            if output_format == "ultrahdr-heic"
+            else "HDR gain-map JPEG"
+            if dg.is_hdr_output_format(output_format)
+            else "SDR JPEG"
+        ),
+        "hdr_headroom": hdr_headroom if dg.is_hdr_output_format(output_format) else 0.0,
         "hdr_diagnostics": (
             hdr_export_info.get("diagnostics") if hdr_export_info is not None else None
         ),
