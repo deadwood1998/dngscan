@@ -747,6 +747,7 @@ def run_export(params: dict) -> dict:
             scene_transform_strength=scene_transform_strength,
             return_rgb=output_format == "sdr",
         )
+        hdr_export_info = export_result if isinstance(export_result, dict) else None
         rendered_u8 = export_result[1] if isinstance(export_result, tuple) else None
         if rendered_u8 is not None:
             metrics = output_luminance_metrics_u8(rendered_u8, gamut, ev)
@@ -806,6 +807,10 @@ def run_export(params: dict) -> dict:
         "ev_auto": auto_ev_payload(auto_ev_result),
         "format": "HDR gain-map JPEG" if output_format == "ultrahdr" else "SDR JPEG",
         "hdr_headroom": hdr_headroom if output_format == "ultrahdr" else 0.0,
+        "hdr_diagnostics": (
+            hdr_export_info.get("diagnostics") if hdr_export_info is not None else None
+        ),
+        "hdr_container": hdr_export_info,
         "highlight": dg.highlight_mode_cn(highlight),
         "gamut": dg.output_gamut_label(gamut),
         "scene_transform": dg.scene_transform_label(scene_transform),

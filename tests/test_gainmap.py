@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from dngscan._deps import np
 from dngscan.color import srgb_decode
@@ -93,6 +94,21 @@ class GainCurveTests(unittest.TestCase):
 
 
 class AppleGainMapWriterTests(unittest.TestCase):
+    def test_public_backend_is_paused_until_hdr_agx_exists(self) -> None:
+        available, reason = apple_gainmap_backend_status()
+        self.assertFalse(available)
+        self.assertIn("HDR AgX", reason)
+
+    def test_public_writer_rejects_unverified_backend(self) -> None:
+        base = np.full((4, 4, 3), 128, dtype=np.uint8)
+        hdr = np.ones((4, 4, 4), dtype=np.float16)
+        with mock.patch(
+            "dngscan.gainmap.apple_gainmap_backend_status",
+            return_value=(False, "round-trip not verified"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "round-trip not verified"):
+                write_apple_gainmap_jpeg(base, hdr, Path("unused.jpg"), 100, 3.0)
+
     def test_declared_headroom_tracks_actual_rendition_peak(self) -> None:
         available, reason = apple_gainmap_backend_status()
         if not available:

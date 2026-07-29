@@ -129,6 +129,20 @@ class HdrPlanTests(unittest.TestCase):
         self.assertEqual(ci.spatial_evidence, "aggregate")
         self.assertGreater(lib.raw_evidence_strength, ci.raw_evidence_strength)
 
+    def test_point_emitter_between_stride_samples_survives_reduction(self) -> None:
+        rgb = np.full((64, 64, 3), 0.01, dtype=np.float32)
+        rgb[1, 1] = 2.0
+        maps = build_hdr_evidence_maps(_bundle(rgb), _analysis(), max_side=16)
+        self.assertGreater(float(maps.scene_ev[0, 0]), 3.5)
+        self.assertGreater(float(maps.sparse_emitter_weight[0, 0]), 0.5)
+
+    def test_single_clipped_pixel_survives_evidence_reduction(self) -> None:
+        rgb = np.full((64, 64, 3), 0.5, dtype=np.float32)
+        bundle = _bundle(rgb)
+        bundle.clip_masks[1, 1, 0] = 1.0
+        maps = build_hdr_evidence_maps(bundle, _analysis(), max_side=16)
+        self.assertEqual(float(maps.clip_confidence[0, 0]), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

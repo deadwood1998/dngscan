@@ -130,7 +130,7 @@ def build_hdr_render_plan(
         scene=scene,
         color=color,
         midgray_match_scale=float(midgray_match_scale),
-        reference_transform_id="aces2-derived-p3-linear",
+        reference_transform_id="aces2-dev-release-2-derived-p3-linear",
     )
 
 

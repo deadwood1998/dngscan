@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import struct
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +65,55 @@ class CoreImageDecodeImportTests(unittest.TestCase):
             coreimage_decode.preview_scale_factor(Filter()), 1280.0 / 6000.0
         )
 
+    def test_linear_configuration_externalizes_baseline_and_disables_edr(self) -> None:
+        class Filter:
+            def __init__(self) -> None:
+                self.version = "8"
+                self.scale = 1.0
+                self.baseline = 1.25
+                self.edr = 1.0
+                self.shadow = 5.0
+
+            def setDecoderVersion_(self, value):
+                self.version = value
+
+            def decoderVersion(self):
+                return self.version
+
+            def setScaleFactor_(self, value):
+                self.scale = value
+
+            def scaleFactor(self):
+                return self.scale
+
+            def baselineExposure(self):
+                return self.baseline
+
+            def setBaselineExposure_(self, value):
+                self.baseline = value
+
+            def extendedDynamicRangeAmount(self):
+                return self.edr
+
+            def setExtendedDynamicRangeAmount_(self, value):
+                self.edr = value
+
+            def shadowBias(self):
+                return self.shadow
+
+            def setShadowBias_(self, value):
+                self.shadow = value
+
+        filt = Filter()
+        cfg = coreimage_decode.configure_linear_filter(
+            filt, version="9", scale_factor=0.25
+        )
+        self.assertEqual(cfg["baseline_exposure_authored"], 1.25)
+        self.assertEqual(cfg["baseline_exposure_applied"], 0.0)
+        self.assertTrue(cfg["baseline_exposure_cleared"])
+        self.assertEqual(cfg["extended_dynamic_range_amount"], 0.0)
+        self.assertEqual(cfg["shadow_bias"], 0.0)
+
 
 class CoreImageVersionTests(unittest.TestCase):
     def test_auto_prefers_nine(self) -> None:
@@ -119,6 +170,30 @@ class CoreImageVersionTests(unittest.TestCase):
         self.assertFalse(result["raw9_supported"])
         self.assertIn("unsupported container", str(result["error"]))
 
+    def test_opcode_reader_follows_inline_single_subifd_offset(self) -> None:
+        # Little-endian classic TIFF: IFD0 contains one inline SubIFD offset; that SubIFD
+        # contains an external OpcodeList2 with one WarpRectilinear record.
+        ifd0_offset = 8
+        subifd_offset = 26
+        payload_offset = 44
+        payload = struct.pack(">IIIII", 1, 1, 1, 0, 0)
+        data = bytearray(payload_offset + len(payload))
+        data[:8] = b"II" + struct.pack("<H", 42) + struct.pack("<I", ifd0_offset)
+        data[8:10] = struct.pack("<H", 1)
+        data[10:22] = struct.pack("<HHII", 0x014A, 4, 1, subifd_offset)
+        data[22:26] = struct.pack("<I", 0)
+        data[26:28] = struct.pack("<H", 1)
+        data[28:40] = struct.pack("<HHII", 0xC741, 7, len(payload), payload_offset)
+        data[40:44] = struct.pack("<I", 0)
+        data[payload_offset:] = payload
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "subifd.dng"
+            path.write_bytes(data)
+            result = coreimage_decode.read_dng_opcodes(path)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["ids"], (1,))
+        self.assertTrue(result["geometry"])
+
 
 @unittest.skipUnless(coreimage_decode.available(), "Core Image unavailable")
 class CoreImageLiveTests(unittest.TestCase):
@@ -152,6 +227,42 @@ class CoreImageLiveTests(unittest.TestCase):
         ratio = float(np.median(b[mask] / np.maximum(a[mask], 1e-8)))
         self.assertAlmostEqual(ratio, 2.0, delta=0.02)
 
+    def test_externalized_baseline_matches_decoder_applied_gain(self) -> None:
+        """Moving BaselineExposure out of CIRAWFilter must preserve scene intent."""
+        _skip_unless_available()
+        if not SIGMA_DNG.is_file():
+            raise unittest.SkipTest(f"missing {SIGMA_DNG}")
+
+        linear_filter = coreimage_decode._open_filter(SIGMA_DNG)
+        linear_cfg = coreimage_decode.configure_linear_filter(
+            linear_filter, version="9", scale_factor=0.2
+        )
+        baseline = linear_cfg["baseline_exposure_authored"]
+        if baseline is None or abs(float(baseline)) <= 1e-6:
+            raise unittest.SkipTest("sample has no non-zero BaselineExposure")
+        linear = coreimage_decode._render_linear_rec2020(
+            linear_filter, interactive=True
+        ).astype(np.float32)
+
+        baked_filter = coreimage_decode._open_filter(SIGMA_DNG)
+        coreimage_decode.configure_linear_filter(
+            baked_filter, version="9", scale_factor=0.2
+        )
+        baked_filter.setBaselineExposure_(float(baseline))
+        baked = coreimage_decode._render_linear_rec2020(
+            baked_filter, interactive=True
+        ).astype(np.float32)
+
+        restored = linear * np.float32(2.0 ** float(baseline))
+        mask = np.all(np.isfinite(restored), axis=2) & (np.max(np.abs(baked), axis=2) > 0.01)
+        if not np.any(mask):
+            raise unittest.SkipTest("no valid scene samples for baseline comparison")
+        relative = np.abs(restored[mask] - baked[mask]) / np.maximum(
+            np.abs(baked[mask]), 0.01
+        )
+        self.assertLess(float(np.median(relative)), 0.001)
+        self.assertLess(float(np.percentile(relative, 99.0)), 0.01)
+
     def test_preview_decode_is_signed_half_at_proxy_resolution(self) -> None:
         _skip_unless_available()
         if not SIGMA_DNG.is_file():
@@ -164,6 +275,11 @@ class CoreImageLiveTests(unittest.TestCase):
         self.assertGreater(float(np.max(rgb)), 1.0)
         self.assertTrue(bool(info["highlight_recovery"]))
         self.assertTrue(bool(info["lens_correction"]))
+        self.assertTrue(bool(info["baseline_exposure_cleared"]))
+        self.assertAlmostEqual(float(info["baseline_exposure_applied"]), 0.0, places=6)
+        self.assertAlmostEqual(
+            float(info["extended_dynamic_range_amount"]), 0.0, places=6
+        )
 
     def test_vertical_raw9_proxy_is_already_upright(self) -> None:
         _skip_unless_available()
@@ -187,7 +303,7 @@ class CoreImageLiveTests(unittest.TestCase):
         _skip_unless_available()
         if not SIGMA_DNG.is_file():
             raise unittest.SkipTest(f"missing {SIGMA_DNG}")
-        from dngscan.raw_io import load_raw
+        from dngscan.raw_io import baseline_exposure_gain, load_raw
 
         libraw = load_raw(SIGMA_DNG, scene_half_size=True, decoder="libraw")
         ci_bundle = load_raw(SIGMA_DNG, scene_half_size=True, decoder="coreimage")
@@ -200,13 +316,17 @@ class CoreImageLiveTests(unittest.TestCase):
         # Aggregate (geometry-free) RAW facts survive: same mosaic, same levels.
         self.assertEqual(int(ci_bundle.white_level), int(libraw.white_level))
         self.assertEqual(list(ci_bundle.black_levels), list(libraw.black_levels))
-        # The float16 buffer stays unscaled; default aligned mode carries its one scalar
-        # in scene_scale, so factor and scale are each other's inverse.
+        # The float16 buffer stays directly scene-linear. scene_scale carries both the
+        # externalized file BaselineExposure and the default aligned-mode scalar.
         self.assertEqual(ci_bundle.scene_scale_mode, "aligned")
         self.assertIsNone(ci_bundle.scene_align_error)
         self.assertNotAlmostEqual(ci_bundle.scene_align_factor, 1.0, places=3)
+        self.assertFalse(ci_bundle.baseline_exposure_baked_in)
+        baseline_gain = baseline_exposure_gain(ci_bundle.baseline_exposure)
         self.assertAlmostEqual(
-            ci_bundle.scene_scale, 1.0 / ci_bundle.scene_align_factor, places=6
+            ci_bundle.scene_scale,
+            1.0 / (baseline_gain * ci_bundle.scene_align_factor),
+            places=6,
         )
 
     def test_alignment_puts_both_decoders_on_one_exposure_scale(self) -> None:

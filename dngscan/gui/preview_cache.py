@@ -134,9 +134,14 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
         "shot_make": bundle.shot_make,
         "shot_model": bundle.shot_model,
         "shot_iso": bundle.shot_iso,
+        "baseline_exposure": bundle.baseline_exposure,
+        "baseline_exposure_baked_in": bool(bundle.baseline_exposure_baked_in),
         "scene_decoder": str(getattr(bundle, "scene_decoder", "libraw") or "libraw"),
         "scene_decoder_version": getattr(bundle, "scene_decoder_version", None),
+        "scene_decoder_runtime": getattr(bundle, "scene_decoder_runtime", None),
         "scene_scale_mode": getattr(bundle, "scene_scale_mode", None),
+        "scene_align_factor": float(getattr(bundle, "scene_align_factor", 1.0)),
+        "scene_align_error": getattr(bundle, "scene_align_error", None),
         "scene_opcode_names": list(getattr(bundle, "scene_opcode_names", ()) or ()),
         "evidence_shape": (
             [int(v) for v in bundle.evidence_shape]
@@ -182,6 +187,10 @@ def _bundle_from_cache(
         shot_make=metadata["shot_make"],
         shot_model=metadata["shot_model"],
         shot_iso=metadata["shot_iso"],
+        baseline_exposure=metadata.get("baseline_exposure"),
+        baseline_exposure_baked_in=bool(
+            metadata.get("baseline_exposure_baked_in", False)
+        ),
         clip_masks=masks,
         raw_guidance=guidance,
         _raw_guidance_has_sensor_snr=(
@@ -189,7 +198,10 @@ def _bundle_from_cache(
         ),
         scene_decoder=str(metadata.get("scene_decoder", "libraw") or "libraw"),
         scene_decoder_version=metadata.get("scene_decoder_version"),
+        scene_decoder_runtime=metadata.get("scene_decoder_runtime"),
         scene_scale_mode=metadata.get("scene_scale_mode"),
+        scene_align_factor=float(metadata.get("scene_align_factor", 1.0)),
+        scene_align_error=metadata.get("scene_align_error"),
         scene_opcode_names=tuple(metadata.get("scene_opcode_names", ()) or ()),
         evidence_shape=(
             (int(evidence_shape[0]), int(evidence_shape[1]))

@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ACES 2-derived reference kernel tests."""
+"""ACES 2-derived renderer properties and reusable input stimuli.
+
+The NPZ files contain no expected renderer output. Authoritative constants and
+matrix layout are pinned independently in ``test_aces2_matrices.py``.
+"""
 from __future__ import annotations
 
 import unittest
@@ -36,7 +40,6 @@ class Aces2ReferenceTests(unittest.TestCase):
         for path in sorted(VECTORS.glob("neutral_ramp__*.npz")):
             data = np.load(path, allow_pickle=False)
             scene = data["scene_rec2020"]
-            expected = data["p3_linear"]
             ev = float(data["capacity_ev"])
             out32 = render_aces2_hdr_p3_linear(scene.astype(np.float32), capacity_ev=ev)
             out64 = render_aces2_hdr_p3_linear(scene.astype(np.float64), capacity_ev=ev)
@@ -81,34 +84,27 @@ class Aces2ReferenceTests(unittest.TestCase):
             "2000": np.log2(20.0),
             "4000": np.log2(40.0),
         }
-        prev_peak = None
+        prev_out = None
         for label, ev in peaks.items():
             out = render_aces2_hdr_p3_linear(scene, capacity_ev=float(ev))
             with self.subTest(peak=label):
                 self.assertTrue(np.all(np.isfinite(out)))
                 self.assertGreater(float(out[0, 1]), 0.0)
-                peak = 100.0 * (2.0 ** ev)
-                if prev_peak is not None:
-                    out_prev = render_aces2_hdr_p3_linear(scene, capacity_ev=float(peaks[label]))
-                    _ = out_prev
-                prev_peak = peak
+                self.assertLessEqual(float(np.max(out)), float(2.0 ** ev) + 1e-6)
+                if prev_out is not None:
+                    self.assertFalse(np.array_equal(out, prev_out))
+                prev_out = out
 
-    def test_vectors_match_regenerated(self) -> None:
-        from dngscan.aces2.output_transform import _build_context
-
-        _build_context.cache_clear()
+    def test_input_stimuli_are_well_formed(self) -> None:
+        """Keep the reusable stimuli valid without blessing self-generated output."""
         for path in sorted(VECTORS.glob("*.npz")):
             data = np.load(path, allow_pickle=False)
             scene = data["scene_rec2020"]
-            expected = data["p3_linear"]
             ev = float(data["capacity_ev"])
-            out = render_aces2_hdr_p3_linear(scene, capacity_ev=ev)
             with self.subTest(path=path.name):
-                finite_mask = np.isfinite(expected)
-                self.assertTrue(np.all(np.isfinite(out[finite_mask])))
-                np.testing.assert_allclose(
-                    out, expected, rtol=RGB_ABS_TOL, atol=RGB_ABS_TOL, equal_nan=True
-                )
+                self.assertEqual(scene.shape[-1], 3)
+                self.assertGreater(scene.size, 0)
+                self.assertTrue(np.isfinite(ev))
 
 
 if __name__ == "__main__":

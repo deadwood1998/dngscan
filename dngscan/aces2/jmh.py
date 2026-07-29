@@ -78,14 +78,14 @@ def xyz_to_jmh(xyz: np.ndarray, xyz_w: np.ndarray) -> np.ndarray:
     f_l, z, _, surround = _viewing_params()
     n_c = VIEWING_CONDITIONS_DIM[2]
 
-    rgb_w = flat_w @ MATRIX_16.T
+    rgb_w = flat_w @ MATRIX_16
     d = 1.0
     d_rgb = d * y_w[:, None] / rgb_w + (1.0 - d)
     rgb_wc = d_rgb * rgb_w
     rgb_aw = post_adaptation_nlr_forward(rgb_wc, f_l)
     a_w = RA * rgb_aw[:, 0] + rgb_aw[:, 1] + BA * rgb_aw[:, 2]
 
-    rgb = flat @ MATRIX_16.T
+    rgb = flat @ MATRIX_16
     rgb_c = d_rgb * rgb
     rgb_a = post_adaptation_nlr_forward(rgb_c, f_l)
     a = RA * rgb_a[:, 0] + rgb_a[:, 1] + BA * rgb_a[:, 2]
@@ -111,7 +111,7 @@ def jmh_to_xyz(jmh: np.ndarray, xyz_w: np.ndarray) -> np.ndarray:
     f_l, z, _, surround = _viewing_params()
     n_c = VIEWING_CONDITIONS_DIM[2]
 
-    rgb_w = flat_w @ MATRIX_16.T
+    rgb_w = flat_w @ MATRIX_16
     d = 1.0
     d_rgb = d * y_w[:, None] / rgb_w + (1.0 - d)
     rgb_wc = d_rgb * rgb_w
@@ -128,7 +128,7 @@ def jmh_to_xyz(jmh: np.ndarray, xyz_w: np.ndarray) -> np.ndarray:
     rgb_a = (vec @ PANLRCM) / 1403.0
     rgb_c = post_adaptation_nlr_inverse(rgb_a, f_l)
     rgb = rgb_c / d_rgb
-    xyz = rgb @ MATRIX_16_INV.T
+    xyz = rgb @ MATRIX_16_INV
     return xyz.reshape(*orig_shape[:-1], 3)
 
 
@@ -136,7 +136,7 @@ def clamp_xyz_to_ap1(xyz: np.ndarray, peak_luminance: float) -> np.ndarray:
     xyz = _as_array(xyz)
     orig = xyz.shape
     flat = xyz.reshape(-1, 3)
-    ap1 = flat @ AP1_XYZ_TO_RGB.T
+    ap1 = flat @ AP1_XYZ_TO_RGB
     r_hit_min = 128.0
     r_hit_max = 896.0
     r_hit = r_hit_min + (r_hit_max - r_hit_min) * (
@@ -144,7 +144,7 @@ def clamp_xyz_to_ap1(xyz: np.ndarray, peak_luminance: float) -> np.ndarray:
     )
     upper = 8.0 * r_hit
     ap1_clamped = np.clip(ap1, 0.0, upper)
-    out = ap1_clamped @ np.linalg.inv(AP1_XYZ_TO_RGB).T
+    out = ap1_clamped @ np.linalg.inv(AP1_XYZ_TO_RGB)
     return out.reshape(orig)
 
 
@@ -152,10 +152,10 @@ def aces_to_jmh(aces: np.ndarray, peak_luminance: float) -> np.ndarray:
     aces = _as_array(aces)
     orig = aces.shape
     flat = aces.reshape(-1, 3)
-    xyz = flat @ AP0_RGB_TO_XYZ.T
+    xyz = flat @ AP0_RGB_TO_XYZ
     xyz = clamp_xyz_to_ap1(xyz, peak_luminance)
     rgb_w = np.array([REFERENCE_LUMINANCE, REFERENCE_LUMINANCE, REFERENCE_LUMINANCE], dtype=np.float64)
-    xyz_w = rgb_w @ AP0_RGB_TO_XYZ.T
+    xyz_w = rgb_w @ AP0_RGB_TO_XYZ
     xyz_lum = xyz * REFERENCE_LUMINANCE
     jmh = xyz_to_jmh(xyz_lum, xyz_w)
     return jmh.reshape(*orig[:-1], 3)
@@ -166,9 +166,9 @@ def rgb_to_jmh(rgb: np.ndarray, rgb_to_xyz: np.ndarray, peak_luminance: float) -
     orig = rgb.shape
     flat = rgb.reshape(-1, 3)
     luminance_rgb = flat * peak_luminance
-    xyz = luminance_rgb @ rgb_to_xyz.T
+    xyz = luminance_rgb @ rgb_to_xyz
     rgb_w = np.array([REFERENCE_LUMINANCE, REFERENCE_LUMINANCE, REFERENCE_LUMINANCE], dtype=np.float64)
-    xyz_w = rgb_w @ rgb_to_xyz.T
+    xyz_w = rgb_w @ rgb_to_xyz
     jmh = xyz_to_jmh(xyz, xyz_w)
     return jmh.reshape(*orig[:-1], 3)
 
@@ -184,6 +184,6 @@ def jmh_to_rgb(
     flat = jmh.reshape(-1, 3)
     flat_w = xyz_w.reshape(-1, 3) if np.ndim(xyz_w) > 1 else np.broadcast_to(xyz_w, (flat.shape[0], 3))
     luminance_xyz = jmh_to_xyz(flat, flat_w)
-    luminance_rgb = luminance_xyz @ xyz_to_rgb.T
+    luminance_rgb = luminance_xyz @ xyz_to_rgb
     rgb = luminance_rgb / peak_luminance
     return rgb.reshape(*orig[:-1], 3)

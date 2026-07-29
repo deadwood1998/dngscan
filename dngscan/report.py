@@ -213,6 +213,7 @@ def print_report(
         wb_label = "日光固定配平" if bundle.wb_mode == "daylight" else "相机白平衡"
         decoder = getattr(bundle, "scene_decoder", "libraw") or "libraw"
         decoder_version = getattr(bundle, "scene_decoder_version", None)
+        decoder_runtime = getattr(bundle, "scene_decoder_runtime", None)
         if decoder == "coreimage":
             opcodes = tuple(getattr(bundle, "scene_opcode_names", ()) or ())
             opcode_note = f"，已执行 DNG opcode: {'/'.join(opcodes)}" if opcodes else ""
@@ -232,7 +233,9 @@ def print_report(
             else:
                 scale_note = "，尺度=Core Image 原生单位（unity）"
             decoder_label = (
-                f"Core Image/{decoder_version or '?'}（独立管线：无逐像素 CFA 证据"
+                f"Core Image/{decoder_version or '?'}"
+                f"{f' · {decoder_runtime}' if decoder_runtime else ''}"
+                "（独立管线：无逐像素 CFA 证据"
                 f"{opcode_note}{scale_note}）"
             )
             highlight_note = (
@@ -254,7 +257,8 @@ def print_report(
         # shutter/aperture/ISO measurement, so name it without calling it capture exposure.
         baseline_exposure = getattr(bundle, "baseline_exposure", None)
         baseline_exposure_note = (
-            f"文件 BaselineExposure={baseline_exposure:+.3f} EV（已遵从）；"
+            f"文件 BaselineExposure={baseline_exposure:+.3f} EV"
+            f"（{'解码器内应用' if getattr(bundle, 'baseline_exposure_baked_in', False) else '线性交接后单次应用'}）；"
             if baseline_exposure is not None
             else ""
         )
@@ -419,6 +423,7 @@ def csv_row(
         "wb_mode": bundle.wb_mode,
         "scene_decoder": getattr(bundle, "scene_decoder", "libraw") or "libraw",
         "scene_decoder_version": getattr(bundle, "scene_decoder_version", None) or "",
+        "scene_decoder_runtime": getattr(bundle, "scene_decoder_runtime", None) or "",
         "scene_geometry_corr": (
             getattr(bundle, "scene_geometry_corr", None)
             if getattr(bundle, "scene_geometry_corr", None) is not None

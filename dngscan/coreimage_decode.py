@@ -8,17 +8,18 @@ clip percentages, SNR, noise floor, white-balance testimony — are distribution
 than pixel positions and still come from LibRaw.
 
 The decode follows Apple's recipe for reaching linear scene-referred data (WWDC21
-"Capture and process ProRAW images"): shadowBias, boostAmount and localToneMapAmount at
-0, gamut mapping off, rendered into extendedLinearITUR_2020. Adjustable look controls are
-neutralised where RAW 9 exposes a meaningful neutral value; moire is deliberately left at
-Apple's default because its zero is the strongest smoothing end. Highlight recovery and
-lens correction are enabled explicitly because they belong to Apple's camera
-interpretation, not to dngscan's downstream display transform.
+"Capture and process ProRAW images"): baselineExposure, shadowBias, boostAmount,
+localToneMapAmount and the RAW exposure control at 0, EDR and gamut mapping off, rendered
+into extendedLinearITUR_2020. Adjustable look controls are neutralised where RAW 9 exposes
+a meaningful neutral value; moire is deliberately left at Apple's default because its zero
+is the strongest smoothing end. Highlight recovery and lens correction are enabled
+explicitly because they belong to Apple's camera interpretation, not to dngscan's
+downstream display transform.
 
-baselineExposure is left at the value authored in the file. It is a baseline rendering
-compensation (and can be scene-dependent in ProRAW), not a measurement of shutter /
-aperture / ISO or a request to force the image median to gray. The LibRaw path applies the
-same metadata gain through scene_scale so both capture paths honour the file's intent.
+The file-authored baselineExposure is recorded before it is cleared. ``raw_io`` restores
+that scalar exactly once through ``scene_scale`` after the decoder handoff, matching the
+LibRaw path without baking rendering intent into the decoder pixels. This keeps the handoff
+strictly scene-linear while preserving the file's intended relative exposure downstream.
 
 The handoff is signed float16. Extended-linear Rec.2020 legitimately contains negative
 components and values above 1.0; quantising it through an unsigned sensor-white buffer
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import struct
 import threading
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,20 @@ COREIMAGE_EXPORT_MEMORY_LIMIT_MB = 1024
 
 _CONTEXTS: dict[bool, Any] = {}
 _CONTEXT_LOCK = threading.Lock()
+
+
+def decoder_runtime_id() -> str:
+    """Return an OS/build fingerprint because Apple can revise RAW models by OS build."""
+    try:
+        from Foundation import NSProcessInfo  # type: ignore
+
+        value = str(NSProcessInfo.processInfo().operatingSystemVersionString()).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    version = platform.mac_ver()[0]
+    return f"macOS {version}" if version else platform.platform()
 
 
 def describe_scale_compensation(gain: float) -> str:
@@ -282,6 +298,18 @@ def _set_bool(filt: Any, setter: str, supported_pred: str | None, value: bool) -
     return True
 
 
+def _read_float(filt: Any, getter: str) -> float | None:
+    """Read an optional CIRAW amount without making capability probes fatal."""
+    fn = getattr(filt, getter, None)
+    if not callable(fn):
+        return None
+    try:
+        value = float(fn())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if np.isfinite(value) else None
+
+
 def preview_scale_factor(
     filt: Any, *, long_edge: int = COREIMAGE_PREVIEW_LONG_EDGE
 ) -> float:
@@ -318,20 +346,15 @@ def configure_linear_filter(
     Returns a small dict describing what was applied (for reports/tests).
     """
     filt.setDecoderVersion_(version)
-    # Apple's own recipe for linear scene-referred extraction (WWDC21 "Capture and
-    # process ProRAW images") is to zero baselineExposure, shadowBias, boostAmount and
-    # localToneMapAmount and disable gamut mapping, then render into
-    # extendedLinearITUR_2020. Four of the five are applied here and in
-    # _render_linear_rec2020; baselineExposure is the deliberate exception, below.
+    # Read the file/camera default after selecting the decoder version: defaults can be
+    # decoder-specific. Apple explicitly requires baselineExposure=0 for direct access to
+    # linear scene-referred values. raw_io restores this recorded intent later by changing
+    # the scale divisor, which preserves extended highlights and applies the gain once.
+    baseline_authored = _read_float(filt, "baselineExposure")
+    baseline_cleared = _set_amount(filt, "setBaselineExposure_", None, 0.0)
     _set_amount(filt, "setBoostAmount_", None, 0.0)
     # No effect while boostAmount is 0, cleared so the pair cannot drift apart.
     _set_amount(filt, "setBoostShadowAmount_", None, 0.0)
-    # baselineExposure is left at the value CIRAWFilter reads from the file. Apple uses
-    # it as part of the per-image ProRAW rendering recipe; it can vary with scene dynamic
-    # range, while Sigma fp writes a stable camera baseline. It is not the photographed
-    # scene exposure itself. Discarding it would nevertheless discard file-authored
-    # rendering intent and create a decoder mismatch. --ev remains the explicit user
-    # adjustment on top. Measured: zeroing the property removed exactly 2**tag.
     # shadowBias subtracts from the shadows and defaults to 5.0, which is a black-level
     # pedestal: a display-referred operation with no place in a scene-linear buffer.
     # Leaving it at the default drove components to exactly zero on 1.4 % of an ISO 12800
@@ -341,6 +364,10 @@ def configure_linear_filter(
     # denoiser was mostly this subtraction.
     _set_amount(filt, "setShadowBias_", None, 0.0)
     _set_amount(filt, "setExposure_", None, float(exposure))
+    # EDR is a display rendering choice, not part of the custom AgX scene input. Leaving a
+    # decoder-dependent default here could place Apple's HDR transform before dngscan's
+    # DRT. Older CIRAWFilter versions simply do not expose the setter.
+    _set_amount(filt, "setExtendedDynamicRangeAmount_", None, 0.0)
     # 0 is the least-smoothed end of a calibrated range, not "denoising off": RAW 9 fuses
     # denoise into the demosaic model, so it always runs. Nothing here can turn it off.
     # Measured, zero is the right end to ask for — Apple's 0.043 default already costs
@@ -420,6 +447,7 @@ def configure_linear_filter(
     filt.setScaleFactor_(float(scale_factor))
 
     color_nr = float(filt.colorNoiseReductionAmount()) if hasattr(filt, "colorNoiseReductionAmount") else None
+    baseline_applied = _read_float(filt, "baselineExposure")
     return {
         "version": str(filt.decoderVersion()) if hasattr(filt, "decoderVersion") else version,
         "scale_factor": float(filt.scaleFactor()) if hasattr(filt, "scaleFactor") else float(scale_factor),
@@ -431,8 +459,15 @@ def configure_linear_filter(
         "highlight_recovery": highlight_recovery,
         "lens_correction": lens_correction,
         "shadow_bias": float(filt.shadowBias()) if hasattr(filt, "shadowBias") else None,
-        "baseline_exposure": (
-            float(filt.baselineExposure()) if hasattr(filt, "baselineExposure") else None
+        "baseline_exposure_authored": baseline_authored,
+        "baseline_exposure_applied": baseline_applied,
+        "baseline_exposure_cleared": bool(
+            baseline_cleared
+            and baseline_applied is not None
+            and abs(float(baseline_applied)) <= 1e-6
+        ),
+        "extended_dynamic_range_amount": _read_float(
+            filt, "extendedDynamicRangeAmount"
         ),
     }
 
@@ -449,6 +484,12 @@ def _render_context(Quartz: Any, *, interactive: bool) -> Any:
         if not interactive and hasattr(Quartz, "kCIContextMemoryLimit"):
             options[Quartz.kCIContextMemoryLimit] = COREIMAGE_EXPORT_MEMORY_LIMIT_MB
         ctx = Quartz.CIContext.contextWithOptions_(options)
+        # Older Core Image builds can expose a newly added option constant before the
+        # selected renderer accepts it. Keep the intended cache policy and retry without
+        # the export-only memory hint rather than failing a valid RAW decode.
+        if ctx is None and Quartz.kCIContextMemoryLimit in options:
+            options.pop(Quartz.kCIContextMemoryLimit, None)
+            ctx = Quartz.CIContext.contextWithOptions_(options)
         if ctx is None:
             raise RuntimeError("CIContext.contextWithOptions_ returned None")
         _CONTEXTS[bool(interactive)] = ctx
@@ -601,13 +642,21 @@ def read_dng_opcodes(path: Path) -> dict[str, Any]:
                 return
             seen_ifds.add(offset)
             count = struct.unpack(order + "H", data[offset : offset + 2])[0]
+            if count > (len(data) - offset - 2) // 12:
+                return
             for i in range(count):
                 entry = offset + 2 + i * 12
                 if entry + 12 > len(data):
                     return
-                tag, _typ, cnt = struct.unpack(order + "HHI", data[entry : entry + 8])
+                tag, typ, cnt = struct.unpack(order + "HHI", data[entry : entry + 8])
                 if tag in (0xC740, 0xC741, 0xC74E):  # OpcodeList1/2/3
-                    value_off = struct.unpack(order + "I", data[entry + 8 : entry + 12])[0]
+                    # Opcode lists are TIFF BYTE/UNDEFINED arrays. Values of at most four
+                    # bytes are inline; larger payloads use the value field as an offset.
+                    value_off = (
+                        entry + 8
+                        if cnt <= 4 and typ in (1, 2, 7)
+                        else struct.unpack(order + "I", data[entry + 8 : entry + 12])[0]
+                    )
                     if value_off + 4 > len(data):
                         continue
                     # Opcode payloads are always big-endian, independent of TIFF order.
@@ -622,10 +671,25 @@ def read_dng_opcodes(path: Path) -> dict[str, Any]:
                         cursor += 16 + size
                 elif tag == 0x014A:  # SubIFDs
                     sub_off = struct.unpack(order + "I", data[entry + 8 : entry + 12])[0]
-                    for k in range(min(cnt, 8)):
-                        pos = sub_off + k * 4
-                        if pos + 4 <= len(data):
-                            walk(struct.unpack(order + "I", data[pos : pos + 4])[0], depth + 1)
+                    # A single LONG/IFD offset is stored inline. Only arrays of multiple
+                    # offsets are indirect. Treating count=1 as an array pointer skips the
+                    # actual SubIFD and can silently miss its DNG opcodes.
+                    if cnt == 1 and typ in (4, 13):
+                        walk(sub_off, depth + 1)
+                    elif typ in (4, 13):
+                        for k in range(min(cnt, 8)):
+                            pos = sub_off + k * 4
+                            if pos + 4 <= len(data):
+                                walk(
+                                    struct.unpack(order + "I", data[pos : pos + 4])[0],
+                                    depth + 1,
+                                )
+
+            next_pos = offset + 2 + count * 12
+            if next_pos + 4 <= len(data):
+                next_ifd = struct.unpack(order + "I", data[next_pos : next_pos + 4])[0]
+                if next_ifd:
+                    walk(next_ifd, depth + 1)
 
         walk(struct.unpack(order + "I", data[4:8])[0])
         ids = tuple(sorted(set(found)))
@@ -687,8 +751,14 @@ def decode_scene_rec2020(
         "highlight_recovery": cfg.get("highlight_recovery"),
         "lens_correction": cfg.get("lens_correction"),
         "shadow_bias": cfg.get("shadow_bias"),
-        "baseline_exposure": cfg.get("baseline_exposure"),
+        "baseline_exposure_authored": cfg.get("baseline_exposure_authored"),
+        "baseline_exposure_applied": cfg.get("baseline_exposure_applied"),
+        "baseline_exposure_cleared": cfg.get("baseline_exposure_cleared"),
+        "extended_dynamic_range_amount": cfg.get(
+            "extended_dynamic_range_amount"
+        ),
         "exposure": float(exposure),
+        "decoder_runtime_id": decoder_runtime_id(),
     }
     return rgb.astype(np.float16, copy=False), info
 

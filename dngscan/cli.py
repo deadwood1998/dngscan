@@ -405,7 +405,7 @@ def main(argv: list[str]) -> int:
                 ),
             )
         if jpeg_path is not None:
-            jpeg_icc_embedded = export_jpeg(
+            export_result = export_jpeg(
                 path=args.path,
                 out_path=jpeg_path,
                 quality=args.jpeg_quality,
@@ -423,6 +423,11 @@ def main(argv: list[str]) -> int:
                 filter_strength=filter_strength,
                 scene_transform=args.scene_transform,
                 scene_transform_strength=args.scene_transform_strength,
+            )
+            jpeg_icc_embedded = (
+                str(export_result.get("profile", "")) == "Display P3"
+                if isinstance(export_result, dict)
+                else bool(export_result)
             )
 
         if args.csv is not None:

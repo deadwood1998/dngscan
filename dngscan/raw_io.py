@@ -544,6 +544,7 @@ def load_raw(
 
     scene_decoder = "libraw"
     scene_decoder_version: str | None = None
+    scene_decoder_runtime: str | None = None
     scene_scale_mode: str | None = None
     scene_align_factor: float = 1.0
     scene_align_error: str | None = None
@@ -556,6 +557,8 @@ def load_raw(
     scene_scale = 1.0
     render_scale = 1.0
     clip_masks: Any | None = None
+    effective_baseline_exposure = shot.baseline_exposure
+    baseline_exposure_baked_in = False
 
     try:
         with rawpy.imread(str(path)) as raw:
@@ -654,6 +657,31 @@ def load_raw(
             ),
         )
         scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_half(ci_float)
+        ci_authored_baseline = info.get("baseline_exposure_authored")
+        if ci_authored_baseline is not None:
+            try:
+                candidate = float(ci_authored_baseline)
+            except (TypeError, ValueError, OverflowError):
+                candidate = float("nan")
+            if np.isfinite(candidate):
+                # This is the exact decoder-version-specific value that was cleared, so
+                # it is the authoritative value to restore on the Core Image path. The
+                # metadata parser remains the fallback when the getter is unavailable.
+                effective_baseline_exposure = candidate
+
+        # Apple's direct scene-linear recipe clears BaselineExposure inside CIRAWFilter.
+        # Restore the recorded file intent as a scale divisor, exactly as LibRaw does. If
+        # an older API could not clear the property, leave the already baked gain alone.
+        if bool(info.get("baseline_exposure_cleared")):
+            scene_scale = float(scene_scale) / baseline_exposure_gain(
+                effective_baseline_exposure
+            )
+        else:
+            applied = info.get("baseline_exposure_applied")
+            try:
+                baseline_exposure_baked_in = abs(float(applied)) > 1e-6
+            except (TypeError, ValueError, OverflowError):
+                baseline_exposure_baked_in = True
         if coreimage_uses_file_alignment(coreimage_scale):
             # Align one decoded statistic per file. The half-size LibRaw reference bins
             # 2x2 superpixels and is cheap; measured factors track full resolution within
@@ -678,7 +706,7 @@ def load_raw(
                     float(np.iinfo(reference_scene.dtype).max),
                     effective_highlight_mode,
                     daylight_wb if wb_mode == "daylight" else camera_wb,
-                    baseline_exposure=shot.baseline_exposure,
+                    baseline_exposure=effective_baseline_exposure,
                 )
                 reference_level = scene_green_median(
                     np.asarray(reference_scene, dtype=np.float32) / reference_scale
@@ -703,6 +731,7 @@ def load_raw(
         render_scale = scene_scale
         scene_decoder = "coreimage"
         scene_decoder_version = str(info.get("version") or coreimage_version)
+        scene_decoder_runtime = str(info.get("decoder_runtime_id") or "") or None
         scene_scale_mode = coreimage_scale
         scene_opcode_names = tuple(coreimage_decode.read_dng_opcodes(path)["names"])
         # Strict Core Image pipeline: this is a SEPARATE path, not a LibRaw back end.
@@ -743,10 +772,12 @@ def load_raw(
         shot_make=shot.make,
         shot_model=shot.model,
         shot_iso=shot.iso,
-        baseline_exposure=shot.baseline_exposure,
+        baseline_exposure=effective_baseline_exposure,
+        baseline_exposure_baked_in=baseline_exposure_baked_in,
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
+        scene_decoder_runtime=scene_decoder_runtime,
         scene_scale_mode=scene_scale_mode,
         scene_align_factor=scene_align_factor,
         scene_align_error=scene_align_error,

@@ -12,7 +12,9 @@ from __future__ import annotations
 import math
 import os
 import platform
+import tempfile
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +33,8 @@ HDR_GAIN_ROLLIN_EV = 0.50
 HDR_GAIN_CAP_ROLLOFF_EV = 0.50
 
 
-def apple_gainmap_backend_status() -> tuple[bool, str]:
-    """Report whether Core Image can encode an ISO gain-map JPEG on this system."""
+def _apple_gainmap_api_status() -> tuple[bool, str]:
+    """Report API availability without claiming RGB round-trip correctness."""
     if platform.system() != "Darwin":
         return False, "HDR gain-map JPEG 当前需要 macOS Core Image"
     try:
@@ -47,6 +49,7 @@ def apple_gainmap_backend_status() -> tuple[bool, str]:
         "kCIFormatRGBAh",
         "kCIImageRepresentationHDRImage",
         "kCIImageRepresentationHDRGainMapAsRGB",
+        "kCIImageAuxiliaryHDRGainMap",
         "kCGImageDestinationEncodeRequest",
         "kCGImageDestinationEncodeToISOGainmap",
         "kCGImageDestinationEncodeRequestOptions",
@@ -59,7 +62,119 @@ def apple_gainmap_backend_status() -> tuple[bool, str]:
         return False, "当前 macOS/PyObjC 不暴露 ISO gain-map 编码 API：" + ", ".join(missing)
     if not hasattr(Quartz.CIContext, "writeJPEGRepresentationOfImage_toURL_colorSpace_options_error_"):
         return False, "当前 Core Image 不支持直接写入 HDR JPEG"
-    return True, "Apple Core Image ISO 21496-1 gain-map backend available"
+    return True, "Apple Core Image ISO 21496-1 gain-map APIs available"
+
+
+def _read_expanded_hdr_rgba_half(path: Path) -> Any:
+    """Decode the composite HDR rendition, not merely the auxiliary container."""
+    import Quartz  # type: ignore
+    from Foundation import NSURL  # type: ignore
+
+    linear_p3 = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceExtendedLinearDisplayP3)
+    url = NSURL.fileURLWithPath_(str(path))
+    base = Quartz.CIImage.imageWithContentsOfURL_(url)
+    gainmap = Quartz.CIImage.imageWithContentsOfURL_options_(
+        url,
+        {Quartz.kCIImageAuxiliaryHDRGainMap: _nsnumber_bool(True)},
+    )
+    if base is None or gainmap is None or linear_p3 is None:
+        raise RuntimeError("Core Image 无法回读扩展 HDR rendition")
+    if not hasattr(base, "imageByApplyingGainMap_"):
+        raise RuntimeError("当前 Core Image 不支持应用 HDR gain map")
+    image = base.imageByApplyingGainMap_(gainmap)
+    if image is None:
+        raise RuntimeError("Core Image 无法组合 SDR 底图与 HDR gain map")
+    extent = image.extent()
+    width = int(round(float(extent.size.width)))
+    height = int(round(float(extent.size.height)))
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Core Image 回读 HDR rendition 得到空图像")
+    row_bytes = width * 8
+    buf = bytearray(height * row_bytes)
+    context = Quartz.CIContext.contextWithOptions_(
+        {Quartz.kCIContextCacheIntermediates: _nsnumber_bool(False)}
+    )
+    context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
+        image,
+        buf,
+        row_bytes,
+        extent,
+        Quartz.kCIFormatRGBAh,
+        linear_p3,
+    )
+    return np.frombuffer(memoryview(buf), dtype=np.float16).reshape(height, width, 4).copy()
+
+
+@lru_cache(maxsize=1)
+def _apple_rgb_gainmap_roundtrip_status() -> tuple[bool, str]:
+    """Prove that independent RGB HDR geometry survives encode and expansion."""
+    ok, reason = _apple_gainmap_api_status()
+    if not ok:
+        return ok, reason
+
+    h, patch_w = 24, 24
+    gains = np.array(
+        [[3.0, 3.0, 3.0], [1.25, 2.0, 3.0], [3.0, 1.25, 2.0], [2.0, 3.0, 1.25]],
+        dtype=np.float32,
+    )
+    base = np.full((h, patch_w * len(gains), 3), 180, dtype=np.uint8)
+    base_linear = srgb_decode(base.astype(np.float32) / np.float32(255.0))
+    hdr = np.empty(base.shape[:2] + (4,), dtype=np.float16)
+    for index, gain in enumerate(gains):
+        x0, x1 = index * patch_w, (index + 1) * patch_w
+        hdr[:, x0:x1, :3] = (base_linear[:, x0:x1] * gain).astype(np.float16)
+    hdr[..., 3] = np.float16(1.0)
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "rgb_gainmap_probe.jpg"
+            write_apple_gainmap_jpeg(
+                base,
+                hdr,
+                path,
+                100,
+                3.0,
+                _verify_roundtrip_capability=False,
+            )
+            expanded = _read_expanded_hdr_rgba_half(path)[..., :3].astype(np.float32)
+        expected_means = []
+        actual_means = []
+        inset = 4
+        for index in range(len(gains)):
+            x0, x1 = index * patch_w + inset, (index + 1) * patch_w - inset
+            expected_means.append(np.mean(hdr[inset:-inset, x0:x1, :3], axis=(0, 1)))
+            actual_means.append(np.mean(expanded[inset:-inset, x0:x1, :3], axis=(0, 1)))
+        expected = np.asarray(expected_means, dtype=np.float32)
+        actual = np.asarray(actual_means, dtype=np.float32)
+        expected_chroma = expected / np.maximum(np.sum(expected, axis=1, keepdims=True), 1e-6)
+        actual_chroma = actual / np.maximum(np.sum(actual, axis=1, keepdims=True), 1e-6)
+        chroma_error = float(np.max(np.abs(actual_chroma - expected_chroma)))
+        relative_error = float(
+            np.mean(np.abs(actual - expected) / np.maximum(np.abs(expected), 0.05))
+        )
+        if chroma_error > 0.06 or relative_error > 0.25:
+            return False, (
+                "当前 Core Image 虽能写 RGB gain-map 容器，但扩展回读不能还原独立 RGB "
+                f"HDR rendition（chroma error={chroma_error:.3f}, relative error={relative_error:.3f}）；"
+                "已停用 HDR 导出，避免生成语义错误的文件"
+            )
+    except Exception as exc:
+        return False, f"Apple RGB gain-map encode/decode round-trip 探针失败：{exc}"
+    return True, "Apple Core Image ISO gain-map RGB round-trip verified"
+
+
+def apple_gainmap_backend_status() -> tuple[bool, str]:
+    """Keep production HDR disabled while the darktable-style HDR AgX is designed.
+
+    The private round-trip probe remains available for packaging experiments, but a
+    successful container backend is not enough: the ACES-derived rendition currently in
+    this module is no longer the intended HDR DRT. Public callers must not accidentally
+    promote it to a supported output merely because a future OS passes the probe.
+    """
+    return False, (
+        "HDR 输出已暂停：正在重新设计独立的 darktable-style HDR AgX 核；"
+        "当前 ACES/gain-map 实验不会写入生产文件"
+    )
 
 
 def gain_stops_for_scene_ev(
@@ -232,9 +347,15 @@ def write_apple_gainmap_jpeg(
     out_path: Path,
     quality: int,
     hdr_headroom_ev: float,
+    *,
+    _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
     """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map."""
-    ok, reason = apple_gainmap_backend_status()
+    ok, reason = (
+        apple_gainmap_backend_status()
+        if _verify_roundtrip_capability
+        else _apple_gainmap_api_status()
+    )
     if not ok:
         raise RuntimeError(reason)
     if not 1 <= int(quality) <= 100:

@@ -79,6 +79,9 @@ def _bundle() -> RawBundle:
         camera_white_levels=[1000.0] * 4,
         clip_masks=np.linspace(0.0, 1.0, 8 * 8 * 3, dtype=np.float16).reshape(8, 8, 3),
         scene_scale_mode="measured",
+        baseline_exposure=0.75,
+        scene_decoder_runtime="Version 27.0 (Build TEST)",
+        scene_align_factor=0.875,
         scene_opcode_names=("WarpRectilinear", "GainMap"),
     )
 
@@ -108,6 +111,11 @@ class PreviewCacheTest(unittest.TestCase):
         self.assertEqual(restored.analysis.labels, entry.analysis.labels)
         self.assertEqual(restored.analysis.channel_thresholds, entry.analysis.channel_thresholds)
         self.assertEqual(restored.bundle.scene_scale_mode, "measured")
+        self.assertEqual(restored.bundle.baseline_exposure, 0.75)
+        self.assertEqual(
+            restored.bundle.scene_decoder_runtime, "Version 27.0 (Build TEST)"
+        )
+        self.assertEqual(restored.bundle.scene_align_factor, 0.875)
         self.assertEqual(
             restored.bundle.scene_opcode_names, ("WarpRectilinear", "GainMap")
         )

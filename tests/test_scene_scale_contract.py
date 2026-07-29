@@ -26,6 +26,7 @@ def _tiny_bundle(
     decoder: str = "libraw",
     scale_mode: str | None = None,
     baseline: float | None = None,
+    baseline_baked: bool = False,
     rgb: np.ndarray | None = None,
 ) -> RawBundle:
     if rgb is None:
@@ -46,6 +47,7 @@ def _tiny_bundle(
         camera_white_levels=[16383.0, 16383.0, 16383.0],
         exposure_gain=exposure_gain,
         baseline_exposure=baseline,
+        baseline_exposure_baked_in=baseline_baked,
         scene_decoder=decoder,
         scene_scale_mode=scale_mode,
     )
@@ -105,16 +107,30 @@ class SceneScaleContractTest(unittest.TestCase):
             float(scale_no_baseline),
             places=9,
         )
-        # Core Image path records baked-in baseline without a second multiply.
+        # Core Image now clears BaselineExposure in CIRAWFilter and folds it into the
+        # scale divisor, so its normal handoff is not marked baked either.
         ci = _tiny_bundle(
-            scene_scale=1.0,
+            scene_scale=1.0 / baseline_exposure_gain(baseline),
             baseline=baseline,
             decoder="coreimage",
             scale_mode="aligned",
         )
         ci_contract = scene_scale_contract_from_bundle(ci, user_ev=0.0)
-        self.assertTrue(ci_contract.baseline_baked_in)
+        self.assertFalse(ci_contract.baseline_baked_in)
         self.assertEqual(ci_contract.baseline_render_gain, 1.0)
+
+        # An API fallback that could not clear the property remains explicit and still
+        # must not multiply the baseline a second time in the contract.
+        legacy_ci = _tiny_bundle(
+            scene_scale=1.0,
+            baseline=baseline,
+            baseline_baked=True,
+            decoder="coreimage",
+            scale_mode="unity",
+        )
+        legacy_contract = scene_scale_contract_from_bundle(legacy_ci, user_ev=0.0)
+        self.assertTrue(legacy_contract.baseline_baked_in)
+        self.assertEqual(legacy_contract.baseline_render_gain, 1.0)
 
     def test_fixed_gains_ignore_scene_content(self) -> None:
         bright = _tiny_bundle(

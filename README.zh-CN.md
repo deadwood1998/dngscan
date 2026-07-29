@@ -224,11 +224,11 @@ Apple 默认值实测，版本 9 上真正起作用的只有三项，而当前�
 LibRaw 换成更平滑的去马赛克（VNG、PPG）并不能缩小差距，所以这是模型本身而非插值选择。
 这一点与本工具"不做降噪、把纹理选择留给去马赛克"的立场需要各自权衡。
 
-**解码采用 Apple 的线性提取结构，但保留一个明确的策略选择。** `shadowBias`、
-`boostAmount`、`localToneMapAmount` 清零，gamut mapping 关闭，结果渲染到
-`extendedLinearITUR_2020`。dngscan 没有把文件中的 `baselineExposure` 强制清零，因为它
-属于 DNG/ProRAW 写入的显影配方；LibRaw 路径通过 `scene_scale` 应用同一 metadata gain。
-这与 CIRAWFilter 的 `exposure` 分开，后者在共同 scene 管线应用用户 EV 前保持为零。
+**解码严格采用 Apple 的线性提取结构。** `baselineExposure`、`shadowBias`、`boostAmount`、
+`localToneMapAmount` 和 RAW `exposure` 在 CIRAWFilter 内部清零，EDR 与 gamut mapping 关闭，
+结果渲染到 `extendedLinearITUR_2020`。文件原本的 `baselineExposure` 会在清零前记录，再像
+LibRaw 路径一样通过 `scene_scale` 恢复一次。这样交接像素本身保持直接 scene-linear，文件的
+显影意图也没有丢失，更不会和用户 EV 重复。
 
 **aligned 是逐文件的实用解码器对照。** half-size LibRaw 参考使用与主 LibRaw 路径相同的
 白平衡、高光重建与存储尺度契约；它的解码绿色中位除以 RAW 9 的解码绿色中位，得到整幅使用
@@ -253,9 +253,9 @@ LibRaw 换成更平滑的去马赛克（VNG、PPG）并不能缩小差距，所�
 **BaselineExposure 在两条管线上都被遵从。** Apple 明确把它定义为 RAW 文件请求的 baseline
 exposure，默认值可以随相机设置变化；ProRAW 还会随场景动态范围写入逐图配方。它不是快门/
 光圈/ISO 所描述的物理拍摄曝光，也不是要求把画面归一到某个中位亮度。LibRaw 不应用该标签，
-所以 dngscan 在 LibRaw 路径把 gain 折进 `scene_scale`；Core Image 则保留 CIRAWFilter 读取到
-的值。改变尺度而不直接放大 uint16 缓冲，可以保留高于名义白点的码值与精度。主观微调仍由
-`--ev` 完成，报告会写出文件中的标签值。
+所以 dngscan 在两条路径都把 gain 折进 `scene_scale`：Core Image 先读取并清零该属性，再在
+线性交接后恢复，LibRaw 则直接从 DNG metadata 恢复。改变尺度而不放大存储缓冲，可以保留
+高于名义白点的码值与精度。主观微调仍由 `--ev` 完成，报告会写出文件值及其应用位置。
 
 `shadowBias` 是最容易漏掉的一项：默认值 **5.0**，作用是从阴影中减去一个量，本质是
 display-referred 的黑电平基座，在 scene-linear 缓冲里没有立足之地。保留默认值会让
@@ -287,7 +287,8 @@ ISO 12800 那张有 1.4%、ISO 25600 那张有 21.0% 的分量被压到恰好为
 memory target。一张 24MP Sigma fp 的实测中，RAW 9 解码在 1280px 为 1.24s、6000x4000 为
 2.08s；完整全尺寸 decode + analyze + plan + render 在 JPEG 编码前约 5.1s。
 
-`extendedDynamicRangeAmount` 保持 Apple 默认的 0：调到 1.0 确实在最顶端拉出更多分离度
+`extendedDynamicRangeAmount` 被显式设为 0，避免 Apple 的显示侧 HDR 映射先于 AgX 进入
+scene 缓冲。调到 1.0 确实在最顶端拉出更多分离度
 （顶部像素极差 0.11 → 1.74），但高光区与默认渲染在 log2 上的相关系数是 0.996，说明基本
 是同一批信息的重映射，而且会把峰值推到 20，远超这条管线预留的余量。
 
@@ -305,10 +306,10 @@ memory target。一张 24MP Sigma fp 的实测中，RAW 9 解码在 1280px 为 1
 scene-referred 操作，架构上都该放在这里。在那套白平衡接口的温度/色调映射得到验证之前，
 `--wb daylight` 在这条路径上会被直接拒绝，而不是拿近似值糊弄过去。
 
-有一处这条管线还没能闭合：RAW 9 随系统分发，一次 macOS 更新就可能换掉模型，而
-`decoderVersion` 仍然回答 "9"。金样本回归在结构上是免疫的——它喂进去的是预解码缓冲，
-整条链路不调用 Core Image——解码测试断言的也是性质而非固定字节，所以 Apple 换模型不会
-误报。但它同样不会**任何**报警，而报告只记录了解码器版本，没有记录产出它的系统构建号。
+RAW 9 随系统分发，一次 macOS 更新就可能换掉模型，而 `decoderVersion` 仍然回答 "9"。
+现在报告会同时记录系统版本/build fingerprint，至少能把两次输出追溯到具体运行环境。金样本
+回归仍只覆盖预解码后的稳定算法层；Core Image 解码测试断言性质而非固定字节，系统升级后仍需
+用同一组 RAW 做显式 A/B，不能把相同的版本号当作相同模型。
 
 ### 白平衡
 
@@ -527,28 +528,17 @@ SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4
 代价是色度分辨率。Display P3 会嵌入 ICC profile，找不到 profile 就停止导出，不写未标记
 的宽色域数据。
 
-HDR 选项通过 Apple Core Image 写出带 ISO 21496-1 **RGB** gain map 的 JPEG。8-bit Display
-P3 主图就是原本的完整 SDR 成片（所选 AgX / gated / lum / neutral）。普通 SDR 阅读器看到
-的是与普通导出一致的底图。第一版 Ultrahdr 要求 `look=none` 且 `display_filter=none`：
-现有 display look/filter 尚未 HDR 化，会明确报错而不是静默忽略。
+HDR 目前暂停，生产输出仍然只有 SDR。旧的 ACES 2-derived bridge 和 gain-map 写入代码保留为
+实验材料，但既不作为可用功能，也不代表接下来的算法方向；当前后端门禁仍会阻止它写出看似
+成功、实际无法正确 round-trip 的文件。
 
-HDR alternate **不是** `SDR × 标量`。共享 intent-scene（白平衡、BaselineExposure、固定中灰
-EV、用户 EV、scene transform）之后分叉：
-
-1. SDR AgX（或其他 SDR 核）→ 量化后的 Display P3 底图  
-2. ACES 2 式 HDR DRT（Hellwig JMh 的 tone / chroma / gamut）→ 扩展线性 P3  
-3. 与内容无关的中灰匹配 + JMh bridge（在漫反射白 `log2(1/0.18)` 附近 reveal），低中调贴合
-   SDR，高光可用独立 colorfulness 几何  
-4. 由 SDR/HDR 图像对封装 RGB ISO gain map（`HDRGainMapAsRGB`）
-
-在官方 CTL 参考向量交叉验证完成前，产品表述为 **ACES 2-derived HDR / ACES 2 式 HDR**，
-不声称“严格 ACES 2”。NumPy（`dngscan.aces2`）是参考实现；C++ 原生路径仅有占位，尚未接入
-生产。
-
-`--hdr-headroom` 是相对 100 nit reference white 的显示 **capacity**（默认 `3.0` → 800 nit；
-上限约 `5.32` EV → 4000 nit）。文件里的实际 content headroom 取自成片。写入路径需要
-macOS 与 `pyobjc-framework-Quartz`，并校验 ISO 辅助图、Display P3 ICC、4:4:4，以及 RGB
-（而非 L008）gain-map 像素格式。
+重新确定的方向是：从同一份 scene-linear 输入分别求解 SDR 和 HDR 两条 darktable-style
+AgX。HDR 不是 `SDR × gain`，也不是把 ACES DRT 插在 SDR AgX 之后。它要保持同一中灰和场景
+意图，同时针对 reference white 以上的显示空间独立求解 C1 shoulder、rendering primaries、
+path-to-white 与 P3 峰值边界；最后 Core Image 只负责封装已经完成的 SDR/HDR rendition。
+完整的数学约束、数据模型和验收门记录在
+[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md)。这部分暂不接线，
+先把 RAW9 scene-linear 输入和现有 SDR 路径稳定下来。
 
 ## 快速开始
 
@@ -582,10 +572,6 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # 高光重建 + Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
-
-# Apple ISO RGB gain-map HDR JPEG（ACES 2 式；capacity +3 EV → 800 nit）
-python -m dngscan photo.dng --jpeg photo_hdr.jpg \
-  --output-format ultrahdr --hdr-headroom 3 --hdr-drt aces2
 
 # RAW 分析图和 CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv

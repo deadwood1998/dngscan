@@ -367,6 +367,21 @@ function updateFormatUi(){
   if(hdr){$("#gamut").value="p3";$("#chroma").value="444";$("#quality").value="100";}
   $("#gamut").disabled=hdr;$("#chroma").disabled=hdr;$("#quality").disabled=hdr;
 }
+async function checkHdrBackend(){
+  const option=[...$("#format").options].find(o=>o.value==="ultrahdr");
+  try{
+    const response=await fetch("/hdr-status");const status=await response.json();
+    if(status.available){option.disabled=false;return;}
+    option.disabled=true;option.textContent="HDR gain-map · 当前不可用";
+    $("#hdrHint").textContent=status.reason||"HDR 后端未通过回读验证。";
+    if($("#format").value==="ultrahdr"){
+      $("#format").value="sdr";updateFormatUi();saveSettings();
+      setStatus(status.reason||"HDR 后端未通过回读验证，已切回 SDR。","warn");
+    }
+  }catch(error){
+    option.disabled=true;option.textContent="HDR gain-map · 探测失败";
+  }
+}
 function setEvLabel(){const v=+$("#ev").value;$("#evval").textContent=(v>=0?"+":"")+v.toFixed(2);}
 function setHdrLabel(){const v=+$("#hdrHeadroom").value;$("#hdrHeadroomVal").textContent="+"+v.toFixed(2)+" EV";}
 function fmtPct(v){if(v===undefined||!isFinite(v))return "";if(v<=0)return "0%";if(v<0.005)return "<0.01%";if(v<1)return "~"+v.toFixed(2)+"%";return v.toFixed(1)+"%";}
@@ -538,6 +553,7 @@ $("#punch").oninput=()=>{setPunchLabel();saveSettings();};
 ].forEach(id=>$("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();});
 $("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();};
 restoreSettings();
+checkHdrBackend();
 document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();});
 let lastSavedPath="";
 

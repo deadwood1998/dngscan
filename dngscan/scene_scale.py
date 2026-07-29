@@ -60,10 +60,9 @@ def scene_scale_contract_from_bundle(
         getattr(bundle, "scene_scale_mode", None)
         or ("libraw" if decoder == "libraw" else "aligned")
     )
-    # Core Image applies BaselineExposure inside the RAW processor unless overridden;
-    # LibRaw folds it into scene_scale. Either way Phase 1 keeps baseline_render_gain=1
-    # so we do not apply it a second time.
-    baseline_baked = decoder == "coreimage"
+    # Both normal paths fold BaselineExposure into scene_scale. The explicit flag only
+    # becomes true when an older Core Image API cannot clear it inside CIRAWFilter.
+    baseline_baked = bool(getattr(bundle, "baseline_exposure_baked_in", False))
     return SceneScaleContract(
         storage_scale=float(bundle.scene_scale),
         decoder_calibration_gain=1.0,

@@ -50,6 +50,9 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/list":
             q = parse_qs(parsed.query)
             self._json(list_dir(q.get("dir", [""])[0]))
+        elif parsed.path == "/hdr-status":
+            available, reason = dg.apple_gainmap_backend_status()
+            self._json({"ok": True, "available": available, "reason": reason})
         else:
             self.send_error(404)
 

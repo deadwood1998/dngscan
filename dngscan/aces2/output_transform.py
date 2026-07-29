@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ACES 2-derived output transform and public render API."""
+"""ACES 2-derived development-snapshot output transform and public render API."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -107,10 +107,10 @@ def init_odt_params(
         focus_dist=float(focus_dist),
         limit_rgb_to_xyz=limit_rgb_to_xyz,
         limit_xyz_to_rgb=limit_xyz_to_rgb,
-        xyz_w_limit=rgb_w @ limit_rgb_to_xyz.T,
+        xyz_w_limit=rgb_w @ limit_rgb_to_xyz,
         output_rgb_to_xyz=output_rgb_to_xyz,
         output_xyz_to_rgb=output_xyz_to_rgb,
-        xyz_w_output=rgb_w @ output_rgb_to_xyz.T,
+        xyz_w_output=rgb_w @ output_rgb_to_xyz,
         lower_hull_gamma=1.14,
     )
 

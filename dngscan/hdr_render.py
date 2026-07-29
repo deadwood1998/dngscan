@@ -2,7 +2,6 @@
 """Independent ACES 2-derived HDR renderer with SDR low/mid bridge."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,10 +26,10 @@ class HdrRenderResult:
 
 
 def _p3_luminance(rgb: Any) -> Any:
-    # Display P3 D65 luminance coefficients (ITU Rec.709-like for P3 matrix).
+    # ACES matrices use row-vector layout; Y is the second matrix column.
     m = P3_RGB_TO_XYZ
     rgb = np.asarray(rgb, dtype=np.float32)
-    return (m[1, 0] * rgb[..., 0] + m[1, 1] * rgb[..., 1] + m[1, 2] * rgb[..., 2]).astype(
+    return (m[0, 1] * rgb[..., 0] + m[1, 1] * rgb[..., 1] + m[2, 1] * rgb[..., 2]).astype(
         np.float32, copy=False
     )
 
@@ -101,13 +100,53 @@ def _c1_reveal(scene_ev: Any, start_ev: float, end_ev: float) -> Any:
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32, copy=False)
 
 
-def _upsample_nearest(map2d: Any, shape: tuple[int, int]) -> Any:
+def _upsample_bilinear(map2d: Any, shape: tuple[int, int]) -> Any:
     src = np.asarray(map2d, dtype=np.float32)
     th, tw = int(shape[0]), int(shape[1])
-    sh, sw = src.shape[:2]
-    yy = np.minimum((np.arange(th) * sh / th).astype(np.int32), sh - 1)
-    xx = np.minimum((np.arange(tw) * sw / tw).astype(np.int32), tw - 1)
-    return src[yy][:, xx]
+    if src.shape[:2] == (th, tw):
+        return src
+    from PIL import Image
+
+    image = Image.fromarray(src, mode="F")
+    resized = image.resize((tw, th), Image.Resampling.BILINEAR)
+    return np.asarray(resized, dtype=np.float32)
+
+
+def _relative_p3_to_jmh(rgb: Any, peak_luminance: float) -> Any:
+    """Convert P3 linear values relative to 100-nit white into display JMh.
+
+    ``rgb_to_jmh`` follows the ACES output-transform convention where 1.0 is
+    display peak.  SDR/HDR bridge buffers instead use 1.0 == reference white.
+    """
+    peak_scale = float(peak_luminance) / float(REFERENCE_LUMINANCE)
+    return rgb_to_jmh(
+        np.asarray(rgb, dtype=np.float64) / peak_scale,
+        P3_RGB_TO_XYZ,
+        float(peak_luminance),
+    )
+
+
+def _jmh_to_relative_p3(jmh: Any, peak_luminance: float) -> Any:
+    """Inverse of :func:`_relative_p3_to_jmh`."""
+    peak = float(peak_luminance)
+    rgb_w = np.full(3, REFERENCE_LUMINANCE, dtype=np.float64)
+    xyz_w = rgb_w @ P3_RGB_TO_XYZ
+    xyz_to_rgb = np.linalg.inv(P3_RGB_TO_XYZ)
+    peak_scale = peak / float(REFERENCE_LUMINANCE)
+    return jmh_to_rgb(jmh, xyz_to_rgb, peak, xyz_w) * peak_scale
+
+
+def _fit_p3_to_peak_preserve_y(rgb: Any, max_linear: float) -> Any:
+    """Fit extended-linear P3 to its RGB cube along the neutral axis.
+
+    The fit preserves P3 luminance whenever it lies inside the display range and
+    reduces chroma instead of clipping channels independently.  This is the final
+    bridge safety limit; ACES already handles the candidate's color geometry.
+    """
+    from .aces2.white_limiting import fit_rgb_to_peak_preserve_y
+
+    fitted = fit_rgb_to_peak_preserve_y(rgb, P3_RGB_TO_XYZ, float(max_linear))
+    return fitted.astype(np.float32, copy=False)
 
 
 def _bridge_jmh(
@@ -128,15 +167,13 @@ def _bridge_jmh(
         return out
 
     peak = float(peak_luminance)
+    max_linear = peak / float(REFERENCE_LUMINANCE)
     s_sel = s[mask]
     a_sel = a[mask]
     w_sel = w[mask, 0]
-    rgb_w = np.array([REFERENCE_LUMINANCE, REFERENCE_LUMINANCE, REFERENCE_LUMINANCE], dtype=np.float64)
-    xyz_w = rgb_w @ P3_RGB_TO_XYZ.T
-    xyz_to_rgb = np.linalg.inv(P3_RGB_TO_XYZ)
 
-    jmh_s = rgb_to_jmh(s_sel, P3_RGB_TO_XYZ, peak)
-    jmh_a = rgb_to_jmh(a_sel, P3_RGB_TO_XYZ, peak)
+    jmh_s = _relative_p3_to_jmh(s_sel, peak)
+    jmh_a = _relative_p3_to_jmh(a_sel, peak)
     # Cartesian hue interpolation.
     ms, hs = jmh_s[..., 1], np.deg2rad(jmh_s[..., 2])
     ma, ha = jmh_a[..., 1], np.deg2rad(jmh_a[..., 2])
@@ -153,28 +190,27 @@ def _bridge_jmh(
     h = np.rad2deg(np.arctan2(y, x))
     h = np.where(h < 0.0, h + 360.0, h)
     blended = np.stack([j, m, h], axis=-1)
-    rgb = jmh_to_rgb(blended, xyz_to_rgb, peak, xyz_w).astype(np.float32)
+    rgb = _jmh_to_relative_p3(blended, peak).astype(np.float32)
 
     y_s = _p3_luminance(s_sel)
     y_h = _p3_luminance(rgb)
-    # If chroma shift lowered Y, lift J monotonically (scale RGB toward matching Y).
+    # If interpolation lowered luminance, restore the SDR floor by scaling at
+    # constant chromaticity. The final neutral-axis fit preserves that luminance.
     need = y_h < (y_s - 1e-6)
     if np.any(need):
-        scale = np.ones_like(y_h)
-        scale[need] = y_s[need] / np.maximum(y_h[need], 1e-8)
-        # Cap lift so we do not explode a near-black failure.
-        scale = np.clip(scale, 1.0, 4.0)
-        rgb = rgb * scale[:, None]
-        # If still short, reduce bridge weight toward SDR.
-        y_h2 = _p3_luminance(rgb)
-        still = y_h2 < (y_s - 1e-5)
-        if np.any(still):
-            t = np.clip(y_h2[still] / np.maximum(y_s[still], 1e-8), 0.0, 1.0)
-            rgb[still] = s_sel[still] * (1.0 - t)[:, None] + rgb[still] * t[:, None]
+        valid = need & (y_h > 1e-10) & np.isfinite(y_h)
+        rgb[valid] *= (y_s[valid] / y_h[valid])[:, None]
+        rgb[need & ~valid] = s_sel[need & ~valid]
+
+    rgb = _fit_p3_to_peak_preserve_y(rgb, max_linear)
+    # Numerical or pathological fallback: exact SDR is always a valid lower bound.
+    still = _p3_luminance(rgb) < (y_s - 2e-5)
+    if np.any(still):
+        rgb[still] = s_sel[still]
 
     out[mask] = rgb
     # Exact bypass for zero-reveal pixels already set to S.
-    return np.nan_to_num(out, nan=0.0, posinf=peak / REFERENCE_LUMINANCE, neginf=0.0)
+    return np.nan_to_num(out, nan=0.0, posinf=max_linear, neginf=0.0)
 
 
 def render_hdr_p3_linear(
@@ -239,21 +275,28 @@ def render_hdr_p3_linear(
     scene_ev = np.log2(np.maximum(scene_y, np.float32(EPS))) - np.float32(GRAY_EV)
     reveal = _c1_reveal(scene_ev, plan.color.reveal_start_ev, plan.color.reveal_end_ev)
     # Fold evidence permission (upsampled).
-    perm = _upsample_nearest(evidence.reveal_permission, reveal.shape)
+    perm = _upsample_bilinear(evidence.reveal_permission, reveal.shape)
     reveal = np.minimum(reveal, np.maximum(perm, reveal * 0.25 + perm * 0.75))
 
     sdr = np.asarray(sdr_encoded_linear_p3, dtype=np.float32)
     peak = float(plan.target.peak_nits)
     hdr = _bridge_jmh(sdr, candidate, reveal, peak)
-    # Final peak limit in relative linear units.
+    # The bridge performs a luminance-preserving neutral-axis gamut fit. Keep an
+    # assertion here instead of a second per-channel clip that could create plateaus.
     max_lin = float(2.0 ** capacity)
-    hdr = np.clip(hdr, 0.0, max_lin)
+    if np.any(hdr < -1e-6) or np.any(hdr > max_lin + 1e-5):
+        raise RuntimeError("HDR bridge produced values outside the Display P3 peak cube")
 
     y_s = _p3_luminance(sdr)
     y_h = _p3_luminance(hdr)
     gain = (hdr + 1.0 / 64.0) / (sdr + 1.0 / 64.0)
-    actual = float(np.max(y_h) / max(float(np.max(y_s)), EPS)) if y_h.size else 1.0
-    mid_delta = float(math.log2(max(match, EPS)))
+    actual = float(np.max(hdr)) if hdr.size else 1.0
+    mid_mask = (y_s >= 0.09) & (y_s <= 0.36) & (y_h > EPS)
+    mid_delta = (
+        float(np.median(np.log2(np.maximum(y_h[mid_mask], EPS) / y_s[mid_mask])))
+        if np.any(mid_mask)
+        else 0.0
+    )
     diag = HdrRenderDiagnostics(
         actual_content_headroom=max(1.0, actual),
         peak_luminance_ratio=float(np.max(y_h)) if y_h.size else 0.0,

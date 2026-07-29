@@ -280,13 +280,13 @@ PPG) does not close the gap, so this is the model rather than interpolation choi
 Worth weighing against this tool's position that it performs no denoising and leaves
 texture to the demosaic choice.
 
-**The decode follows Apple's linear-extraction structure, with one explicit policy
-choice.** `shadowBias`, `boostAmount`, and `localToneMapAmount` are zeroed, gamut mapping
-is disabled, and the result is rendered into `extendedLinearITUR_2020`. dngscan leaves
-the file's `baselineExposure` in place instead of forcing it to zero, because it is part
-of the authored DNG/ProRAW rendering recipe; the LibRaw path applies the same metadata
-gain through `scene_scale`. This is separate from CIRAWFilter's `exposure`, which remains
-zero until dngscan applies the user's EV in the common scene pipeline.
+**The decode follows Apple's linear-extraction structure directly.** `baselineExposure`,
+`shadowBias`, `boostAmount`, `localToneMapAmount`, and RAW `exposure` are zeroed inside
+CIRAWFilter; EDR and gamut mapping are disabled; and the result is rendered into
+`extendedLinearITUR_2020`. The original `baselineExposure` is recorded before clearing,
+then restored exactly once through `scene_scale`, just as it is on the LibRaw path. The
+handoff pixels remain directly scene-linear without discarding the file's rendering intent
+or applying it again with the user's EV.
 
 **Aligned mode is a practical per-file decoder comparison.** The half-size LibRaw
 reference uses the same white balance, highlight reconstruction, and storage-scale
@@ -324,10 +324,11 @@ reads as a cleaner shadow than the export will produce.
 apply during RAW rendering; its default can vary with camera settings, and ProRAW can
 write a per-image recipe based on scene dynamic range. It is not the physical capture
 exposure described by shutter/aperture/ISO, nor a command to normalize image content.
-LibRaw does not apply the tag, so dngscan folds its gain into `scene_scale`; Core Image
-keeps CIRAWFilter's file-derived value. Changing the scale rather than multiplying the
-uint16 buffer preserves headroom and precision. Use `--ev` for subjective adjustment on
-top; the report names the file value it honoured.
+LibRaw does not apply the tag, so dngscan folds its gain into `scene_scale`. Core Image now
+reads and clears the property first, then restores the same gain after the linear handoff.
+Changing the scale rather than multiplying a storage buffer preserves headroom and
+precision. Use `--ev` for subjective adjustment on top; the report names the file value
+and where it was applied.
 
 `shadowBias` is the one that is easy to miss: it defaults to **5.0**, subtracts from the
 shadows, and is a display-referred black pedestal with no place in a scene-linear buffer.
@@ -367,7 +368,8 @@ intermediate caching disabled and a 1024 MB memory target. On a 24 MP Sigma fp s
 RAW 9 decode measured 1.24 s at 1280 px and 2.08 s at 6000x4000; the complete full-size
 decode, analysis, plan and render took about 5.1 s before JPEG encoding.
 
-`extendedDynamicRangeAmount` is left at Apple's default of 0: raising it to 1.0 does
+`extendedDynamicRangeAmount` is explicitly set to 0 so Apple's display-side HDR mapping
+cannot precede AgX in the scene buffer. Raising it to 1.0 does
 expose more separation at the very top (range 0.11 → 1.74 across the topmost pixels), but
 the highlight region correlates at 0.996 in log2 with the default render, so it is
 substantially a remap of the same information — and it pushes the peak to 20, far past
@@ -393,12 +395,11 @@ this pipeline might want to push into the decode. Until that white-balance inter
 a validated temperature/tint mapping, `--wb daylight` is rejected on this path rather
 than approximated.
 
-One caveat this pipeline does not yet close: RAW 9 ships with the OS, so a macOS update
-can replace the model while `decoderVersion` still answers "9". The golden-sample
-regression is insulated by construction — it feeds pre-decoded buffers and never invokes
-Core Image — and the decode tests assert properties rather than pinned bytes, so an Apple
-model change will not raise a false alarm. It will not raise any alarm either, and the
-report records the decoder version but not the OS build that produced it.
+RAW 9 ships with the OS, so a macOS update can replace the model while `decoderVersion`
+continues to report "9". Reports now record the system version/build fingerprint alongside
+the decoder token, making two renders traceable to their actual runtime. The golden matrix
+still covers only the stable post-decode algorithm layer; Core Image tests pin properties
+rather than bytes, so an OS update still requires an explicit A/B on the same RAW corpus.
 
 ### White balance
 
@@ -672,31 +673,19 @@ does not alter the tone plan. 4:2:2 and 4:2:0 are available when smaller files m
 the cost of chroma resolution. Display P3 embeds an ICC profile and export stops if that
 profile is unavailable rather than writing untagged wide-gamut values.
 
-The HDR option writes a JPEG with an ISO 21496-1 **RGB** gain map through Apple Core
-Image. Its 8-bit Display P3 primary is the ordinary finished SDR render (AgX / gated /
-lum / neutral as selected). SDR-only readers therefore see the same P3 JPEG as a normal
-export. First-release Ultrahdr requires `look=none` and `display_filter=none` — existing
-display looks are not yet HDR-aware and are rejected rather than silently ignored.
+HDR is paused; SDR is the only production output. The old ACES 2-derived bridge and
+gain-map writer remain as experiment material, not as a supported feature or the intended
+algorithm. The backend gate still prevents them from writing a file that appears valid but
+cannot reproduce its HDR rendition through a real round-trip.
 
-The HDR alternate is **not** `SDR × scalar`. After the shared intent-scene path (WB,
-BaselineExposure, fixed mid-gray EV, user EV, scene transform), dngscan forks:
-
-1. SDR AgX (or other SDR core) → quantized Display P3 base
-2. ACES 2-derived HDR DRT (Hellwig JMh tone / chroma / gamut) → extended-linear P3
-3. Content-independent mid-gray match + JMh bridge (reveal around diffuse white
-   `log2(1/0.18)`) so low/midtones track SDR while highlights can use independent
-   colorfulness geometry
-4. RGB ISO gain map from the SDR/HDR pair (`HDRGainMapAsRGB`)
-
-Until official CTL runtime vectors are cross-checked, the product language is
-**ACES 2-derived HDR**, not “strict ACES 2”. NumPy (`dngscan.aces2`) is the reference
-kernel; the C++ native path is stubbed and not yet production-linked.
-
-`--hdr-headroom` is display **capacity** in EV relative to a 100 nit reference white
-(default `3.0` → 800 nit; max `log2(4000/100) ≈ 5.32`). Actual content headroom is taken
-from the finished HDR rendition. Core Image owns packaging; the writer validates an ISO
-gain-map auxiliary image, Display P3 ICC, 4:4:4, and RGB (not L008) map format before
-replacing the destination. Requires macOS + `pyobjc-framework-Quartz`.
+The revised direction is to solve two darktable-style AgX transforms from the same
+scene-linear input: one for SDR and one for HDR. HDR is neither `SDR × gain` nor an ACES
+DRT placed after SDR AgX. It keeps the same scene intent and middle gray while independently
+solving the C1 shoulder, rendering primaries, path-to-white, and peak-aware P3 boundary
+above reference white. Core Image then packages two already completed renditions. The full
+design, equations, data model, and test gates are recorded in
+[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md). It will
+not be wired up until the RAW9 scene-linear handoff and existing SDR path are settled.
 
 ## Quick start
 
@@ -734,10 +723,6 @@ python -m dngscan photo.dng --jpeg photo.jpg
 # Highlight reconstruction and Display P3
 python -m dngscan photo.dng --jpeg photo_p3.jpg \
   --highlight-mode reconstruct --output-gamut p3
-
-# Apple ISO RGB gain-map HDR JPEG (ACES 2-derived; capacity +3 EV → 800 nit)
-python -m dngscan photo.dng --jpeg photo_hdr.jpg \
-  --output-format ultrahdr --hdr-headroom 3 --hdr-drt aces2
 
 # RAW analysis dashboard and CSV
 python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv

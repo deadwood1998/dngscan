@@ -2,13 +2,14 @@
 """SDR and Apple ISO gain-map HDR JPEG export."""
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ._deps import mpimg, np
 from .color import output_gamut_label, output_icc_profile_bytes
 from .constants import DEFAULT_HDR_HEADROOM_EV
-from .gainmap import build_hdr_alternate_rgba_half, write_apple_gainmap_jpeg
+from .gainmap import write_apple_gainmap_jpeg
 from .models import Analysis, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import render_output_u8
 
@@ -62,7 +63,7 @@ def export_ultrahdr_jpeg(
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
     hdr_drt: str = "aces2",
-) -> bool:
+) -> dict[str, Any]:
     output_gamut = "p3"
     if look != "none" or display_filter != "none":
         raise RuntimeError(
@@ -102,7 +103,7 @@ def export_ultrahdr_jpeg(
             lum_norm,
             agx_primaries,
         )
-        hdr_rgba, diagnostics, _hdr_plan = build_hdr_alternate_from_dual_rendition(
+        hdr_rgba, diagnostics, hdr_plan = build_hdr_alternate_from_dual_rendition(
             bundle,
             analysis,
             plan,
@@ -112,8 +113,9 @@ def export_ultrahdr_jpeg(
             scene_transform_strength=scene_transform_strength,
         )
         info = write_apple_gainmap_jpeg(base_u8, hdr_rgba, out_path, quality, capacity)
-        info["diagnostics"] = diagnostics
-        return True
+        info["diagnostics"] = asdict(diagnostics)
+        info["reference_transform_id"] = hdr_plan.reference_transform_id
+        return info
     except Exception as exc:
         raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {exc}") from exc
 

@@ -36,6 +36,10 @@ class RawBundle:
     # is file-authored baseline rendering compensation, not shutter/aperture/ISO or an
     # auto-gray target. Both decoders honour it before dngscan's explicit EV adjustment.
     baseline_exposure: float | None = None
+    # Whether BaselineExposure remains multiplied into decoder pixels. New Core Image
+    # handoffs clear it inside CIRAWFilter and restore it through scene_scale, so this is
+    # normally False for both decoders. Kept explicit to detect fallback API behaviour.
+    baseline_exposure_baked_in: bool = False
     # Half-resolution, orientation-correct RGB soft clip masks in raw/CFA space.
     # Shape is (H, W, 3), aligned to scene_rec2020_render when scene_half_size=True.
     # Full-resolution renders resize this mask to the render buffer on demand.
@@ -57,6 +61,9 @@ class RawBundle:
     # one, whose frame geometry cannot carry them.
     scene_decoder: str = "libraw"
     scene_decoder_version: str | None = None
+    # OS/build identity matters for system-distributed RAW decoders even when the public
+    # decoder version token is unchanged.
+    scene_decoder_runtime: str | None = None
     # Which Core Image scale policy produced the buffer: aligned (per-file decoded-green
     # comparison → calibration_confidence=relative), unity (Apple-native /
     # decoder-native), or measured (legacy fixed Sigma-fp fit, also relative).

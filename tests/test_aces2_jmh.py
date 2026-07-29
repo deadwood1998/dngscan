@@ -25,7 +25,7 @@ class Aces2JmhTests(unittest.TestCase):
 
     def test_xyz_jmh_neutral_roundtrip(self) -> None:
         rgb_w = np.array([REFERENCE_LUMINANCE, REFERENCE_LUMINANCE, REFERENCE_LUMINANCE])
-        xyz_w = rgb_w @ AP0_RGB_TO_XYZ.T
+        xyz_w = rgb_w @ AP0_RGB_TO_XYZ
         xyz = np.stack([0.5 * xyz_w, 1.0 * xyz_w], axis=0)
         jmh = xyz_to_jmh(xyz, xyz_w)
         back = jmh_to_xyz(jmh, xyz_w)

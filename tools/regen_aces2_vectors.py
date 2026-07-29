@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate float64 self-consistency vectors for dngscan/aces2."""
+"""Generate reusable input stimuli for dngscan/aces2 property tests.
+
+No expected renderer output is stored: it would be circular to generate a
+reference with the same NumPy implementation being tested.
+"""
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 
-from dngscan.aces2 import render_aces2_hdr_p3_linear
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 OUT_DIR = ROOT / "tests" / "aces2_vectors"
 
 PEAK_PRESETS = {
@@ -124,14 +130,13 @@ def generate() -> None:
     }
     for name, scene in sets.items():
         for peak_name, capacity_ev in PEAK_PRESETS.items():
-            out = render_aces2_hdr_p3_linear(scene, capacity_ev=float(capacity_ev))
             path = OUT_DIR / f"{name}__{peak_name}nit.npz"
             np.savez_compressed(
                 path,
                 scene_rec2020=scene.astype(np.float64),
-                p3_linear=out.astype(np.float64),
                 capacity_ev=np.float64(capacity_ev),
                 peak_nits=np.float64(100.0 * (2.0 ** capacity_ev)),
+                provenance=np.array("input stimulus only; no expected renderer output"),
             )
             print(f"wrote {path.relative_to(ROOT)}")
 

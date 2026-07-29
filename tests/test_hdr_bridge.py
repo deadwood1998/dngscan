@@ -7,7 +7,16 @@ import unittest
 
 import numpy as np
 
-from dngscan.hdr_render import _bridge_jmh, _c1_reveal, _p3_luminance, midgray_match_scale_for_plans
+from dngscan.hdr_render import (
+    _bridge_jmh,
+    _c1_reveal,
+    _fit_p3_to_peak_preserve_y,
+    _jmh_to_relative_p3,
+    _p3_luminance,
+    _relative_p3_to_jmh,
+    _upsample_bilinear,
+    midgray_match_scale_for_plans,
+)
 from dngscan.models import ColorGeometryPlan, RenderPlan, SceneToneMetrics
 from dngscan.tone import neutral_tone_plan
 
@@ -50,7 +59,39 @@ class HdrBridgeTests(unittest.TestCase):
         hdr = np.array([[[0.2, 0.5, 0.2], [0.5, 0.9, 0.5]]], dtype=np.float32)
         reveal = np.ones((1, 2), dtype=np.float32)
         out = _bridge_jmh(sdr, hdr, reveal, 800.0)
-        self.assertTrue(np.all(_p3_luminance(out) >= _p3_luminance(sdr) - 2e-3))
+        self.assertTrue(np.all(_p3_luminance(out) >= _p3_luminance(sdr) - 2e-5))
+
+    def test_relative_p3_jmh_round_trip_at_hdr_peak(self) -> None:
+        rgb = np.array(
+            [[0.18, 0.18, 0.18], [1.0, 0.4, 0.1], [4.0, 2.0, 0.5]], dtype=np.float64
+        )
+        out = _jmh_to_relative_p3(_relative_p3_to_jmh(rgb, 800.0), 800.0)
+        np.testing.assert_allclose(out, rgb, rtol=2e-6, atol=2e-6)
+
+    def test_peak_fit_preserves_luminance_while_reducing_chroma(self) -> None:
+        rgb = np.array([[12.0, 0.5, -0.5], [0.4, 9.0, 0.2]], dtype=np.float32)
+        y = _p3_luminance(rgb)
+        out = _fit_p3_to_peak_preserve_y(rgb, 8.0)
+        self.assertTrue(np.all(out >= 0.0))
+        self.assertTrue(np.all(out <= 8.0))
+        np.testing.assert_allclose(_p3_luminance(out), y, rtol=2e-6, atol=2e-6)
+
+    def test_bridge_fuzz_respects_floor_and_peak(self) -> None:
+        rng = np.random.default_rng(1234)
+        sdr = rng.random((20_000, 3), dtype=np.float32)
+        hdr = rng.uniform(-1.0, 12.0, size=(20_000, 3)).astype(np.float32)
+        reveal = rng.random(20_000, dtype=np.float32)
+        out = _bridge_jmh(sdr, hdr, reveal, 800.0)
+        self.assertTrue(np.all(np.isfinite(out)))
+        self.assertTrue(np.all(out >= 0.0))
+        self.assertTrue(np.all(out <= 8.0 + 1e-6))
+        self.assertTrue(np.all(_p3_luminance(out) >= _p3_luminance(sdr) - 2e-5))
+
+    def test_evidence_upsample_is_continuous(self) -> None:
+        source = np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float32)
+        out = _upsample_bilinear(source, (8, 8))
+        self.assertTrue(np.all(np.diff(out[4]) >= -1e-7))
+        self.assertGreater(len(np.unique(out[4])), 2)
 
     def test_c1_reveal_endpoints(self) -> None:
         ev = np.array([-1.0, 2.0, 2.473931, 2.973931, 5.0], dtype=np.float32)

@@ -1,13 +1,18 @@
 # dngscan ACES 2 HDR 双成像管线实现计划
 
+> **状态：已停止，保留作实验记录。** 2026-07-28 重新审视后，ACES 2-derived bridge 不再是
+> dngscan 的 HDR 主线。后续方向是从同一 scene-linear 输入分别求解 SDR/HDR 两条
+> darktable-style AgX，详见 [`DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](DARKTABLE_HDR_AGX_DESIGN.zh-CN.md)。
+> 当前不继续修改或接线本文所述 HDR 实现。
+
 > 状态：实现规格，供 Cursor 按阶段执行  
 > **Phase 0：已落地**（`tests/sdr_freeze/` + `tests/test_sdr_freeze.py` + `tools/regen_sdr_freeze.py`）  
 > **Phase 1：已落地**（`SceneScaleContract` + `dngscan/scene_scale.py` + `tests/test_scene_scale_contract.py`）
-> **Phase 2：已落地**（`dngscan/aces2/` + reference vectors；自称 ACES 2-derived，待 CTL 交叉验证）
+> **Phase 2：部分落地**（NumPy 核基于 `v2-dev-release-2`；矩阵约定已修正；正式 2025 release 同步与 CTL 外部向量仍缺）
 > **Phase 3：已落地**（`hdr_tone.py` / `hdr_evidence.py` + HDR dataclasses）
 > **Phase 4：已落地**（`hdr_render.py` dual-rendition bridge）
-> **Phase 5：已落地**（RGB Apple gain-map writer；拒绝 L008 回落）
-> **Phase 6：已落地**（CLI `--hdr-drt` / capacity 上限 / look 拦截；GUI capacity 校验）
+> **Phase 5：门禁已落地、后端未通过**（当前 Core Image 可写 `444f`，但 RGB expanded-rendition round-trip 失败，生产 HDR 被禁用）
+> **Phase 6：已落地**（CLI `--hdr-drt` / capacity 上限 / look 拦截；GUI capacity 校验与后端状态禁用）
 > **Phase 7：骨架已落地**（`aces2_hdr.h/.cpp` 占位；原生核未接入，NumPy 仍为唯一语义）
 > **Phase 8：文档已更新**（README 中英说明 dual-rendition；样张视觉门仍待人工验收）  
 > 范围：独立 HDR DRT、RAW9/LibRaw scene 契约、RGB gain map 及验证  

@@ -149,11 +149,15 @@ def calculate_cat_matrix(
     dest_xy: Sequence[float],
     cone_resp: np.ndarray = CONE_RESP_MAT_BRADFORD,
 ) -> np.ndarray:
-    """Lib.Academy.ColorSpaces.ctl calculate_cat_matrix."""
+    """Lib.Academy.ColorSpaces.ctl ``calculate_cat_matrix``.
+
+    ACES CTL stores colour matrices for row-vector multiplication. Keep that
+    convention throughout this module: ``xyz @ matrix``.
+    """
     src_xyz = xy_y_to_xyz((src_xy[0], src_xy[1], 1.0))
     dest_xyz = xy_y_to_xyz((dest_xy[0], dest_xy[1], 1.0))
-    src_cone = cone_resp @ src_xyz
-    dest_cone = cone_resp @ dest_xyz
+    src_cone = src_xyz @ cone_resp
+    dest_cone = dest_xyz @ cone_resp
     vk = np.diag(dest_cone / src_cone)
     return cone_resp @ vk @ np.linalg.inv(cone_resp)
 
