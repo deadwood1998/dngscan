@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Apple-native ISO 21496-1 gain-map JPEG construction.
+"""Apple-native ISO 21496-1 gain-map packaging and round-trip probes.
 
-The SDR primary remains the ordinary, fully rendered Display P3 JPEG image. The HDR
-alternate differs only by a scene-supported luminance gain above diffuse white. One
-reliable scene stop restores at most one display stop; the user headroom is a capacity
-ceiling, not a normalization target. Core Image derives the ISO gain map from this
-coupled SDR/HDR pair and writes the container metadata.
+This module does not construct HDR pixels. The darktable-style HDR AgX renderer owns the
+alternate rendition; Core Image only packages an already-complete SDR/HDR pair.
 """
 from __future__ import annotations
 
-import math
 import os
 import platform
 import tempfile
@@ -19,18 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ._deps import np
-from .color import luminance_from_rec2020, srgb_decode
-from .constants import EPS, GRAY_EV
-from .models import RawBundle, RenderPlan, ToneCompressionPlan
-from . import scene_transform as scene_transform_engine
-from .tone import scene_rec2020_to_float
-
-
-HDR_BUILD_CHUNK = 1_000_000
-HDR_DIFFUSE_WHITE_LINEAR = 0.90
-HDR_DIFFUSE_WHITE_EV = math.log2(HDR_DIFFUSE_WHITE_LINEAR / 0.18)
-HDR_GAIN_ROLLIN_EV = 0.50
-HDR_GAIN_CAP_ROLLOFF_EV = 0.50
+from .color import srgb_decode
 
 
 def _apple_gainmap_api_status() -> tuple[bool, str]:
@@ -176,103 +161,6 @@ def apple_gainmap_backend_status() -> tuple[bool, str]:
         "HDR 输出已暂停：正在重新设计独立的 darktable-style HDR AgX 核；"
         "gain-map 封装可用，但没有可写入的 HDR rendition"
     )
-
-
-def gain_stops_for_scene_ev(
-    scene_ev: Any,
-    white_ev: float,
-    hdr_headroom_ev: float,
-    diffuse_white_ev: float = HDR_DIFFUSE_WHITE_EV,
-) -> Any:
-    """Recover real scene stops above diffuse white, capped by display headroom.
-
-    The AgX shoulder is intentionally not an HDR reference-white anchor: it can begin near
-    mid-gray so the SDR DRT can compress smoothly.  Treating that whole interval as HDR
-    content stretches broad, already-white AgX highlights to the display peak.  Here one
-    recoverable scene stop produces at most one gain stop.  A C1 roll-in avoids a seam at
-    diffuse white and a C1 cap keeps the user-selected headroom an upper bound, not a
-    target that every image must fill.
-    """
-    headroom = np.float32(max(0.0, float(hdr_headroom_ev)))
-    if headroom <= 0.0:
-        return np.zeros_like(np.asarray(scene_ev, dtype=np.float32))
-
-    reliable_ev = np.minimum(np.asarray(scene_ev, dtype=np.float32), np.float32(white_ev))
-    excess = np.maximum(reliable_ev - np.float32(diffuse_white_ev), np.float32(0.0))
-    rollin = np.float32(HDR_GAIN_ROLLIN_EV)
-    t = np.clip(excess / rollin, 0.0, 1.0)
-    gain = excess * (t * t * (np.float32(3.0) - np.float32(2.0) * t))
-
-    cap_width = np.float32(min(HDR_GAIN_CAP_ROLLOFF_EV, max(0.05, float(headroom) * 0.25)))
-    cap_start = headroom - cap_width
-    cap_end = headroom + cap_width
-    middle = (gain > cap_start) & (gain < cap_end)
-    if np.any(middle):
-        u = (gain[middle] - cap_start) / (cap_end - cap_start)
-        h00 = np.float32(2.0) * u**3 - np.float32(3.0) * u**2 + np.float32(1.0)
-        h10 = u**3 - np.float32(2.0) * u**2 + u
-        h01 = -np.float32(2.0) * u**3 + np.float32(3.0) * u**2
-        gain[middle] = h00 * cap_start + h10 * (cap_end - cap_start) + h01 * headroom
-    gain[gain >= cap_end] = headroom
-    return np.clip(gain, 0.0, headroom).astype(np.float32, copy=False)
-
-
-def build_hdr_alternate_rgba_half(
-    base_rgb_u8: Any,
-    bundle: RawBundle,
-    plan: ToneCompressionPlan | RenderPlan,
-    hdr_headroom_ev: float,
-    scene_transform: str = "none",
-    scene_transform_strength: float = 1.0,
-) -> Any:
-    """Build an extended-linear Display P3 HDR alternate from the exact SDR primary.
-
-    Multiplying all three P3 channels by one scalar keeps the SDR hue and chromaticity
-    intact. The scalar is driven by pre-tone scene luminance above a diffuse-white
-    reference, then limited by the reliable scene-white endpoint and the requested
-    capacity. Quantized SDR code values are decoded here deliberately: the ratio seen by
-    Core Image is anchored to the actual 8-bit compatibility image.
-    """
-    base = np.asarray(base_rgb_u8)
-    scene = np.asarray(bundle.scene_rec2020_render)
-    if base.dtype != np.uint8 or base.ndim != 3 or base.shape[2] != 3:
-        raise ValueError("HDR gain-map 底图必须是 HxWx3 uint8")
-    if scene.shape[:2] != base.shape[:2] or scene.shape[-1] < 3:
-        raise ValueError("HDR alternate 与 SDR 底图尺寸不一致")
-    if not 0.0 < float(hdr_headroom_ev) <= 8.0:
-        raise ValueError("HDR headroom 必须在 0-8 EV 之间")
-
-    tone = plan.tone if isinstance(plan, RenderPlan) else plan
-    scene_flat = scene.reshape(-1, scene.shape[-1])
-    base_flat = base.reshape(-1, 3)
-    hdr = np.empty((scene_flat.shape[0], 4), dtype=np.float16)
-    wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
-    )
-    max_linear = np.float32(2.0 ** float(hdr_headroom_ev))
-
-    for start in range(0, scene_flat.shape[0], HDR_BUILD_CHUNK):
-        end = min(start + HDR_BUILD_CHUNK, scene_flat.shape[0])
-        rec = scene_rec2020_to_float(
-            scene_flat[start:end, :3], bundle.scene_scale, bundle.exposure_gain
-        )
-        rec = scene_transform_engine.apply_scene_transform_rec2020(
-            rec, scene_transform, scene_transform_strength, wb_adapt
-        )
-        scene_y = luminance_from_rec2020(rec)
-        scene_ev = np.log2(np.maximum(scene_y, np.float32(EPS))) - np.float32(GRAY_EV)
-        gain_stops = gain_stops_for_scene_ev(
-            scene_ev,
-            float(tone.white_ev),
-            hdr_headroom_ev,
-        )
-        base_linear = srgb_decode(base_flat[start:end].astype(np.float32) / np.float32(255.0))
-        gain = np.exp2(gain_stops).astype(np.float32, copy=False)
-        hdr[start:end, :3] = np.clip(base_linear * gain[:, None], 0.0, max_linear).astype(
-            np.float16, copy=False
-        )
-        hdr[start:end, 3] = np.float16(1.0)
-    return hdr.reshape(base.shape[:2] + (4,))
 
 
 def _nsnumber_bool(value: bool) -> Any:

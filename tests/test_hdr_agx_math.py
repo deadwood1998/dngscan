@@ -20,6 +20,8 @@ from dngscan.hdr_agx_math import (
     hdr_encoded_pivot_slope,
     lift_stops,
     max_lift_rate,
+    sdr_encoded_slope,
+    single_curve_minimum_white_ev,
     smootherstep,
     smootherstep_derivative,
 )
@@ -90,8 +92,8 @@ class BudgetCompilationTests(unittest.TestCase):
 
         dngscan's white endpoint has a +3.00 EV floor, so with the knee at diffuse white
         a common real frame leaves 0.526 EV of window -- clearing the 0.5 EV gate by a
-        hair. Granting the full budget there would climb at 7.1 EV per EV, steeper than
-        the SDR body's own contrast, and read as an edge rather than headroom.
+        hair. Granting the full budget there would climb at 7.1 EV per EV and exceed the
+        prototype rate cap; whether that cap is perceptually right remains a corpus test.
         """
         knee, white = PLANS["white_floor"]
         window = allocation_window(knee, white)
@@ -200,10 +202,10 @@ class SingleCurveImpossibilityTests(unittest.TestCase):
     def test_hdr_pivot_slope_preserves_linear_contrast(self) -> None:
         """The closed form, checked against the linear derivatives it is defined by.
 
-        Everything here is in the *encoded* curve domain. The pivot slope is not
-        q_pivot/x_pivot -- that mistake is what makes 0.8427 look unreproducible.
+        Everything here is in the *encoded* curve domain. The main case uses dngscan's
+        current contrast 3.0; Blender's historical 2.4 is checked separately below.
         """
-        gamma, ratio, s_sdr = 2.2, 10.0, 2.4
+        gamma, ratio, s_sdr = 2.2, 10.0, 3.0
         q_sdr = 0.18 ** (1.0 / gamma)
         q_hdr = (0.18 / ratio) ** (1.0 / gamma)
         self.assertAlmostEqual(q_sdr, 0.45865645, places=8)
@@ -212,7 +214,7 @@ class SingleCurveImpossibilityTests(unittest.TestCase):
         self.assertAlmostEqual(q_hdr, q_sdr * ratio ** (-1.0 / gamma), places=15)
 
         s_hdr = hdr_encoded_pivot_slope(s_sdr, ratio, gamma)
-        self.assertAlmostEqual(s_hdr, 0.8426860162, places=9)
+        self.assertAlmostEqual(s_hdr, 1.0533575203, places=9)
         # Long form before simplification must agree bit for bit.
         long_form = s_sdr * q_sdr ** (gamma - 1.0) / (ratio * q_hdr ** (gamma - 1.0))
         self.assertEqual(s_hdr, long_form)
@@ -227,31 +229,71 @@ class SingleCurveImpossibilityTests(unittest.TestCase):
         Matching SDR contrast at the pivot forces the HDR encoded slope *down* by
         R^(-1/gamma), while reaching encoded white over the remaining window demands an
         average slope well above it. A concave shoulder's slope only falls, so no such
-        curve exists. Structural: no choice of target_white, pivot encoding or curve
-        gamma removes it, which is why HDR needs a separate allocation layer.
+        curve exists over dngscan's current gamma and white-EV range. Raising gamma far
+        enough can change that geometry, but that is a different HDR curve solve, not a
+        target-white extension of the frozen SDR DRT.
         """
-        black_ev, white_ev, gamma, ratio, s_sdr = -10.0, 6.5, 2.2, 10.0, 2.4
+        black_ev, white_ev, gamma, ratio, s_sdr = -10.0, 6.5, 2.2, 8.0, 3.0
         pivot_x = (0.0 - black_ev) / (white_ev - black_ev)
         q_hdr = (0.18 / ratio) ** (1.0 / gamma)
 
         pivot_slope = hdr_encoded_pivot_slope(s_sdr, ratio, gamma)
         average_shoulder_slope = (1.0 - q_hdr) / (1.0 - pivot_x)
-        self.assertAlmostEqual(pivot_slope, 0.842686, places=5)
-        self.assertAlmostEqual(average_shoulder_slope, 2.129660, places=5)
-        self.assertAlmostEqual(average_shoulder_slope / pivot_slope, 2.527228, places=5)
+        self.assertAlmostEqual(pivot_slope, 1.165805, places=5)
+        self.assertAlmostEqual(average_shoulder_slope, 2.086020, places=5)
+        self.assertAlmostEqual(average_shoulder_slope / pivot_slope, 1.789339, places=5)
         self.assertGreater(average_shoulder_slope, pivot_slope)
 
+        # The black endpoint cancels. Even at dngscan's largest compiled white endpoint,
+        # a concave shoulder cannot reach either the default R=8 or Blender-reference R=10.
+        # Calls the shipped function rather than restating the formula: a test that
+        # re-implements what it checks would pass over a broken implementation.
+        for peak_ratio, minimum_white_ev in ((8.0, 11.6307034203), (10.0, 13.1415868186)):
+            required_white = single_curve_minimum_white_ev(3.0, peak_ratio, gamma)
+            self.assertAlmostEqual(required_white, minimum_white_ev, places=9)
+            self.assertGreater(required_white, 8.5)
+
+    def test_contrast_is_not_the_encoded_slope(self) -> None:
+        """`contrast = 3.0` only equals slope 3.0 on the 16.5 EV reference window.
+
+        Every plan dngscan actually compiles is narrower, so reading the parameter as a
+        slope overstates it -- which would make the refutation look weaker than it is.
+        """
+        self.assertAlmostEqual(sdr_encoded_slope(3.0, -10.0, 6.5), 3.0, places=12)
+        narrow = sdr_encoded_slope(3.0, -5.68, 3.12)
+        self.assertLess(narrow, 3.0)
+        self.assertAlmostEqual(narrow, 3.0 * 8.8 / 16.5, places=9)
+        # Widening the window raises it proportionally; the black end matters here, unlike
+        # in the threshold above where it cancels.
+        self.assertGreater(sdr_encoded_slope(3.0, -14.0, 8.5), 3.0)
+
+    def test_minimum_white_ev_is_the_boundary_of_the_refutation(self) -> None:
+        """At exactly the threshold the two slopes meet; the claim is about being under it."""
+        gamma, ratio = 2.2, 8.0
+        w_min = single_curve_minimum_white_ev(3.0, ratio, gamma)
+        q_hdr = (0.18 / ratio) ** (1.0 / gamma)
+        for black_ev in (-14.0, -10.0, -5.0):
+            with self.subTest(black_ev=black_ev):
+                s_hdr = hdr_encoded_pivot_slope(
+                    sdr_encoded_slope(3.0, black_ev, w_min), ratio, gamma
+                )
+                s_avg = (1.0 - q_hdr) * (w_min - black_ev) / w_min
+                self.assertAlmostEqual(s_hdr, s_avg, places=9)
+
+    def test_blender_contrast_value_is_only_a_reference_case(self) -> None:
+        self.assertAlmostEqual(hdr_encoded_pivot_slope(2.4, 10.0, 2.2), 0.8426860162, places=9)
+
     def test_pivot_slope_is_not_a_universal_constant(self) -> None:
-        """0.8427 holds only at R=10, gamma=2.2, s_sdr=2.4 and equal windows."""
-        base = hdr_encoded_pivot_slope(2.4, 10.0, 2.2)
-        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(2.4, 8.0, 2.2), base, places=3)
-        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(2.4, 10.0, 2.4), base, places=3)
-        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(3.0, 10.0, 2.2), base, places=3)
+        """1.0534 holds only at R=10, gamma=2.2, s_sdr=3.0 and equal windows."""
+        base = hdr_encoded_pivot_slope(3.0, 10.0, 2.2)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(3.0, 8.0, 2.2), base, places=3)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(3.0, 10.0, 2.4), base, places=3)
+        self.assertNotAlmostEqual(hdr_encoded_pivot_slope(2.4, 10.0, 2.2), base, places=3)
         # No HDR expansion means no slope change at all.
-        self.assertAlmostEqual(hdr_encoded_pivot_slope(2.4, 1.0, 2.2), 2.4, places=12)
+        self.assertAlmostEqual(hdr_encoded_pivot_slope(3.0, 1.0, 2.2), 3.0, places=12)
         # A longer HDR window scales the requirement proportionally.
         self.assertAlmostEqual(
-            hdr_encoded_pivot_slope(2.4, 10.0, 2.2, window_ratio=2.0), base * 2.0, places=12
+            hdr_encoded_pivot_slope(3.0, 10.0, 2.2, window_ratio=2.0), base * 2.0, places=12
         )
 
     def test_the_allocation_solves_what_the_single_curve_cannot(self) -> None:

@@ -166,7 +166,7 @@ H_display = log2(display peak / reference white)
 R_display = 2^H_display
 ```
 
-第一版固定：
+第一版 authoring preset：
 
 ```text
 reference_white_nits = 100
@@ -174,9 +174,15 @@ default_peak_nits    = 800
 default_H_display    = 3 EV
 ```
 
-100 nit 与 Blender HDR AgX、现有 SDR P3 和 Apple extended-linear 交接一致。ITU 广播制作常用
-203 nit HDR reference white，但该值不等同于 SDR peak white；若以后输出 PQ master，应把
-reference white 参数化，不能静默改变照片的 18% 灰锚点。
+这三个数不是同一份标准规定出来的。`100 nit` 匹配 Blender HDR AgX 的 authoring reference，
+也便于把当前 SDR 的 `1.0` 解释成 100 nit；Apple 只规定 headroom 是 HDR peak 与 reference
+white 的**比值**，并没有要求 reference white 必须绝对等于 100 nit。`800 nit / 3 EV` 是
+dngscan 的初始显示目标。代码里的 `4000 nit / 5.321928 EV` 上限也是工程护栏，不是 Apple、
+ISO 或 PQ 的格式极限。
+
+ITU-R BT.2408 的广播制作参考通常把 HDR reference white 放在 203 nit，但报告也明确说明它
+不等于 SDR peak white。若以后输出 PQ master，reference white 必须参数化，不能静默改变照片
+的相对亮度锚点。
 
 必须分开记录三个值：
 
@@ -194,6 +200,30 @@ H_actual   渲染结果实际达到的内容余量
 
 不能把每张图的最亮像素归一化到 `R_display`。
 
+### 4.1 常数台账
+
+| 数值 | 身份 | 结论 |
+|---|---|---|
+| `0.18` | 项目曝光约定 | 保留。传统 18% middle gray，也是现有 SDR 锚点；不是从本张 RAW 测出来的。 |
+| `2.2` | darktable/dngscan 当前 curve gamma | 保留。它是 AgX 内部曲线线性化 gamma，不是 sRGB/HLG/PQ 的显示传递函数。 |
+| `3.0` | 当前 AgX pivot contrast | 保留。来自 darktable scene default 与 dngscan plan；实际 encoded slope 还要乘 `(W-B)/16.5`。 |
+| `16.5 EV` | 上游参数归一基准 | 保留。来自 `-10` 到 `+6.5 EV`；不是每张图的实际动态范围。 |
+| `R=8 / H=3` | dngscan authoring preset | 暂留待实机 A/B；不是标准要求。 |
+| `R=10 / H=3.321928` | Blender 外部参照 | 只做 probe，不作为 dngscan 默认。 |
+| `4000/100 / H=5.321928` | CLI 防误用上限 | 工程护栏，不是格式极限。 |
+| `0.2627,0.6780,0.0593` | BT.2020 线性 Y | 保留，三项和为 1；tone 判断必须用它而不是 AgX opponent-luma。 |
+| `6,-15,10` | quintic smootherstep 系数 | 精确边界解；由 `S(0/1)` 及一、二阶端点条件唯一确定。 |
+| `1.875` | smootherstep 最大导数 | 精确推导值 `S'(0.5)`。 |
+| `p99.99` | reliable tail / H_actual 统计政策 | 待 corpus；用于拒绝单点 peak，不是标准常数。 |
+| `0.5 EV` | minimum window 原型值 | 未获数学支持；不是数值稳定阈值，候选删除。 |
+| `3.0 EV/EV` | 最大 added log-slope 原型值 | 未标定，且与 AgX contrast 的 `3.0` 无关。 |
+| `rho=0` | Phase 2 隔离值 | 只用于先验证亮度；不是最终色彩参数。 |
+| `rho=0.5` | Blender probe 初值 | 语义并不等同 Blender `HDR_purity`，不得直接成为默认。 |
+| `hue_restore=0.6` | 当前 SDR color-path 继承值 | Phase 2 保持 SDR 一致；HDR 是否继续使用须由 Phase 3 色彩 probe 决定。 |
+
+`EPS`、采样点数和测试容差只属于数值实现与验收，不参与决定画面；不得把“测试能通过的
+误差范围”反写成 DRT 参数。
+
 ## 5. 被否决的单曲线扩展
 
 旧方案曾考虑让 darktable C1 求解器继续输出 `q in [0,1]`，再写成：
@@ -205,20 +235,45 @@ q(pivot) = (0.18 / R)^(1/gamma)
 
 这个式子能固定中灰，但无法同时保持 pivot contrast 和正常的 concave shoulder。
 
-以现有默认窗口 `[-10,+6.5] EV`、`gamma=2.2`、`R=10` 为例，数值计算得到：
+darktable 源码里有两个容易混淆的 contrast 初值：原始 Blender-like preset 最终恢复到
+`2.4`，而当前 scene-referred default 在 `_set_default_curve_and_look_params()` 中使用 `3.0`。
+dngscan 的 `build_tone_compression_plan()` 同样使用 `3.0`。因此本项目的验证必须采用 `3.0`，
+不能把 Blender 的 `2.4` 写成 dngscan 默认值。
+
+`[-10,+6.5] EV` 是上游默认参考窗口，不是 dngscan 每张图的实际窗口；dngscan 会把 black EV
+编译到 `[-14,-1.5]`，white EV 编译到 `[3.0,8.5]`。先用参考窗口、`contrast=3.0`、
+`gamma=2.2`、Blender 的 `R=10` 复算：
 
 ```text
 q_pivot                         = 0.161043
-保持线性 pivot 导数所需 slope = 0.842686
+保持线性 pivot 导数所需 slope = 1.053358
 到白端所需平均 shoulder slope = 2.129660
-平均值 / 初始值                = 2.527228
+平均值 / 初始值                = 2.021783
 ```
 
-一个从 pivot 开始导数只能下降的 concave shoulder，不可能用初始斜率 `0.8427` 完成平均斜率
-`2.1297` 的上升。求解器只能进入错误的 fallback 几何或牺牲中间调对比。
+一个从 pivot 开始导数只能下降的 concave shoulder，不可能用初始斜率 `1.0534` 完成平均斜率
+`2.1297` 的上升。求解器只能进入错误的 fallback 几何或牺牲中间调对比。即使改用 Blender
+原始 `2.4`，所需 HDR 初始斜率也只有 `0.8427`，矛盾反而更强。
 
-因此：**不能通过修改 `target_white`、pivot encoded value 或 curve gamma，把现有单条 SDR C1
-直接拉成 HDR。** HDR 需要额外的 EV 分配层。
+这个结论还可以写成覆盖当前 dngscan 全窗口的形式。设 `B/W` 为实际 black/white EV，
+`C=3.0`，则在当前 `gamma=2.2` 下：
+
+```text
+s_sdr = C * (W-B) / 16.5
+s_hdr = s_sdr * R^(-1/gamma)
+s_avg = (1-q_pivot) * (W-B) / W
+
+concave shoulder 必要条件：s_hdr >= s_avg
+等价于：W >= 16.5*(1-q_pivot)/(C*R^(-1/gamma))
+```
+
+黑端 `B` 被约掉了。`R=8` 时要求 `W>=11.630703 EV`；`R=10` 时要求
+`W>=13.141587 EV`，都超过 dngscan 当前 `W<=8.5 EV`，所以结论覆盖整个当前 plan 范围。
+
+但不能再把它写成“任何 gamma 都无解”：gamma 足够大时几何上可以恢复可行性，只是那会重新
+定义整条 HDR 曲线的编码和 shoulder，不再是把冻结 SDR 曲线的 `target_white` 简单抬高。因此
+这里严格否决的是：**在 dngscan 当前 `gamma=2.2 / contrast=3.0 / white<=8.5` 的 SDR 参数化上
+直接拉高单条 C1。** 当前方案选择额外 EV 分配层，避免让 HDR 反过来改写已冻结的 SDR DRT。
 
 ## 6. HDR 亮度分配：确定的数学形式
 
@@ -335,7 +390,7 @@ E_diffuse = log2(1/0.18) = 2.473931188...
 E_tail    = reliable_tail_ev_p9999
 ```
 
-初始硬规则：
+Phase 1 的初始映射假设：
 
 ```text
 H_signal = max(0, E_tail - E_diffuse)
@@ -344,19 +399,32 @@ e_k      = E_diffuse
 e_w      = sdr_plan.white_ev
 ```
 
-并增加退化门：
+其中 `E_diffuse` 的数值是精确推导值，但“scene Y=1 恰好代表一块实际漫反射白”只是曝光尺度
+约定。`E_tail` 使用 p99.99 也是鲁棒统计政策：在 80 万采样上大约由最亮的 80 个样本决定，
+用于避开单像素异常，不是标准规定。
+
+原型另外增加两个策略门：
 
 ```text
 if e_w <= e_k + minimum_window:
     H_budget = 0
+
+G_peak = 1.875 * H_budget / (e_w-e_k)
+G_peak <= G_limit
 ```
 
-第一版 `minimum_window` 先设为 `0.5 EV`，它是数值稳定门，不是审美参数。
+这里 `1.875` 是 quintic smootherstep 导数的精确最大值。当前原型暂设
+`minimum_window=0.5 EV`、`G_limit=3.0 EV/EV`，但两者都**不是数学常数**：smootherstep 对任意
+正窗宽都数值稳定，所以 `0.5 EV` 只是硬策略门；`3.0 EV/EV` 是 added log-output slope，和
+AgX 的 encoded `contrast=3.0` 不在同一个坐标系，不能因为数字相同就称为“匹配 AgX 对比度”。
+上线前应通过 EDR corpus 决定保留、替换或删除这两个值。
 
 解释：
 
 - `E_diffuse` 只定义额外 HDR 亮度从哪里开始，不把实际白物体强制映射到 1.0；
 - `E_tail` 来自排除不可靠 CFA clip 后的 scene tail；
+- `H_signal=E_tail-E_diffuse` 采用“一档可靠 scene 余量最多换一档 display 余量”。这是保守的
+  映射政策，不是 RAW 数据唯一推导出的比例；
 - `H_budget` 是可用上限，场景像素没有走到 `e_w` 时不会自动用满；
 - broad highlight、sparse emitter 以后可以调节 `e_k` 或窗口形状，但不得改变曝光锚点。
 
@@ -720,6 +788,9 @@ dngscan/hdr_delivery.py       # Core Image/Image I/O，最后接
 
 ## 15. 数学验收阈值
 
+以下容差是 float32 实现与交付编解码的工程验收线，不是色彩科学标准常数。有限差分测试必须
+同时固定采样步长，否则单独写一个导数误差阈值没有可复现意义。
+
 ### 15.1 一维 tone
 
 采样 `e in [-16,+16]`，至少 65537 点；测试 `H={0,1,2,3,log2(10)}`：
@@ -788,6 +859,10 @@ CFA clip 区域和 SDR/HDR 差值图。
 以下只能通过 corpus 和 EDR 实机 A/B 决定，文档不假装已有答案：
 
 - `rho_base`；
+- `p99.99` 是否是最合适的 reliable tail 统计量；
+- 一档 scene tail 是否应严格限制为一档 display headroom；
+- `minimum_window=0.5 EV` 是否应删除；
+- 最大 added log-slope `G_limit`（原型暂用 `3.0 EV/EV`）；
 - body-protected knee 是否优于固定 diffuse knee；
 - broad highlight 与 sparse emitter 的窗口差异；
 - HDR-specific outset/rotation 是否必要；

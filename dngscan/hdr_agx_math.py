@@ -13,10 +13,14 @@ justifies. That shape is chosen because `S`, `S'` and `S''` all vanish at both e
 the HDR lift joins the SDR curve at the knee with matching value, slope and curvature --
 no seam near diffuse white, which is exactly where a seam would be visible.
 
-Why not simply stretch the existing curve: with the default window and gamma, holding the
-pivot fixed while reaching an HDR white demands an average shoulder slope of 2.13 from a
-starting slope of 0.84. A concave shoulder's slope only falls, so no solution exists. The
-test suite pins that impossibility so the idea cannot quietly return.
+Why not simply stretch the existing curve: with dngscan's contrast 3.0, current gamma 2.2
+and the upstream reference window, holding the pivot fixed while reaching a 1000/100 HDR
+white demands an average shoulder slope of 2.13 from a starting slope of 1.05. A concave
+shoulder's slope only falls, so that parameterization has no solution. Generalised, it
+would need a white endpoint beyond 13.1 EV (11.6 EV at the 800 nit preset) against the
+8.5 EV dngscan actually compiles -- the black endpoint cancels out of that condition
+entirely. The test suite pins the current operating range, without pretending no
+imaginable gamma could ever solve a different curve.
 
 Everything here is float64 and array-free per-sample math, so it can act as the oracle the
 float32 runtime is checked against.
@@ -26,26 +30,70 @@ from __future__ import annotations
 import math
 
 from ._deps import np
-
-# log2(1 / 0.18): where scene EV crosses diffuse white. Used as the default knee, meaning
-# HDR range opens above diffuse white rather than lifting the subject.
-DIFFUSE_WHITE_EV = math.log2(1.0 / 0.18)
+from .constants import DIFFUSE_WHITE_EV
 
 # Smootherstep's derivative peaks at S'(0.5) = 1.875. Dividing that by the window width
 # gives the steepest rate at which HDR gain is added, in EV of lift per EV of scene.
 SMOOTHERSTEP_PEAK_SLOPE = 1.875
 
-# A window narrower than this cannot carry HDR gently, so no budget is granted. This is a
-# numerical stability gate, not an aesthetic one.
+# Temporary policy gate. Smootherstep itself remains numerically well-defined for any
+# positive window; 0.5 EV is therefore not a mathematical stability threshold. Keep it
+# explicit until the corpus decides whether a hard gate is useful at all.
 MINIMUM_WINDOW_EV = 0.5
 
-# Above this rate the HDR segment rises faster than the SDR body's own contrast, which
-# reads as a hard edge just above diffuse white rather than as headroom. Measured against
-# compiled plans: dngscan's white endpoint has a +3.00 EV floor, and with the knee at
-# diffuse white (2.474 EV) that leaves windows as narrow as 0.526 EV, where even 2 stops
-# of budget would climb at 7.1 EV per EV. The budget is reduced to respect this instead
-# of being granted in full and clipped later.
+# Temporary aesthetic cap, in added log2-output EV per scene EV. It is deliberately not
+# identified with AgX contrast=3.0: AgX contrast is an encoded-curve slope in normalized
+# x, so the two 3.0 values live in different coordinate systems. This value needs EDR
+# corpus calibration before production HDR can be enabled.
 MAX_LIFT_RATE = 3.0
+
+
+# Upstream's parameter normalisation base, from the -10..+6.5 EV reference window. AgX
+# contrast is quoted against this span, so a plan with a different window has a different
+# encoded slope for the same contrast value.
+REFERENCE_WINDOW_EV = 16.5
+
+
+def sdr_encoded_slope(
+    contrast: float,
+    black_ev: float,
+    white_ev: float,
+    reference_window_ev: float = REFERENCE_WINDOW_EV,
+) -> float:
+    """Encoded-curve slope at the pivot: `C * (W - B) / 16.5`.
+
+    Contrast alone is not the slope. It is quoted against the upstream 16.5 EV reference
+    window, so a plan compiled to a narrower window has a proportionally smaller encoded
+    slope. Reading `contrast = 3.0` as "slope 3.0" only happens to be right when the plan
+    window is exactly the reference one.
+    """
+    return float(contrast) * (float(white_ev) - float(black_ev)) / float(reference_window_ev)
+
+
+def single_curve_minimum_white_ev(
+    contrast: float,
+    peak_ratio: float,
+    curve_gamma: float,
+    reference_window_ev: float = REFERENCE_WINDOW_EV,
+) -> float:
+    """Smallest white EV at which stretching one C1 curve to HDR could work at all.
+
+    From requiring the HDR pivot slope to be at least the average slope needed to reach
+    encoded white:
+
+        s_hdr >= s_avg
+        C*(W-B)/16.5 * R^(-1/g) >= (1-q_pivot)*(W-B)/W
+
+    The (W-B) factors cancel, so the black endpoint drops out entirely and the condition
+    reduces to a bound on W alone. Returning that bound rather than a yes/no keeps the
+    refutation checkable against whatever window a plan actually compiles.
+    """
+    q_pivot = (0.18 / float(peak_ratio)) ** (1.0 / float(curve_gamma))
+    return (
+        float(reference_window_ev)
+        * (1.0 - q_pivot)
+        / (float(contrast) * float(peak_ratio) ** (-1.0 / float(curve_gamma)))
+    )
 
 
 def hdr_encoded_pivot_slope(
@@ -66,8 +114,7 @@ def hdr_encoded_pivot_slope(
     -- the q^(g-1) factors cancel exactly. `window_ratio` carries the HDR/SDR EV window
     length ratio when the two windows differ; at equal windows it is 1.
 
-    This is an *encoded* slope, not a linear-luminance one. Conflating the two is what
-    makes 0.8427 look impossible to reproduce: it is not q_pivot/x_pivot.
+    This is an *encoded* slope, not a linear-luminance one and not a universal constant.
     """
     return float(sdr_encoded_slope) * float(peak_ratio) ** (-1.0 / float(curve_gamma)) * float(
         window_ratio
@@ -116,7 +163,7 @@ def clamp_budget_to_lift_rate(
     of +3.00 EV puts a large share of real frames at a 0.526 EV window, which clears a
     0.5 EV gate by a hair and would then compress the whole lift into half a stop. Scaling
     the budget down degrades continuously instead: narrow windows still get HDR, just less
-    of it, and the transition stays gentler than the SDR body's own contrast.
+    of it, and the transition respects the explicitly configured prototype rate cap.
     """
     if budget_ev <= 0.0:
         return 0.0

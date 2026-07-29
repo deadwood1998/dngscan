@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .constants import DEFAULT_HDR_PEAK_NITS, HDR_REFERENCE_WHITE_NITS
+
 @dataclass
 class RawBundle:
     path: Path
@@ -338,13 +340,13 @@ class SceneScaleContract:
 class HdrDisplayTarget:
     """What the display can show, independent of any photograph.
 
-    reference_white is the SDR anchor, not ITU's 203 nit HDR reference white: changing it
-    would move the 18% gray anchor of every render, so it stays parameterised rather than
-    silently redefined.
+    The 100 nit default is dngscan's authoring normalization, not an Apple requirement and
+    not ITU's 203 nit broadcast HDR reference white. Changing it changes the conversion
+    from relative headroom to nominal nits, so it stays explicit.
     """
 
-    reference_white_nits: float = 100.0
-    peak_nits: float = 800.0
+    reference_white_nits: float = HDR_REFERENCE_WHITE_NITS
+    peak_nits: float = DEFAULT_HDR_PEAK_NITS
     limiting_gamut: str = "p3"
 
     @property
