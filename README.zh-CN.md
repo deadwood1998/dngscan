@@ -15,6 +15,21 @@ sRGB 或 Display P3 JPEG。它不是修图工具，更像一个非常偏科的�
 
 [English](README.md) · [许可证](LICENSE) · [第三方声明](NOTICE.md)
 
+## 一张图看 HDR
+
+![SDR、按余量归一化的 HDR 与 HDR 曲线扩展图](docs/assets/hdr-comparisons/_SDI0150_native_hdr_ab.jpg)
+
+这张图可以直接在普通 SDR 页面里看清 HDR 分支到底做了什么。由左到右分别是普通 SDR
+成片、按实际达到的 headroom 降曝光后的独立 HDR 成片，以及 HDR 曲线把额外亮度分配到
+哪里的区域图。右图里黑色表示没有扩展，白色表示用满了这张照片由 RAW 证据挣得的 HDR
+余量。
+
+更准确地说，右图画的是 `log2(Y_HDR / Y_reference-white)`，显示范围从 0 到编译得到的
+headroom。它不是把 JPEG 内部的 RGB 辅助 gain map 原样抽出来，而是单独显示 HDR AgX 在
+封装前怎样分配亮度；ISO gain map 则是在更下游编码完整 SDR/HDR 两张 rendition 的比值。
+这张样片里，额外亮度集中在灯具和反光，没有把整张照片一起抬高。
+[三种场景和实测数据在后文。](#hdr-对比)
+
 ## 怎么读这份文档
 
 只想把片子转出来，看[快速开始](#快速开始)就够，后面都可以跳过。
@@ -784,11 +799,29 @@ Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每
 
 下面是 SDR 诊断图，不是 HDR 屏幕截图。每张依次是 SDR、按实测 headroom 降曝光后的原生
 HDR，以及 curve expansion map。中间面板把 reference white 以上的细节压回普通网页范围，
-所以理应更暗。
+所以理应更暗。右侧面板计算同一 HDR 分支中原生扩展白曲线与 reference-white 对照渲染的
+log-stop 亮度比，因此只回答“DRT 把额外亮度放在哪里”，不会把色彩几何和 JPEG 封装混进来。
 
-| 混合光室内人像 | 舞台高光 |
-|---|---|
-| ![原生扩展白 HDR AgX 混合光诊断](docs/assets/hdr-comparisons/_SDI0150_native_hdr_ab.jpg) | ![原生扩展白 HDR AgX 舞台灯诊断](docs/assets/hdr-comparisons/_SDI0199_native_hdr_ab.jpg) |
+| 样张 | 编译余量 | 像素实际达到 | 超过 SDR 白的通道样本 | 主体亮度变化 |
+|---|---:|---:|---:|---:|
+| `_SDI0150` 混合光 | +1.36 EV | +1.20 EV | 1.75% | -0.00014 EV |
+| `_SDI0199` 舞台 / ISO 25600 | +1.26 EV | +1.14 EV | 1.72% | -0.00004 EV |
+| `_SDI0133` 暗光餐厅 | +1.32 EV | +1.17 EV | 3.13% | -0.00015 EV |
+
+接近零的主体亮度变化是这里最重要的控制量：HDR 把显示余量花在高光上，没有把 headroom
+变成隐蔽的整体曝光提升。表里的百分比统计超过 reference white 的 RGB 通道样本，不是整像素。
+这些半分辨率诊断图由 [`tools/hdr_ab.py`](tools/hdr_ab.py) 生成；正式 JPEG 仍按全分辨率渲染，
+并在写入后展开 gain map 做 round-trip 校验。
+
+**混合光室内人像——额外亮度留给线形灯具与反光**
+
+![原生扩展白 HDR AgX 混合光诊断](docs/assets/hdr-comparisons/_SDI0150_native_hdr_ab.jpg)
+
+**舞台 / ISO 25600——稀疏光源获得余量，环境仍保持暗调**
+
+![原生扩展白 HDR AgX 舞台灯诊断](docs/assets/hdr-comparisons/_SDI0199_native_hdr_ab.jpg)
+
+**暗光餐厅——小面积反光和皮肤高光展开，不整体抬升场景**
 
 ![原生扩展白 HDR AgX 餐厅高光诊断](docs/assets/hdr-comparisons/_SDI0133_native_hdr_ab.jpg)
 
