@@ -268,6 +268,13 @@ GRADE_OPTIONS
         <option value="ultrahdr">HDR gain-map · Apple</option>
       </select>
     </div>
+    <div style="flex:1;min-width:160px">
+      <label>交付档</label>
+      <select id="deliveryProfile" title="只影响最后 JPEG 编码。archive=q100/4:4:4；share=更小体积。">
+        <option value="archive">Archive · 保真</option>
+        <option value="share">Share · 更小</option>
+      </select>
+    </div>
     <div style="flex:1;min-width:140px">
       <label>色域</label>
       <select id="gamut">
@@ -281,7 +288,7 @@ GRADE_OPTIONS
     </div>
     <div style="flex:1;min-width:140px">
       <label>色度采样</label>
-      <select id="chroma" title="4:4:4 保留完整色度，4:2:0 文件更小。">
+      <select id="chroma" title="4:4:4 保留完整色度，4:2:0 文件更小。Ultrahdr 主图采样主要由 quality 决定。">
         <option value="444">4:4:4 · 完整</option>
         <option value="422">4:2:2</option>
         <option value="420">4:2:0 · 最小</option>
@@ -361,13 +368,22 @@ function updateToneCoreUi(){
   $("#coreFacts").innerHTML=facts;
   $("#controlHint").textContent=CONTROL_HINTS[core]||"";
 }
+function applyDeliveryDefaults(){
+  const share=$("#deliveryProfile").value==="share";
+  if(share){$("#quality").value="90";$("#chroma").value="420";}
+  else{$("#quality").value="100";$("#chroma").value="444";}
+  const archive=$("#deliveryProfile").value==="archive";
+  $("#quality").disabled=archive;
+  $("#chroma").disabled=archive;
+}
 function updateFormatUi(){
   const hdr=$("#format").value==="ultrahdr";
   $("#hdrBlock").style.display=hdr?"flex":"none";
-  if(hdr){$("#gamut").value="p3";$("#chroma").value="444";$("#quality").value="100";$("#toneCore").value="agx";}
-  $("#gamut").disabled=hdr;$("#chroma").disabled=hdr;$("#quality").disabled=hdr;$("#toneCore").disabled=hdr;
+  if(hdr){$("#gamut").value="p3";$("#toneCore").value="agx";}
+  $("#gamut").disabled=hdr;$("#toneCore").disabled=hdr;
   $("#highlightFade").disabled=hdr;
   $("#highlightFadeBlock").title=hdr?"HDR 色彩几何独立处理高光，不使用 SDR 显示侧褪白。":"";
+  applyDeliveryDefaults();
   updateToneCoreUi();
 }
 async function checkHdrBackend(){
@@ -473,6 +489,7 @@ function saveSettings(){
     highlight:$("#highlight").dataset.librawValue||$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").dataset.librawValue||$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
     chroma:$("#chroma").value,format:$("#format").value,
+    deliveryProfile:$("#deliveryProfile").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
     grade:$("#grade").value,gradeStrength:$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:$("#sceneTransformStrength").value,punch:$("#punch").value,
@@ -508,6 +525,7 @@ function restoreSettings(){
   if(s.decoder&&[...$("#decoder").options].some(o=>o.value===s.decoder))$("#decoder").value=s.decoder;
   if(s.coreimageVersion&&[...$("#coreimageVersion").options].some(o=>o.value===s.coreimageVersion))$("#coreimageVersion").value=s.coreimageVersion;
   if(s.chroma)$("#chroma").value=s.chroma;
+  if(s.deliveryProfile&&[...$("#deliveryProfile").options].some(o=>o.value===s.deliveryProfile))$("#deliveryProfile").value=s.deliveryProfile;
   if(s.toneCore&&[...$("#toneCore").options].some(o=>o.value===s.toneCore))$("#toneCore").value=s.toneCore;
   if(s.lumNorm&&[...$("#lumNorm").options].some(o=>o.value===s.lumNorm))$("#lumNorm").value=s.lumNorm;
   if(s.agxPrimaries&&[...$("#agxPrimaries").options].some(o=>o.value===s.agxPrimaries))$("#agxPrimaries").value=s.agxPrimaries;
@@ -539,6 +557,7 @@ function restoreSettings(){
 ["quality","gamut","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
 ["input","highlight"].forEach(id=>$("#"+id).addEventListener("change",()=>{saveSettings();preparePreview();}));
 ["demosaic","chroma","grade"].forEach(id=>$("#"+id).addEventListener("change",()=>{updateGradeUi();saveSettings();}));
+$("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();saveSettings();});
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
 $("#coreimageVersion").addEventListener("change",()=>{RAW9_APPROVALS.delete($("#input").value.trim());saveSettings();preparePreview();});
 $("#wb").addEventListener("change",()=>{updateDecoderUi();updateGradeUi();saveSettings();preparePreview();});
@@ -597,6 +616,7 @@ function payload(){
     input,highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
     chroma:$("#chroma").value,format:$("#format").value,
+    deliveryProfile:$("#deliveryProfile").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
     grade:$("#grade").value,gradeStrength:+$("#gradeStrength").value,
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:+$("#sceneTransformStrength").value,

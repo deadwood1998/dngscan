@@ -19,6 +19,11 @@ from .constants import (
     DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, DEMOSAIC_CHOICES, HDR_DRT_CHOICES,
     JPEG_OUTPUT_FORMATS, MAX_HDR_HEADROOM_EV, WB_CHOICES,
 )
+from .delivery import (
+    DEFAULT_DELIVERY_PROFILE,
+    DELIVERY_PROFILE_CHOICES,
+    resolve_delivery_profile,
+)
 from .export import chroma_to_subsampling, export_jpeg
 from .grade import RENDER_MODE, grade_choices, resolve_grade
 from .plot import default_png_path, plot_dashboard
@@ -69,14 +74,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--jpeg-quality",
         type=int,
-        default=100,
-        help="JPEG 质量 1-100（默认 100）",
+        default=None,
+        help="JPEG 质量 1-100；默认跟随 --delivery-profile（archive=100，share=90）",
     )
     parser.add_argument(
         "--chroma",
         choices=CHROMA_CHOICES,
-        default="444",
-        help="色度采样: 444=满色度(最高保真、体积最大，默认)；422/420=更小体积（420 最小，投递推荐）",
+        default=None,
+        help=(
+            "色度采样: 444/422/420；默认跟随 --delivery-profile（archive=444，share=420）。"
+            "Ultrahdr 的主图采样由 Core Image 按 quality 决定；share 档通常为 4:2:0。"
+        ),
+    )
+    parser.add_argument(
+        "--delivery-profile",
+        choices=DELIVERY_PROFILE_CHOICES,
+        default=DEFAULT_DELIVERY_PROFILE,
+        help=(
+            "交付编码档: archive=q100/4:4:4 严格 round-trip（默认）；"
+            "share=q90/4:2:0 倾向，体积更小、门禁放宽。只影响最后编码，不重算 AgX/HDR。"
+        ),
     )
     parser.add_argument(
         "--output-format",
@@ -228,7 +245,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
     if args.margin < 0:
         parser.error("--margin must be >= 0")
-    if not 1 <= args.jpeg_quality <= 100:
+    if args.jpeg_quality is not None and not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
     if not 0 <= args.hdr_headroom <= MAX_HDR_HEADROOM_EV + 1e-9:
         parser.error(
@@ -247,10 +264,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ):
         if not -1.0 <= getattr(args, _name) <= 1.0:
             parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
-    if args.output_format == "ultrahdr" and args.chroma != "444":
-        parser.error("Apple HDR gain-map JPEG 固定使用 4:4:4；请移除 --chroma 或设为 444")
-    if args.output_format == "ultrahdr" and args.jpeg_quality != 100:
-        parser.error("Apple HDR gain-map JPEG 固定使用 quality 100")
     if args.output_format == "ultrahdr" and args.grade != "none":
         parser.error(
             "Ultrahdr 第一版不支持 display look/filter；请使用 --grade none"
@@ -262,6 +275,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
     if args.output_format == "ultrahdr" and args.tone_core != "agx":
         parser.error("HDR 输出当前只实现 AgX tone core；请使用 --tone-core agx")
+    try:
+        args.delivery = resolve_delivery_profile(
+            args.delivery_profile,
+            quality=args.jpeg_quality,
+            chroma=args.chroma,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.jpeg_quality = int(args.delivery.quality)
+    args.chroma = str(args.delivery.chroma)
     if args.decoder == "coreimage" and args.tone_core == "gated":
         # gated is defined as "RAW evidence gates the colour path"; the Core Image
         # pipeline has no per-pixel CFA evidence, so the combination is meaningless
@@ -430,6 +453,12 @@ def main(argv: list[str]) -> int:
                 filter_strength=filter_strength,
                 scene_transform=args.scene_transform,
                 scene_transform_strength=args.scene_transform_strength,
+                tone_core=args.tone_core,
+                lum_norm=args.lum_norm,
+                agx_primaries=args.agx_primaries,
+                punch_scale=args.punch,
+                delivery=args.delivery,
+                chroma=args.chroma,
             )
             jpeg_icc_embedded = (
                 str(export_result.get("profile", "")) == "Display P3"

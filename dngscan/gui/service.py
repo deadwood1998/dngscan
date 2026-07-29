@@ -335,8 +335,6 @@ def parse_job_params(params: dict) -> tuple[Path, str, str, str, float, float, i
     quality = int(params.get("quality", 100))
     if not 1 <= quality <= 100:
         raise ValueError("质量需在 1-100 之间")
-    if output_format == "ultrahdr":
-        quality = 100
     want_png = bool(params.get("png", False))
     outdir = Path(str(params["outdir"])).expanduser() if params.get("outdir") else None
     ev_auto = bool(params.get("evAuto", False))
@@ -644,8 +642,18 @@ def run_export(params: dict) -> dict:
 
     demosaic = str(params.get("demosaic", "auto"))
     chroma = str(params.get("chroma", "444"))
-    if output_format == "ultrahdr":
-        chroma = "444"
+    delivery_name = str(params.get("deliveryProfile", params.get("delivery_profile", "archive")))
+    try:
+        delivery = dg.resolve_delivery_profile(
+            delivery_name,
+            quality=int(params["quality"]) if params.get("quality") is not None else None,
+            chroma=chroma if params.get("chroma") is not None else None,
+        )
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    # Profile owns the encode knobs once resolved (archive forces 100/444).
+    quality = int(delivery.quality)
+    chroma = str(delivery.chroma)
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
@@ -753,7 +761,13 @@ def run_export(params: dict) -> dict:
             filter_strength=filter_strength,
             scene_transform=scene_transform,
             scene_transform_strength=scene_transform_strength,
+            tone_core=tone_core,
+            lum_norm=lum_norm,
+            agx_primaries=agx_primaries,
+            punch_scale=punch_scale,
             return_rgb=output_format == "sdr",
+            delivery=delivery,
+            chroma=chroma,
         )
         hdr_export_info = export_result if isinstance(export_result, dict) else None
         rendered_u8 = export_result[1] if isinstance(export_result, tuple) else None

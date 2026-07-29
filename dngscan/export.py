@@ -10,7 +10,8 @@ from .color import output_gamut_label, output_icc_profile_bytes
 from .constants import (
     DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, HDR_DRT_CHOICES,
 )
-from .gainmap import apple_gainmap_backend_status, write_apple_gainmap_jpeg
+from .delivery import DeliveryProfile, FinishedPair, resolve_delivery_profile
+from .gainmap import apple_gainmap_backend_status, encode_finished_pair_jpeg
 from .models import Analysis, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import render_output_u8
 
@@ -64,6 +65,8 @@ def export_ultrahdr_jpeg(
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
     hdr_drt: str = DEFAULT_HDR_DRT,
+    delivery: DeliveryProfile | None = None,
+    chroma: str = "444",
 ) -> dict[str, Any]:
     """Write a Display P3 JPEG carrying an ISO 21496-1 gain map.
 
@@ -85,6 +88,11 @@ def export_ultrahdr_jpeg(
     for a reason no diagnostic would surface.
     """
     output_gamut = "p3"
+    profile = delivery or resolve_delivery_profile(
+        "archive" if int(quality) >= 98 and str(chroma) == "444" else "share",
+        quality=int(quality),
+        chroma=str(chroma),
+    )
     if str(hdr_drt) not in HDR_DRT_CHOICES:
         raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（可选：{'/'.join(HDR_DRT_CHOICES)}）")
     if look != "none" or display_filter != "none":
@@ -145,10 +153,13 @@ def export_ultrahdr_jpeg(
         # of the packed rendition and verifies it after round-trip.
         actual = achieved_headroom(hdr_linear)
         peak = float(2.0 ** hdr_plan.tone.display_headroom_ev)
-        info = write_apple_gainmap_jpeg(
-            base_u8, to_gainmap_alternate(hdr_linear, peak), out_path, quality,
-            hdr_plan.tone.display_headroom_ev,
+        pair = FinishedPair(
+            sdr_rgb_u8=base_u8,
+            hdr_rgba_f16=to_gainmap_alternate(hdr_linear, peak),
+            display_headroom_ev=float(hdr_plan.tone.display_headroom_ev),
+            output_gamut=output_gamut,
         )
+        info = encode_finished_pair_jpeg(pair, out_path, profile)
         info["hdr_plan"] = describe_hdr_plan(hdr_plan)
         # All four headrooms, never one standing in for another: capacity, what the RAW
         # tail earned, what the compiled shoulder carries, and what pixels reached.
@@ -225,6 +236,8 @@ def export_jpeg(
     punch_scale: float = 1.0,
     return_rgb: bool = False,
     hdr_drt: str = DEFAULT_HDR_DRT,
+    delivery: DeliveryProfile | None = None,
+    chroma: str = "444",
 ) -> Any:
     if output_format == "ultrahdr":
         return export_ultrahdr_jpeg(
@@ -246,6 +259,8 @@ def export_jpeg(
             agx_primaries,
             punch_scale,
             hdr_drt=hdr_drt,
+            delivery=delivery,
+            chroma=chroma,
         )
     if output_format != "sdr":
         raise ValueError(f"unknown output format: {output_format}")

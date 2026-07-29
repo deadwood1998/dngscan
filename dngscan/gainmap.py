@@ -17,20 +17,25 @@ from typing import Any
 
 from ._deps import np
 from .color import srgb_decode
+from .delivery import (
+    ARCHIVE_TOLERANCES,
+    DeliveryProfile,
+    DeliveryTolerances,
+    FinishedPair,
+    profile_from_encode_settings,
+)
 
-# Project delivery tolerances, not ISO 21496-1 constants. They distinguish a real
-# low-frequency colour/tone change from encoder-dependent high-frequency JPEG loss.
-BASE_MEAN_CODE_ERROR_LIMIT = 4.0
-BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT = 1.0
-BASE_BLOCK_P99_CODE_ERROR_LIMIT = 2.0
-HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT = 0.015
+# Backward-compatible aliases for the archive operating point. Prefer DeliveryProfile.
+BASE_MEAN_CODE_ERROR_LIMIT = ARCHIVE_TOLERANCES.base_mean_code_error
+BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT = ARCHIVE_TOLERANCES.base_channel_bias_code_error
+BASE_BLOCK_P99_CODE_ERROR_LIMIT = ARCHIVE_TOLERANCES.base_block_p99_code_error
+HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT = ARCHIVE_TOLERANCES.hdr_block_median_relative_error
 # Core Image's ISO gain-map interpolation reaches about 4.12% on the sparse
 # 32x64 conformance ramp even though its block median is 0.08% and chroma error
-# is 0.12%. Keep p95 above that measured encoder floor; the median and p99 gates
-# still reject broad tone shifts and isolated larger failures independently.
-HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT = 0.05
-HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT = 0.06
-HDR_BLOCK_CHROMA_ERROR_LIMIT = 0.015
+# is 0.12%. Keep archive p95 above that measured encoder floor.
+HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT = ARCHIVE_TOLERANCES.hdr_block_p95_relative_error
+HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT = ARCHIVE_TOLERANCES.hdr_block_p99_relative_error
+HDR_BLOCK_CHROMA_ERROR_LIMIT = ARCHIVE_TOLERANCES.hdr_block_chroma_error
 
 
 def _apple_gainmap_api_status() -> tuple[bool, str]:
@@ -250,16 +255,19 @@ def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
     }
 
 
-def _hdr_roundtrip_is_acceptable(metrics: dict[str, float]) -> bool:
+def _hdr_roundtrip_is_acceptable(
+    metrics: dict[str, float],
+    tolerances: DeliveryTolerances = ARCHIVE_TOLERANCES,
+) -> bool:
     """Whether the expanded HDR preserves low-frequency tone and colour geometry."""
     return bool(
         metrics["block_median_relative_error"]
-        <= HDR_BLOCK_MEDIAN_RELATIVE_ERROR_LIMIT
+        <= tolerances.hdr_block_median_relative_error
         and metrics["block_p95_relative_error"]
-        <= HDR_BLOCK_P95_RELATIVE_ERROR_LIMIT
+        <= tolerances.hdr_block_p95_relative_error
         and metrics["block_p99_relative_error"]
-        <= HDR_BLOCK_P99_RELATIVE_ERROR_LIMIT
-        and metrics["block_chroma_error"] <= HDR_BLOCK_CHROMA_ERROR_LIMIT
+        <= tolerances.hdr_block_p99_relative_error
+        and metrics["block_chroma_error"] <= tolerances.hdr_block_chroma_error
     )
 
 
@@ -304,13 +312,16 @@ def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
     }
 
 
-def _base_roundtrip_is_acceptable(metrics: dict[str, float]) -> bool:
+def _base_roundtrip_is_acceptable(
+    metrics: dict[str, float],
+    tolerances: DeliveryTolerances = ARCHIVE_TOLERANCES,
+) -> bool:
     """Whether JPEG loss preserved the base rendition's low-frequency appearance."""
     return bool(
-        metrics["base_mean_code_error"] <= BASE_MEAN_CODE_ERROR_LIMIT
+        metrics["base_mean_code_error"] <= tolerances.base_mean_code_error
         and metrics["base_channel_bias_code_error"]
-        <= BASE_CHANNEL_BIAS_CODE_ERROR_LIMIT
-        and metrics["base_block_p99_code_error"] <= BASE_BLOCK_P99_CODE_ERROR_LIMIT
+        <= tolerances.base_channel_bias_code_error
+        and metrics["base_block_p99_code_error"] <= tolerances.base_block_p99_code_error
     )
 
 
@@ -404,10 +415,19 @@ def write_apple_gainmap_jpeg(
     quality: int,
     hdr_headroom_ev: float,
     *,
+    delivery: DeliveryProfile | None = None,
+    chroma: str = "444",
     _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
-    """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map."""
-    if not 1 <= int(quality) <= 100:
+    """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map.
+
+    ``delivery`` selects encode quality and round-trip gates. Formation masters are
+    unchanged: softer profiles only change the last JPEG hop.
+    """
+    profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
+    quality = int(profile.quality)
+    tolerances = profile.tolerances
+    if not 1 <= quality <= 100:
         raise ValueError("JPEG quality 必须在 1-100 之间")
 
     base = np.asarray(base_rgb_u8)
@@ -428,7 +448,7 @@ def write_apple_gainmap_jpeg(
         raise RuntimeError(reason)
 
     import Quartz  # type: ignore
-    from Foundation import NSURL  # type: ignore
+    from Foundation import NSNumber, NSURL  # type: ignore
 
     if not base.flags.c_contiguous:
         base = np.ascontiguousarray(base)
@@ -465,14 +485,19 @@ def write_apple_gainmap_jpeg(
     )
     if context is None:
         raise RuntimeError("Core Image 无法创建 HDR 编码 CIContext")
+    encode_request_options: dict[str, Any] = {
+        Quartz.kCGImageDestinationEncodeBaseIsSDR: _nsnumber_bool(True),
+    }
+    if tolerances.gainmap_subsample_factor is not None:
+        encode_request_options[
+            Quartz.kCGImageDestinationEncodeGainMapSubsampleFactor
+        ] = NSNumber.numberWithInt_(int(tolerances.gainmap_subsample_factor))
     options = {
         Quartz.kCGImageDestinationLossyCompressionQuality: float(quality) / 100.0,
         Quartz.kCIImageRepresentationHDRImage: hdr_image,
         Quartz.kCIImageRepresentationHDRGainMapAsRGB: _nsnumber_bool(True),
         Quartz.kCGImageDestinationEncodeRequest: Quartz.kCGImageDestinationEncodeToISOGainmap,
-        Quartz.kCGImageDestinationEncodeRequestOptions: {
-            Quartz.kCGImageDestinationEncodeBaseIsSDR: _nsnumber_bool(True),
-        },
+        Quartz.kCGImageDestinationEncodeRequestOptions: encode_request_options,
     }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -496,7 +521,7 @@ def write_apple_gainmap_jpeg(
             raise RuntimeError("Core Image 输出不含 ISO 21496-1 gain map")
         if info["profile"] != "Display P3":
             raise RuntimeError(f"HDR JPEG 底图色彩配置错误：{info['profile'] or '无 ICC'}")
-        if info["chroma_subsampling"] != "4:4:4":
+        if tolerances.require_chroma_444 and info["chroma_subsampling"] != "4:4:4":
             raise RuntimeError(
                 f"HDR JPEG 主图未保持 4:4:4：{info['chroma_subsampling'] or '未知'}"
             )
@@ -520,7 +545,7 @@ def write_apple_gainmap_jpeg(
             )
         base_roundtrip = _base_roundtrip_error(temp_path, base)
         info.update(base_roundtrip)
-        if not _base_roundtrip_is_acceptable(base_roundtrip):
+        if not _base_roundtrip_is_acceptable(base_roundtrip, tolerances):
             raise RuntimeError(
                 "写出的 SDR 底图无法保持输入 rendition："
                 f"平均码值误差={base_roundtrip['base_mean_code_error']:.3f}，"
@@ -535,7 +560,7 @@ def write_apple_gainmap_jpeg(
         # only answer for its own test pattern.
         roundtrip = _roundtrip_error(temp_path, hdr)
         info.update(roundtrip)
-        if not _hdr_roundtrip_is_acceptable(roundtrip):
+        if not _hdr_roundtrip_is_acceptable(roundtrip, tolerances):
             raise RuntimeError(
                 "写出的 HDR rendition 无法从文件还原："
                 f"中位相对误差={roundtrip['median_relative_error']:.4f}，"
@@ -549,9 +574,29 @@ def write_apple_gainmap_jpeg(
             )
         os.replace(temp_path, out_path)
         info["gainmap_as_rgb"] = True
+        info["delivery_profile"] = profile.name
+        info["delivery_quality"] = quality
+        info["delivery_chroma_requested"] = profile.chroma
         return info
     finally:
         try:
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def encode_finished_pair_jpeg(
+    pair: FinishedPair,
+    out_path: Path,
+    delivery: DeliveryProfile,
+) -> dict[str, Any]:
+    """Encode formation masters with a delivery profile. No re-formation."""
+    return write_apple_gainmap_jpeg(
+        pair.sdr_rgb_u8,
+        pair.hdr_rgba_f16,
+        out_path,
+        delivery.quality,
+        pair.display_headroom_ev,
+        delivery=delivery,
+        chroma=delivery.chroma,
+    )

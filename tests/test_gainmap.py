@@ -40,6 +40,7 @@ class GainMapInterfaceTests(unittest.TestCase):
         self.assertEqual(args.grade, "none")
         self.assertEqual(args.jpeg_quality, 100)
         self.assertEqual(args.chroma, "444")
+        self.assertEqual(args.delivery_profile, "archive")
         self.assertEqual(args.hdr_drt, "agx")
 
     def test_cli_hdr_rejects_non_agx_tone_core(self) -> None:
