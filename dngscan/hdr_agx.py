@@ -26,6 +26,7 @@ from . import retreat as retreat_engine
 from .color import rec2020_to_output
 from .constants import GRAY_EV, REC2020_LUMA
 from .hdr_agx_math import lift_stops
+from .hdr_color import apply_channel_lift, fit_hdr_color_volume, output_luma_weights
 from .models import HdrAgxPlan, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import apply_tone_core, scene_rec2020_to_float
 
@@ -95,6 +96,11 @@ def scene_render_to_hdr_display_linear(
     if color_plan is not None and getattr(bundle, "clip_masks", None) is not None:
         clip_masks = retreat_engine.clip_masks_for_shape(bundle, (h, w)).reshape(-1, 3)
 
+    luma_weights = output_luma_weights(output_gamut)
+    # The display cube's ceiling. Budget is what the scene earned; peak is what the
+    # display can show, and the fit must respect the latter even if the former is smaller.
+    peak = float(2.0 ** hdr_plan.display.display_headroom_ev)
+
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
     )
@@ -110,9 +116,6 @@ def scene_render_to_hdr_display_linear(
             rec = retreat_engine.apply_clip_retreat_rec2020(
                 rec, clip_masks[start:end], float(color_plan.raw_clip_retreat_strength)
             )
-        # Scene luminance is read here, before the tone core, so the lift is decided by
-        # the photograph rather than by where the curve happened to put a pixel.
-        lift = hdr_lift_factor(rec, hdr_plan)
         mapped_rec = apply_tone_core(
             rec,
             tone_plan,
@@ -122,9 +125,23 @@ def scene_render_to_hdr_display_linear(
         )
         output_linear = rec2020_to_output(mapped_rec, output_gamut)
         output_linear = np.nan_to_num(output_linear, nan=0.0, posinf=1e6, neginf=-1e6)
-        # rho = 0: one scalar per pixel, so this commutes with the linear Rec.2020 -> P3
-        # matrix above and leaves every chromaticity where the SDR render put it.
-        out[start:end] = (output_linear * lift[:, None]).astype(np.float32, copy=False)
+        # Scene luminance drives the lift, and it is read from `rec` -- before the tone
+        # core -- so the allocation is decided by the photograph rather than by where the
+        # curve happened to put a pixel. At rho = 0 this is one scalar per pixel, which
+        # commutes with the linear Rec.2020 -> P3 matrix and leaves chromaticity exactly
+        # where the SDR render put it.
+        lifted = apply_channel_lift(
+            output_linear,
+            rec,
+            float(hdr_plan.tone.knee_ev),
+            float(hdr_plan.tone.white_ev),
+            float(hdr_plan.tone.budget_headroom_ev),
+            float(hdr_plan.color.channel_separation),
+            luma_weights,
+        )
+        out[start:end] = fit_hdr_color_volume(lifted, peak, output_gamut).astype(
+            np.float32, copy=False
+        )
     return out.reshape(h, w, 3)
 
 

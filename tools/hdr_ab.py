@@ -85,7 +85,8 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
     bundle = load_raw(path, scene_half_size=half)
     analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
     plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
-    hdr_plan = compile_hdr_agx_plan(plan, target)
+    hdr_plan = compile_hdr_agx_plan(plan, target, analysis=analysis,
+                                    scene_decoder=str(bundle.scene_decoder))
 
     sdr = scene_render_to_display_linear(bundle, plan, "p3")
     hdr = scene_render_to_hdr_display_linear(bundle, plan, hdr_plan, "p3")

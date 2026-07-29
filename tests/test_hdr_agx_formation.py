@@ -10,6 +10,7 @@ import numpy as np
 
 from dngscan.analysis import analyze
 from dngscan.color import luminance_from_rgb_space
+from dngscan.constants import REC2020_LUMA
 from dngscan.grade import RENDER_MODE
 from dngscan.hdr_agx import (
     achieved_headroom,
@@ -37,7 +38,7 @@ def _render_pair(path: Path):
     bundle = load_raw(path, scene_half_size=True)
     analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
     plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
-    hdr_plan = compile_hdr_agx_plan(plan)
+    hdr_plan = compile_hdr_agx_plan(plan, analysis=analysis)
     sdr = scene_render_to_display_linear(bundle, plan, "p3")
     hdr = scene_render_to_hdr_display_linear(bundle, plan, hdr_plan, "p3")
     return bundle, plan, hdr_plan, sdr, hdr
@@ -45,6 +46,12 @@ def _render_pair(path: Path):
 
 def _p3_luminance(rgb: np.ndarray) -> np.ndarray:
     return luminance_from_rgb_space(rgb.reshape(-1, 3), "p3").reshape(rgb.shape[:-1])
+
+
+def _rec2020_luminance(rgb: np.ndarray) -> np.ndarray:
+    """Scene-side luminance, which is what the allocation window is defined against."""
+    w = np.asarray(REC2020_LUMA, dtype=np.float32)
+    return np.tensordot(np.asarray(rgb, dtype=np.float32), w, axes=([-1], [0]))
 
 
 class SceneLuminanceTests(unittest.TestCase):
@@ -88,17 +95,34 @@ class FormationExitConditionTests(unittest.TestCase):
         rendered = scene_render_to_hdr_display_linear(bundle, plan, zeroed, "p3")
         self.assertTrue(bool(np.array_equal(rendered, sdr)))
 
-    def test_neutral_stays_neutral(self) -> None:
-        """rho = 0 means chromaticity is untouched everywhere, not merely on the grey axis."""
+    def test_neutral_pixels_stay_neutral(self) -> None:
+        """Grey must not acquire a cast, at any rho.
+
+        Replaces a blanket "chromaticity never changes" check that only described Phase 2.
+        Channel separation exists precisely to move chromaticity in the highlights, so
+        asserting it never moves would now be asserting the feature does nothing.
+
+        Neutrality is judged on the *scene*, not on the SDR output. Those are different
+        questions: AgX converges channels toward white in the shoulder, so a coloured
+        highlight can leave the SDR render neutral, and separation legitimately restores
+        some of that colour. Only a scene that was neutral has nothing to separate.
+        """
         for name, path in FRAMES.items():
             if not path.is_file():
                 continue
             with self.subTest(frame=name):
-                _, _, _, sdr, hdr = _render_pair(path)
-                lit = _p3_luminance(sdr) > 0.05
-                chroma_sdr = sdr[lit] / np.maximum(sdr[lit].sum(1, keepdims=True), 1e-6)
-                chroma_hdr = hdr[lit] / np.maximum(hdr[lit].sum(1, keepdims=True), 1e-6)
-                self.assertLess(float(np.max(np.abs(chroma_hdr - chroma_sdr))), 1e-6)
+                bundle, _, _, _, hdr = _render_pair(path)
+                scene = (
+                    np.asarray(bundle.scene_rec2020_render, dtype=np.float32)
+                    / np.float32(bundle.scene_scale)
+                    * np.float32(bundle.exposure_gain)
+                )
+                span = scene.max(axis=-1) - scene.min(axis=-1)
+                neutral = (span < 1e-4) & (scene.max(axis=-1) > 0.05)
+                if not bool(np.any(neutral)):
+                    continue
+                out = hdr[neutral]
+                self.assertLess(float(np.max(out.max(axis=-1) - out.min(axis=-1))), 1e-3)
 
     def test_night_scene_body_does_not_move(self) -> None:
         """An HDR capacity must not re-expose a photograph."""
@@ -127,11 +151,29 @@ class FormationExitConditionTests(unittest.TestCase):
                 )
 
     def test_below_the_knee_hdr_equals_sdr(self) -> None:
-        """Shadows and midtones are the SDR render, exactly."""
-        _, _, _, sdr, hdr = _render_pair(FRAMES["daylight"])
-        dark = _p3_luminance(sdr) < 0.1
-        self.assertTrue(bool(np.any(dark)))
-        self.assertLess(float(np.max(np.abs(hdr[dark] - sdr[dark]))), 1e-6)
+        """Shadows and midtones are the SDR render.
+
+        Masked by true scene EV rather than by display luminance, because the two are not
+        the same question and the proxy is what let this pass while broken. Channel
+        separation is gated by the luminance weight for this reason: without that gate a
+        pixel below the knee in luminance but with one bright channel -- a lamp in a dark
+        scene -- picked up 0.12 of RGB change here, contradicting the design's own promise
+        that nothing below the knee moves. The residual bound covers a boundary effect at
+        the knee itself, where this mask and the render's differ by float rounding.
+        """
+        bundle, _, hdr_plan, sdr, hdr = _render_pair(FRAMES["daylight"])
+        scene = (
+            np.asarray(bundle.scene_rec2020_render, dtype=np.float32)
+            / np.float32(bundle.scene_scale)
+            * np.float32(bundle.exposure_gain)
+        )
+        ev_y = np.log2(np.maximum(_rec2020_luminance(scene), 1e-12) / 0.18)
+        below = ev_y <= hdr_plan.tone.knee_ev
+        self.assertTrue(bool(np.any(below)))
+        self.assertLess(float(np.max(np.abs(hdr[below] - sdr[below]))), 1e-4)
+        # Luminance below the knee is untouched to float32 precision, not merely close.
+        y_sdr, y_hdr = _p3_luminance(sdr), _p3_luminance(hdr)
+        self.assertLess(float(np.max(np.abs(y_hdr[below] - y_sdr[below]))), 1e-6)
 
 
 @unittest.skipUnless(FRAMES["daylight"].is_file(), "sample frames unavailable")
