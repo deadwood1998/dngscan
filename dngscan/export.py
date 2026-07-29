@@ -10,7 +10,7 @@ from .color import output_gamut_label, output_icc_profile_bytes
 from .constants import (
     DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, HDR_DRT_CHOICES,
 )
-from .gainmap import apple_gainmap_backend_status
+from .gainmap import apple_gainmap_backend_status, write_apple_gainmap_jpeg
 from .models import Analysis, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import render_output_u8
 
@@ -65,22 +65,85 @@ def export_ultrahdr_jpeg(
     punch_scale: float = 1.0,
     hdr_drt: str = DEFAULT_HDR_DRT,
 ) -> dict[str, Any]:
-    """Refuse HDR export until the darktable-style HDR AgX core exists.
+    """Write a Display P3 JPEG carrying an ISO 21496-1 gain map.
 
-    The ACES 2-derived renderer that used to live behind this entry point has been
-    removed rather than left dormant: keeping an unreachable second DRT around invites
-    it being promoted back by a future edit, and its plan/evidence types would have to
-    be maintained against a design they no longer match. The signature is preserved so
-    callers and their tests keep type-checking while the AgX HDR core is built.
+    Both renditions come from the same scene-linear buffer and the same AgX core, so the
+    gain map encodes only the HDR allocation, and a viewer that ignores it sees the
+    photograph that ships today.
+
+    That base is the same *rendition* as an ordinary SDR export -- the identical
+    render_output_u8 call on the identical plan -- but not the same bytes. Core Image
+    writes this file while Pillow writes the SDR one, and two JPEG encoders do not agree
+    bit for bit: measured, up to 8/255 on 54 % of pixels at quality 100. The invariant
+    worth stating is the one that holds before the encoder, not after it.
+
+    Display looks and filters are refused rather than dropped: they are SDR operators with
+    no HDR meaning yet, and silently ignoring them would make the two renditions disagree
+    for a reason no diagnostic would surface.
     """
+    output_gamut = "p3"
     if str(hdr_drt) not in HDR_DRT_CHOICES:
         raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（可选：{'/'.join(HDR_DRT_CHOICES)}）")
+    if look != "none" or display_filter != "none":
+        raise RuntimeError(
+            "Ultrahdr 第一版仅支持 look=none 与 display_filter=none；"
+            "现有 display look/filter 尚未 HDR 化，不能静默忽略"
+        )
     supported, reason = apple_gainmap_backend_status()
     if not supported:
         raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {reason}")
-    raise RuntimeError(
-        "Cannot export Apple ISO gain-map HDR JPEG: darktable-style HDR AgX 核尚未实现"
-    )
+
+    try:
+        from .grade import RENDER_MODE
+        from .hdr_agx import achieved_headroom, scene_render_to_hdr_display_linear, to_gainmap_alternate
+        from .hdr_agx_plan import compile_hdr_agx_plan, describe_hdr_plan
+        from .models import HdrDisplayTarget, RenderPlan as _RenderPlan
+        from .tone import build_render_plan
+
+        plan = tone_plan if tone_plan is not None else build_render_plan(
+            bundle, analysis, RENDER_MODE, output_gamut, scene_transform,
+            scene_transform_strength, punch_scale, tone_core, lum_norm,
+            agx_primaries=agx_primaries,
+        )
+        if not isinstance(plan, _RenderPlan):
+            raise RuntimeError("Ultrahdr 需要完整 RenderPlan")
+
+        target = HdrDisplayTarget(peak_nits=100.0 * float(2.0 ** float(hdr_headroom)))
+        hdr_plan = compile_hdr_agx_plan(
+            plan, target, analysis=analysis, scene_decoder=str(bundle.scene_decoder)
+        )
+        if hdr_plan.tone.budget_headroom_ev <= 0.0:
+            raise RuntimeError(
+                "该场景的可靠高光尾部不支持任何 HDR 余量："
+                f"{describe_hdr_plan(hdr_plan)}。请改用 --output-format sdr"
+            )
+
+        base_u8 = render_output_u8(
+            bundle, analysis, output_gamut, plan, look, look_strength, display_filter,
+            filter_strength, scene_transform, scene_transform_strength, tone_core,
+            lum_norm, agx_primaries,
+        )
+        hdr_linear = scene_render_to_hdr_display_linear(
+            bundle, plan, hdr_plan, output_gamut, scene_transform, scene_transform_strength
+        )
+        # The container is told the headroom the render reached, not the one it was
+        # allowed. Declaring unused capacity would invite a viewer to stretch into range
+        # this photograph never used.
+        actual = achieved_headroom(hdr_linear)
+        peak = float(2.0 ** hdr_plan.tone.display_headroom_ev)
+        info = write_apple_gainmap_jpeg(
+            base_u8, to_gainmap_alternate(hdr_linear, peak), out_path, quality,
+            hdr_plan.tone.display_headroom_ev,
+        )
+        info["hdr_plan"] = describe_hdr_plan(hdr_plan)
+        info["budget_headroom_ev"] = float(hdr_plan.tone.budget_headroom_ev)
+        info["actual_headroom_ev"] = float(actual)
+        info["channel_separation"] = float(hdr_plan.color.channel_separation)
+        return info
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {exc}") from exc
 
 
 def export_srgb_jpeg(

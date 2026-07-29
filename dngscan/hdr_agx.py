@@ -145,6 +145,21 @@ def scene_render_to_hdr_display_linear(
     return out.reshape(h, w, 3)
 
 
+def to_gainmap_alternate(hdr_display_linear: Any, peak: float) -> Any:
+    """Pack the HDR rendition as the float16 RGBA alternate the gain-map writer expects.
+
+    Negatives are clipped here rather than earlier. Up to this point they are legitimate
+    out-of-gamut scene colour carried identically by both renditions, and clamping them in
+    the formation would have made the two differ by something other than the HDR lift.
+    This is the encode boundary, which is where the SDR path resolves them too.
+    """
+    arr = np.clip(np.asarray(hdr_display_linear, dtype=np.float32), 0.0, float(peak))
+    rgba = np.empty(arr.shape[:2] + (4,), dtype=np.float16)
+    rgba[:, :, :3] = arr.astype(np.float16, copy=False)
+    rgba[:, :, 3] = np.float16(1.0)
+    return rgba
+
+
 def achieved_headroom(hdr_display_linear: Any, percentile: float = 99.99) -> float:
     """H_actual, reported from a percentile rather than the single brightest pixel.
 

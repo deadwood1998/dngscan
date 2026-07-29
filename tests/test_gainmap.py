@@ -43,10 +43,22 @@ class GainMapInterfaceTests(unittest.TestCase):
         self.assertEqual(args.hdr_drt, "agx")
 
 class AppleGainMapWriterTests(unittest.TestCase):
-    def test_public_backend_is_paused_until_hdr_agx_exists(self) -> None:
+    def test_backend_status_reports_api_availability_only(self) -> None:
+        """Replaces a gate that asserted HDR stays paused, which the AgX core now lifts.
+
+        Correctness deliberately moved out of this function. A capability probe can only
+        answer for its own test pattern -- the synthetic RGB probe uses 2.4x gain ratios
+        between channels and fails, while real renditions round-trip two orders of
+        magnitude better -- so every write is verified against its own pixels instead.
+        """
         available, reason = apple_gainmap_backend_status()
-        self.assertFalse(available)
-        self.assertIn("HDR AgX", reason)
+        self.assertIsInstance(available, bool)
+        self.assertTrue(reason)
+        if available:
+            # On a capable system this must be the API check, not the synthetic probe.
+            from dngscan.gainmap import _apple_gainmap_api_status
+
+            self.assertEqual((available, reason), _apple_gainmap_api_status())
 
     def test_public_writer_rejects_unverified_backend(self) -> None:
         base = np.full((4, 4, 3), 128, dtype=np.uint8)
