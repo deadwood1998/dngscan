@@ -401,8 +401,8 @@ class HdrToneCurve:
     white_margin_ev: float
 
     shoulder_segments: tuple[HdrShoulderSegment, ...] = ()
-    # Diagnostic only. Never re-read to make a second decision: the compiler already used
-    # it to choose between one segment and subdivision.
+    # Diagnostic only. Authoritative plans store either zero or one segment; the compiler
+    # has already enforced alpha <= 3 and must never re-read this value to choose a shape.
     shoulder_alpha: float = float("nan")
 
     @property

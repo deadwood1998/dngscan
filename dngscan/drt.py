@@ -46,3 +46,33 @@ def apply_c1_endpoints(ev: Any, plan: Any) -> Any:
     x = (e - float(params["black_ev"])) / float(params["range_ev"])
     encoded = agx.apply_curve(np.clip(x, 0.0, 1.0), params)
     return np.power(np.maximum(encoded, 0.0), float(params["gamma"])).astype(np.float32, copy=False)
+
+
+def c1_value_and_derivative_at_ev(ev: float, plan: Any) -> tuple[float, float]:
+    """Rendered body value and analytic dT/de at one scene-EV coordinate.
+
+    The value follows the production float32 path exactly. Its tangent is evaluated from
+    the same rounded curve parameters and piece equation, avoiding finite differences on
+    a float32 renderer. This is the authoritative attachment point for the HDR shoulder.
+    """
+    params = curve_params_from_plan(plan)
+    sample = np.asarray([ev], dtype=np.float32)
+    x = (sample - float(params["black_ev"])) / float(params["range_ev"])
+    x = np.clip(x, 0.0, 1.0)
+    encoded = agx.apply_curve(x, params)
+    gamma = float(params["gamma"])
+    value = float(
+        np.power(np.maximum(encoded, 0.0), gamma).astype(np.float32, copy=False)[0]
+    )
+
+    encoded_value = float(encoded[0])
+    if value <= 0.0 or encoded_value <= 0.0:
+        return value, 0.0
+    encoded_slope_x = agx.curve_derivative(float(x[0]), params)
+    slope_t_ev = (
+        gamma
+        * encoded_value ** (gamma - 1.0)
+        * encoded_slope_x
+        / float(params["range_ev"])
+    )
+    return value, float(slope_t_ev)

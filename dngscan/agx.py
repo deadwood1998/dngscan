@@ -560,6 +560,45 @@ def apply_curve(x: Any, params: dict[str, float | bool]) -> Any:
     return np.clip(out, float(params["target_black"]), float(params["target_white"]))
 
 
+def curve_derivative(x: float, params: dict[str, float | bool]) -> float:
+    """Analytic derivative of the encoded AgX curve with respect to normalized x.
+
+    `apply_curve` deliberately renders in float32, which makes a small finite-difference
+    derivative unstable near a transition. The piece equations are C1 and already carry
+    every parameter needed for their exact tangent, so plan compilation should use this
+    derivative instead of sampling neighbouring float32 values.
+    """
+    x = float(x)
+    if x <= 0.0 or x >= 1.0:
+        return 0.0
+
+    toe_transition = float(params["toe_transition_x"])
+    shoulder_transition = float(params["shoulder_transition_x"])
+    slope = float(params["slope"])
+
+    if x < toe_transition:
+        if bool(params["need_convex_toe"]):
+            power = float(params["toe_fallback_power"])
+            coefficient = float(params["toe_fallback_coefficient"])
+            return coefficient * power * max(x, 0.0) ** (power - 1.0)
+        scale_value = float(params["toe_scale"])
+        power = float(params["toe_power"])
+        t = slope * (x - toe_transition) / scale_value
+        return slope * (1.0 + max(t, 0.0) ** power) ** (-1.0 / power - 1.0)
+
+    if x > shoulder_transition:
+        if bool(params["need_concave_shoulder"]):
+            power = float(params["shoulder_fallback_power"])
+            coefficient = float(params["shoulder_fallback_coefficient"])
+            return coefficient * power * max(1.0 - x, 0.0) ** (power - 1.0)
+        scale_value = float(params["shoulder_scale"])
+        power = float(params["shoulder_power"])
+        t = slope * (x - shoulder_transition) / scale_value
+        return slope * (1.0 + max(t, 0.0) ** power) ** (-1.0 / power - 1.0)
+
+    return slope
+
+
 def compress_into_gamut(rgb: Any) -> Any:
     # AgX opponent-luminance constants from the pinned darktable implementation. They
     # intentionally differ from standard Rec.2020 Y and belong only to this negative-RGB

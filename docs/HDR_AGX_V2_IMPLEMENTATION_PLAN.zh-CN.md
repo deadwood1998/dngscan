@@ -1,11 +1,10 @@
-# dngscan HDR AgX v2：完整设计与实施计划
+# dngscan HDR AgX v2：设计与实现合同
 
-> 文档用途：交给实现端直接拆任务、写代码和验收。
+> 文档用途：记录现行 HDR tone core 的数学来源、生产合同与验收边界。
 >
-> 状态：设计冻结，尚未替换生产代码。
+> 状态：已进入生产实现；本文是当前权威说明。
 >
-> 权威性：本文件描述下一版 HDR tone core。当前
-> `docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md` 记录的是现行 v1 实现；两者冲突时，v2 以本文件为准。
+> 历史：提高全局 gamma 的 v1 已删除，不再保留运行时 A/B 分支。
 
 ## 0. 结论先行
 
@@ -394,6 +393,36 @@ Z_K = log2(T_K / 0.18)
 M_K = dz_body/de at K
 ```
 
+生产实现不得直接假定 K 位于 central encoded line。真实 plan 中，`latitude_hi_ev`
+可能让 K 恰好落在或轻微越过 darktable body 自身的 shoulder transition；此时下面的
+central-line 闭式解只是一条理想参照，不是权威锚点。
+
+生产锚点必须从**将要真正渲染的同一条曲线**取得：
+
+1. 用 `curve_params_from_plan()` 得到和 renderer 相同、经过同样取整的参数；
+2. `T_K` 走 `apply_curve()` 的实际 float32 分段和值域钳制路径；
+3. `dT/de` 用该分段方程的解析导数计算，再换算为
+   `M_K = (dT/de) / (ln(2) * T_K)`；
+4. 禁止用相邻 float32 输出做微小步长有限差分。`1e-5 EV` 量级已经接近 float32
+   输出的分辨率，尤其在分段边界会让导数随步长明显漂移。
+
+scaled sigmoid 的 encoded-domain 导数来自现有方程本身。令：
+
+```text
+t = slope * (x - transition_x) / scale
+dy/dx = slope * (1 + t ** power) ** (-1 / power - 1)
+```
+
+central line 上 `dy/dx=slope`；fallback toe/shoulder 分别对其幂函数直接求导。
+最后经 `T=y**gamma` 和 `x=(e-B)/(W-B)` 链式换算：
+
+```text
+dT/de = gamma * y ** (gamma - 1) * (dy/dx) / (W - B)
+```
+
+这样 C0 使用实际渲染值，C1 使用同一组曲线参数的解析切线；K 位于 toe、latitude 或
+shoulder 哪一段都不改变合同。
+
 若 K 位于 central encoded line：
 
 ```text
@@ -501,27 +530,32 @@ alpha^2 + beta^2 <= 9
 
 这取代 v1 的 `shoulder_slope_reserve >= 1.01`。它是明确的单调插值条件，不是观感常数。
 
-### 7.4 单段不满足时
+### 7.4 单段可行域与越界行为
 
-不得通过提高全局 gamma、修改 toe 或静默制造 accelerating fallback 解决。
+权威 HDR tone plan 只允许一段 Hermite。W 与 `H_content` 都由同一个 `E_tail` 编译，不能独立
+取极值；扫描可靠尾部完整策略域得到：
 
-编译顺序：
+```text
+默认 contrast=3:
+  普通场景 alpha_max = 1.8494437932436134
+  稀疏光源 alpha_max = 1.9537393335285478
 
-1. 用场景策略给出的 nominal K 编译单段 Hermite；
-2. 若 `alpha>3`，在 `[0, K_nominal]` 中向 pivot 搜索更早的 K；
-3. 若 K=0 仍不满足，使用 adaptive piecewise monotone Hermite：插入内部 knot，所有 segment
-   用 Fritsch-Carlson/Hyman 条件检查单调性，同时固定第一个 segment 在 K 的导数为 `M_K`、
-   最后一个 segment 在 W 的导数为 0；
-4. adaptive subdivision 必须只增加 upper shoulder 的节点，不得改变 `e<=K`；
-5. 若数值输入本身无效，例如 `DeltaZ<=0`、`W<=K`，退回 `H_content=0` 的 HDR plan并报告原因，
-   不输出伪 HDR。
+完整用户控制域 contrast=[1.5, 4.5]:
+  普通场景 alpha_max = 2.7357483714059394
+  稀疏光源 alpha_max = 2.9306090002928213
 
-不能直接调用一个会自动缩放所有端点 tangent 的通用 PCHIP/monotone limiter：如果 limiter 为了
-满足单调性改写 `M_K`，K 点就不再与 body C1。正确处理是继续细分 upper interval，直到每段的
-单调条件成立；`M_K` 与 white 端的 0 导数是硬约束，不是 limiter 可以修改的建议值。
+单段边界 alpha = 3
+```
 
-第一版可以先实现单段路径并对生产参数域做 property test；piecewise 路径必须在删除 v1 solver
-前完成，不能把 assertion 当生产 fallback。
+四个上界由同一独立 property test 分别固定。§4.5 的 margin/floor/cap 或用户 contrast 范围若
+被重调，测试必须重新证明两套策略仍在单段域内。若权威编译出现 `alpha>3`、`DeltaZ<=0` 或 `W<=K`，结果严格为空，
+调用端将 `H_rendered` 归零并拒绝 HDR；不得提高全局 gamma、修改 toe、移动 K 或静默进入另一种
+tone shape。
+
+代码仍保留 adaptive piecewise Hermite，但它不是 tone fallback。固定为 1.0 的 reference-white
+色度候选不具备 W/H 耦合，高 W 时可能超过单段边界，所以该辅助路径必须用显式
+`allow_subdivision=True` 调用。它只提供 path-to-white 色度，随后被归一到原生 HDR 曲线的 Y；
+不会写入 `HdrToneCurve`，也没有亮度决定权。通用 PCHIP limiter 仍不允许改写 K 点 `M_K`。
 
 ### 7.5 `_SDI0150` 的已知实例
 
@@ -663,7 +697,7 @@ class HdrToneCurve:
     reliable_tail_ev: float
     white_margin_ev: float
 
-    shoulder_segments: tuple[HdrShoulderSegment, ...]
+    shoulder_segments: tuple[HdrShoulderSegment, ...]  # 权威 plan 长度只能为 0 或 1
     # 诊断值，不参与二次决策
     shoulder_alpha: float
 ```
@@ -685,7 +719,7 @@ class HdrShoulderSegment:
 
 - `budget_headroom_ev` 可以保留一个版本作为 `rendered_headroom_ev` alias；
 - 删除 `curve_gamma` 与 `shoulder_slope_reserve`；
-- plan 序列化/报告必须显示 `K/W/H_requested/H_rendered/alpha/segment_count`；
+- plan 序列化/报告必须显示 `K/W/H_requested/H_rendered/alpha`；
 - 旧缓存若包含 v1 plan，必须通过 schema/version key 失效。
 
 ## 11. 文件级实施任务
@@ -710,10 +744,11 @@ gamma/headroom bisection constants
 ```text
 requested_headroom_ev        # 更正术语与 docstring
 body_anchor_at_ev
+body_anchor_from_curve       # 生产值 + 同参数解析导数；禁止有限差分
 compile_hdr_shoulder
 evaluate_hdr_shoulder
 validate_hdr_shoulder
-adaptive_monotone_segments
+adaptive_monotone_segments   # 仅 reference-white 辅助色度候选显式使用
 ```
 
 纯数学核不得 import 图像、Core Image 或 renderer。
@@ -725,8 +760,8 @@ adaptive_monotone_segments
 - 从 `SceneToneMetrics` 读取可靠 tail、sparse topology；
 - 编译 B/K/W，不继承 SDR white endpoint；
 - 编译 `H_content/P/Z_peak`；
-- 从 HDR body 参数求 `T_K/Z_K/M_K`；
-- 编译一个或多个 shoulder segment；
+- 从 HDR body 的实际渲染值和同参数解析导数求 `T_K/Z_K/M_K`；
+- 编译且只编译一个权威 shoulder segment；越界时 fail closed；
 - 保留现有 rho/clip/gamut confidence 编译；
 - 报告内容与显示容量分离。
 
@@ -773,21 +808,18 @@ actual p99.99 headroom
 reliable tail EV
 K / W
 shoulder alpha
-segment count
+authoritative shoulder state（single / disabled）
 rho / decoder confidence
 ```
 
 删除 gamma 与 reserve UI/日志文案。
 
-### P6：清理旧说明
+### P6：已完成的旧说明清理
 
-v2 通过验收后：
-
-- 用 v2 内容替换 `docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`，或将旧文件明确标为 archived；
-- 更新 README 中的 gamma solver 拓扑和说明；
-- 更新英文 README；
-- 删除测试中对 gamma `<=5`、reserve `>=1.01` 的断言；
-- 删除对旧 smootherstep/v1 native solver 的混合描述。
+- 已删除旧 `docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`，避免 v1/v2 同时自称现行设计；
+- 双语 README 已改为 fixed-gamma body + log-stop Hermite shoulder 拓扑；
+- 已删除 gamma `<=5`、reserve `>=1.01` 与 smootherstep allocation 的现行合同；
+- v1 只作为本文的失败原因留档，不再拥有代码路径、CLI 开关或独立设计文档。
 
 ## 12. 测试规范
 
@@ -910,7 +942,7 @@ round-trip luminance/chroma error
 2. `core: add log-stop HDR shoulder compiler`
    - 只加入纯数学结构，不接 renderer。
 3. `plan: compile HDR v2 tone plans`
-   - 新旧 plan 可临时并存，用 feature flag A/B。
+   - 权威 plan 只允许单段 shoulder，越界关闭 HDR。
 4. `render: route HDR formation through v2`
    - SDR 像素必须逐字节不变。
 5. `color: align native/reference chroma paths with v2`
@@ -918,13 +950,8 @@ round-trip luminance/chroma error
 7. `cleanup: remove global-gamma HDR v1`
 8. `docs: replace topology, equations and screenshots`
 
-切换前保留临时 CLI：
-
-```text
---hdr-agx-version v1|v2
-```
-
-只用于开发 A/B；v2 验收后删除 v1 和该选项，不长期保留双实现。
+v1 及临时版本开关均未保留。历史 A/B 使用固定 commit 或已保存的 golden，不让已否定的
+全局-gamma 算法继续进入用户接口。
 
 ## 14. Review 检查表
 
@@ -938,6 +965,8 @@ round-trip luminance/chroma error
 - [ ] K 和 W 连接是否为 C1？
 - [ ] white clamp 的内外导数是否都为 0？
 - [ ] 单调性是否由数学条件验证，而不是只看样张？
+- [ ] normal 与 sparse 两套生产策略是否都证明 `alpha<3`？
+- [ ] 自适应细分是否只由 reference-white 辅助色度路径显式启用？
 - [ ] rho 是否仍然只能改变色度？
 - [ ] RAW clip 是否没有反向重写 tone endpoint？
 - [ ] HLG/PQ 是否仍然只存在于 delivery/test reference？

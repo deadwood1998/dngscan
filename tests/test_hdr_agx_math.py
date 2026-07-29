@@ -12,17 +12,26 @@ from dngscan.constants import (
     SCENE_MIDGRAY,
 )
 from dngscan.hdr_agx_math import (
-    MAX_SHOULDER_SEGMENTS,
     MAX_SINGLE_SEGMENT_ALPHA,
     HdrShoulderSegment,
     achieved_headroom_ev,
-    adaptive_monotone_segments,
     body_anchor_at_ev,
+    body_anchor_from_curve,
     body_encoded_slope,
     compile_hdr_shoulder,
+    compile_hdr_shoulder_from_anchor,
     evaluate_hdr_shoulder,
     requested_headroom_ev,
     validate_hdr_shoulder,
+)
+from dngscan.hdr_agx_plan import (
+    MAXIMUM_WHITE_EV,
+    NORMAL_MINIMUM_WHITE_EV,
+    NORMAL_SHOULDER_START_EV,
+    NORMAL_WHITE_MARGIN_EV,
+    SPARSE_EMITTER_MINIMUM_WHITE_EV,
+    SPARSE_EMITTER_SHOULDER_START_EV,
+    SPARSE_EMITTER_WHITE_MARGIN_EV,
 )
 
 CONTRAST = 3.0
@@ -67,6 +76,16 @@ class CoordinateConstantTests(unittest.TestCase):
         self.assertAlmostEqual(value, 0.21289732342815634, places=15)
         self.assertAlmostEqual(stops, 0.24216090560632872, places=15)
         self.assertAlmostEqual(slope, 1.1657668767547156, places=15)
+
+    def test_production_anchor_consumes_value_and_analytic_derivative(self) -> None:
+        value = 0.2129
+        slope_t = 0.1725
+        anchor = body_anchor_from_curve(lambda _ev: (value, slope_t), KNEE)
+        self.assertEqual(anchor[0], value)
+        self.assertAlmostEqual(anchor[1], math.log2(value / SCENE_MIDGRAY), places=15)
+        self.assertAlmostEqual(
+            anchor[2], slope_t / (math.log(2.0) * value), places=15
+        )
 
 
 class RequestedHeadroomTests(unittest.TestCase):
@@ -190,25 +209,33 @@ class BodyInvarianceTests(unittest.TestCase):
                 self.assertAlmostEqual(value, reference, delta=1e-6)
 
 
-class AdaptiveSubdivisionTests(unittest.TestCase):
-    def test_steep_request_subdivides_instead_of_relaxing_tangents(self) -> None:
-        """Synthetic parameters: the production compiler cannot currently reach alpha > 3.
-
-        W and H_content are coupled through the reliable tail -- a wide window implies a
-        large peak -- and sweeping the tail over its whole range puts alpha's supremum at
-        1.85. The subdivision path is therefore defensive rather than exercised, and the
-        margins and floors that produce that bound are themselves marked as awaiting
-        corpus calibration. Driving it here with a hand-built steep request keeps it
-        tested rather than merely present; see test_production_domain_stays_single_segment.
-        """
+class SingleSegmentFeasibilityTests(unittest.TestCase):
+    def test_steep_authoritative_request_fails_closed(self) -> None:
+        """An unproved tone shape must disable HDR, not silently select another curve."""
         knee = 0.0
         _, knee_stops, knee_slope = body_anchor_at_ev(knee, CONTRAST)
         white = knee + 1.0
         peak_stops = knee_stops + 0.30
         single_alpha = knee_slope * (white - knee) / (peak_stops - knee_stops)
         self.assertGreater(single_alpha, MAX_SINGLE_SEGMENT_ALPHA)
+        self.assertEqual(
+            compile_hdr_shoulder(knee, white, peak_stops, CONTRAST), ()
+        )
 
-        segments = compile_hdr_shoulder(knee, white, peak_stops, CONTRAST)
+    def test_auxiliary_chroma_subdivision_requires_explicit_opt_in(self) -> None:
+        """The reference-white colour candidate may subdivide but never by default."""
+        knee = 0.0
+        _, knee_stops, knee_slope = body_anchor_at_ev(knee, CONTRAST)
+        white = knee + 1.0
+        peak_stops = knee_stops + 0.30
+        segments = compile_hdr_shoulder_from_anchor(
+            knee_ev=knee,
+            white_ev=white,
+            knee_stops=knee_stops,
+            knee_slope=knee_slope,
+            peak_stops=peak_stops,
+            allow_subdivision=True,
+        )
         self.assertGreater(len(segments), 1)
         ok, reason = validate_hdr_shoulder(segments, knee_slope, peak_stops)
         self.assertTrue(ok, msg=reason)
@@ -218,35 +245,67 @@ class AdaptiveSubdivisionTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(min(b - a for a, b in zip(samples, samples[1:])), -1e-12)
 
-    def test_production_domain_stays_single_segment(self) -> None:
-        """Records the bound the previous test depends on, so a retune cannot hide it.
-
-        W = clamp(max(E_tail + 0.30, 3.0), 3.0, 8.5) and H = min(3, max(0, E_tail - Zref))
-        are both functions of the same tail, which is why alpha stays bounded well under
-        the single-segment limit across the whole domain.
-        """
-        _, knee_stops, knee_slope = body_anchor_at_ev(KNEE, CONTRAST)
-        worst = 0.0
-        for step in range(0, 12001):
-            tail = step / 1000.0
-            headroom = requested_headroom_ev(tail, 3.0)
-            if headroom <= 0.0:
-                continue
-            white = min(max(tail + 0.30, 3.0), 8.5)
-            peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + headroom
-            alpha = knee_slope * (white - KNEE) / (peak_stops - knee_stops)
-            worst = max(worst, alpha)
-            self.assertEqual(len(_shoulder(peak_stops, white_ev=white)), 1)
-        self.assertLess(worst, MAX_SINGLE_SEGMENT_ALPHA)
-        self.assertAlmostEqual(worst, 1.8494, places=3)
-
-    def test_subdivision_is_bounded(self) -> None:
-        self.assertLessEqual(MAX_SHOULDER_SEGMENTS, 16)
-        _, knee_stops, knee_slope = body_anchor_at_ev(KNEE, CONTRAST)
-        segments = adaptive_monotone_segments(
-            KNEE, KNEE + 1.0, knee_stops, knee_stops + 1.0, knee_slope
+    def test_full_contrast_and_tail_policy_domain_stays_single_segment(self) -> None:
+        """Pin automatic and user-adjustable bounds so a retune forces design review."""
+        policies = (
+            (
+                "normal",
+                NORMAL_SHOULDER_START_EV,
+                NORMAL_WHITE_MARGIN_EV,
+                NORMAL_MINIMUM_WHITE_EV,
+                1.8494437932436134,
+                2.7357483714059394,
+            ),
+            (
+                "sparse",
+                SPARSE_EMITTER_SHOULDER_START_EV,
+                SPARSE_EMITTER_WHITE_MARGIN_EV,
+                SPARSE_EMITTER_MINIMUM_WHITE_EV,
+                1.9537393335285478,
+                2.9306090002928213,
+            ),
         )
-        self.assertLessEqual(len(segments), MAX_SHOULDER_SEGMENTS)
+        # apply_render_adjustments clamps the user-facing midtone contrast to this range.
+        contrast_values = (1.5, 3.0, 4.5)
+        for (
+            label,
+            knee,
+            margin,
+            minimum_white,
+            expected_default,
+            expected_full_domain,
+        ) in policies:
+            with self.subTest(policy=label):
+                worst_by_contrast = {}
+                for contrast in contrast_values:
+                    _, knee_stops, knee_slope = body_anchor_at_ev(knee, contrast)
+                    worst = (-1.0, 0.0, 0.0)
+                    for step in range(0, 12001):
+                        tail = step / 1000.0
+                        headroom = requested_headroom_ev(tail, 3.0)
+                        if headroom <= 0.0:
+                            continue
+                        white = min(max(tail + margin, minimum_white), MAXIMUM_WHITE_EV)
+                        peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + headroom
+                        alpha = knee_slope * (white - knee) / (peak_stops - knee_stops)
+                        if alpha > worst[0]:
+                            worst = (alpha, white, peak_stops)
+                    worst_by_contrast[contrast] = worst[0]
+                    self.assertLess(worst[0], MAX_SINGLE_SEGMENT_ALPHA)
+                    self.assertEqual(
+                        len(
+                            compile_hdr_shoulder(
+                                knee, worst[1], worst[2], contrast
+                            )
+                        ),
+                        1,
+                    )
+                self.assertAlmostEqual(
+                    worst_by_contrast[3.0], expected_default, places=9
+                )
+                self.assertAlmostEqual(
+                    max(worst_by_contrast.values()), expected_full_domain, places=9
+                )
 
 
 class DegenerateRequestTests(unittest.TestCase):

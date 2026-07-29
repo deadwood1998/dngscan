@@ -176,18 +176,25 @@ def compile_hdr_agx_plan(
     peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + requested
     # Anchor on the body that will actually render. K lands at or just past the darktable
     # curve's own shoulder transition on real plans, so the central-line closed form would
-    # make the C1 join approximate rather than exact.
-    from .drt import apply_c1_endpoints
+    # make the C1 join approximate rather than exact. The authoritative plan deliberately
+    # leaves subdivision disabled: the coupled W/H policy proves alpha < 3 over its domain.
+    from .drt import c1_value_and_derivative_at_ev
 
-    def _body(ev: float) -> float:
-        return float(apply_c1_endpoints(np.asarray([ev], dtype=np.float32), formation)[0])
+    def _body_anchor(ev: float) -> tuple[float, float]:
+        return c1_value_and_derivative_at_ev(ev, formation)
 
     segments = (
-        compile_hdr_shoulder(knee, white, peak_stops, contrast, evaluate_body=_body)
+        compile_hdr_shoulder(
+            knee,
+            white,
+            peak_stops,
+            contrast,
+            evaluate_body_with_derivative=_body_anchor,
+        )
         if requested > 0.0
         else ()
     )
-    _, _, knee_slope = body_anchor_from_curve(_body, knee)
+    _, _, knee_slope = body_anchor_from_curve(_body_anchor, knee)
     rendered = requested
     if segments:
         ok, reason = validate_hdr_shoulder(segments, knee_slope, peak_stops)
@@ -263,6 +270,6 @@ def describe_hdr_plan(plan: HdrAgxPlan) -> str:
         f"HDR: 原生 AgX 白点 +{tone.rendered_headroom_ev:.2f}EV / "
         f"容量 +{tone.display_headroom_ev:.2f}EV{reduced}；"
         f"K {tone.shoulder_start_ev:+.2f}EV / W {tone.white_ev:+.2f}EV，"
-        f"alpha {tone.shoulder_alpha:.3f}，肩部 {len(tone.shoulder_segments)} 段，"
+        f"alpha {tone.shoulder_alpha:.3f}，单段 shoulder，"
         f"可靠尾部 {tone.reliable_tail_ev:+.2f}EV"
     )

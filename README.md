@@ -195,7 +195,7 @@ flowchart TB
 
     subgraph HDR["4B. Independent HDR AgX branch - AgX only"]
         direction TB
-        HDRPLAN["Compile HdrAgxPlan<br/>reliable RAW tail -> requested extended white<br/>solve minimum AgX gamma with a decelerating shoulder<br/>reduce peak if the native curve is infeasible"]
+        HDRPLAN["Compile HdrAgxPlan<br/>reliable RAW tail -> requested extended white<br/>fixed-gamma darktable body below K<br/>single monotone log-stop Hermite shoulder above K"]
         HRETREAT["HDR-owned RAW clip retreat"]
         HINSET["AgX inset<br/>native extended-white per-channel C1 formation"]
         PATH["HDR color geometry<br/>reference-white vs native chroma path<br/>rho is locally withdrawn by CFA clipping<br/>native curve remains the sole Y authority"]
@@ -862,15 +862,24 @@ clipped-cell fraction. Insufficient evidence means zero headroom and an explicit
 HDR export; reconstructed highlights and the SDR white endpoint cannot stand in for sensor
 evidence.
 
-That request is compiled directly into an extended display-linear white endpoint of the
-darktable-style AgX C1 solver. The compiler raises the internal curve gamma only as far as
-needed for a genuinely decelerating sigmoid shoulder. If the endpoint would require the
-generic solver's accelerating `power < 1` fallback, the endpoint is reduced instead. There
-is no post-curve smootherstep gain, knee, allocation window, or lift-rate heuristic.
+That request compiles an HDR curve without rewriting its body. Below K, the darktable-style
+AgX body keeps its historical internal gamma of 2.2. Above K, one cubic Hermite in output
+stops leaves the actual rendered body with matching value and analytic tangent, reaches the
+scene-earned peak at W, and arrives with zero slope. Monotonicity is accepted only when its
+normalized start tangent `alpha <= 3`. Because W and requested headroom are coupled through
+the same reliable RAW tail, the default contrast-3 policy is bounded at 1.8494 for normal
+scenes and 1.9537 for sparse emitters. Including the full user-adjustable contrast range
+of 1.5-4.5 raises those bounds to 2.7358 and 2.9306, still below 3. A future policy or
+control-range retune that crosses 3 fails closed instead of silently selecting another
+tone shape. There is no global-gamma lift, post-curve
+smootherstep gain, allocation window, or lift-rate heuristic.
 
 The native HDR curve is the only luminance authority. `rho` mixes chromaticity between a
 reference-white AgX path and the extended-white native path after both are aligned to that
-native luminance; per-pixel CFA clipping withdraws the native path from unreliable channels.
+native luminance. The fixed reference-white endpoint is not coupled to scene W, so this
+auxiliary colour candidate may explicitly subdivide its Hermite interval; it never enters
+the authoritative tone plan and cannot change output Y. Per-pixel CFA clipping withdraws
+the native path from unreliable channels.
 A Y-preserving neutral-axis projection then fits the result into extended P3 `[0, peak]`
 without per-channel hard clipping. It preserves a linear-P3 opponent direction, not a
 strict perceptual hue. ACES 2 does the stronger job in a colour-appearance JMh space;
@@ -882,7 +891,7 @@ image, declared headroom, and whole-frame pixel/chromaticity error. A failed gat
 output file. Display looks and filters remain unavailable in HDR because those SDR
 operators do not yet have an independent HDR definition. The equations and acceptance
 gates are documented in
-[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md).
+[`docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md`](docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md).
 
 ### HDR comparisons
 

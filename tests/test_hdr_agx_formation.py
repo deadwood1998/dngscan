@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,7 +12,7 @@ import numpy as np
 
 from dngscan.analysis import analyze
 from dngscan.color import luminance_from_rgb_space
-from dngscan.drt import curve_params_from_plan
+from dngscan.drt import c1_value_and_derivative_at_ev, curve_params_from_plan
 from dngscan.grade import RENDER_MODE
 from dngscan.hdr_agx import (
     achieved_headroom,
@@ -149,6 +150,20 @@ class FormationExitConditionTests(unittest.TestCase):
 
 @unittest.skipUnless(FRAMES["daylight"].is_file(), "sample frames unavailable")
 class PlanCompilationTests(unittest.TestCase):
+    def test_shoulder_starts_on_the_authoritative_body_value_and_tangent(self) -> None:
+        bundle = load_raw(FRAMES["daylight"], scene_half_size=True)
+        analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
+        plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
+        hdr_plan = compile_hdr_agx_plan(plan, analysis=analysis)
+        first = hdr_plan.tone.shoulder_segments[0]
+        value, slope_t = c1_value_and_derivative_at_ev(
+            hdr_plan.tone.shoulder_start_ev, hdr_plan.formation
+        )
+        expected_z = math.log2(value / 0.18)
+        expected_m = slope_t / (math.log(2.0) * value)
+        self.assertEqual(first.z0, expected_z)
+        self.assertEqual(first.m0, expected_m)
+
     def test_headrooms_are_reported_separately(self) -> None:
         _, _, hdr_plan, _, _ = _render_pair(FRAMES["daylight"])
         text = describe_hdr_plan(hdr_plan)

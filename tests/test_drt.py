@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 
 from dngscan._deps import np
-from dngscan.drt import apply_c1_endpoints, curve_params_from_plan
+from dngscan.drt import (
+    apply_c1_endpoints,
+    c1_value_and_derivative_at_ev,
+    curve_params_from_plan,
+)
 from dngscan.models import ToneCompressionPlan
 
 
@@ -52,6 +56,41 @@ class C1EndpointDrtTest(unittest.TestCase):
                 float((mapped[2] - mapped[1]) / delta),
                 delta=0.01,
             )
+
+    def test_authoritative_anchor_uses_runtime_value_and_analytic_piece_tangent(self) -> None:
+        plan = ToneCompressionPlan(
+            **{**_plan().__dict__, "latitude_lo_ev": 0.8, "latitude_hi_ev": 0.2}
+        )
+        params = curve_params_from_plan(plan)
+        transition_evs = (
+            float(params["black_ev"])
+            + float(params["toe_transition_x"]) * float(params["range_ev"]),
+            float(params["black_ev"])
+            + float(params["shoulder_transition_x"]) * float(params["range_ev"]),
+        )
+        probes = (
+            transition_evs[0] - 0.3,
+            transition_evs[0],
+            0.5 * (transition_evs[0] + transition_evs[1]),
+            transition_evs[1],
+            transition_evs[1] + 0.3,
+        )
+        step = 1e-3
+        for ev in probes:
+            with self.subTest(ev=ev):
+                value, derivative = c1_value_and_derivative_at_ev(ev, plan)
+                runtime = float(
+                    apply_c1_endpoints(np.asarray([ev], dtype=np.float32), plan)[0]
+                )
+                self.assertEqual(value, runtime)
+                lo = float(
+                    apply_c1_endpoints(np.asarray([ev - step], dtype=np.float32), plan)[0]
+                )
+                hi = float(
+                    apply_c1_endpoints(np.asarray([ev + step], dtype=np.float32), plan)[0]
+                )
+                numeric = (hi - lo) / (2.0 * step)
+                self.assertAlmostEqual(derivative, numeric, delta=2e-4)
 
     def test_curve_is_monotone_and_clamped_at_endpoints(self) -> None:
         plan = _plan()

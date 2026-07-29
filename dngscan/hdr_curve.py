@@ -4,7 +4,9 @@
 The split is the design. Below `shoulder_start_ev` this delegates to the same darktable
 C1 body the plan compiled, and no headroom value reaches that call -- which is why more
 HDR range cannot darken shadows the way v1's global gamma did. Above K the compiled
-Hermite segments run in output stops and clamp at the content peak.
+single Hermite segment runs in output stops and clamps at the content peak. The tuple-shaped
+runtime carrier also supports an explicitly subdivided reference-white chroma candidate;
+that auxiliary candidate is normalized to native Y and never becomes a tone authority.
 
 Vectorised because it runs per channel on full frames, but it is only a restatement of
 `hdr_agx_math`; that module stays the float64 oracle this is checked against.
@@ -90,9 +92,11 @@ def _rescaled_segments(
 ) -> tuple[HdrShoulderSegment, ...]:
     """Recompile the shoulder for a different endpoint, holding K's anchor fixed.
 
-    Used only for the conservative chroma candidate. The knee value and slope come from
-    the compiled plan rather than being re-derived, so both candidates leave the body at
-    exactly the same place and differ only in where they are heading.
+    Used only for the conservative chroma candidate. Its fixed 1.0 endpoint is not coupled
+    to scene W the way the native H endpoint is, so alpha can exceed the single-segment
+    bound on high-W plans. This is the sole production opt-in to subdivision. The result
+    is normalized to native luminance before mixing and therefore cannot become a second
+    tone curve.
     """
     from .hdr_agx_math import compile_hdr_shoulder_from_anchor
     from .constants import OUTPUT_REFERENCE_WHITE_STOPS
@@ -108,4 +112,5 @@ def _rescaled_segments(
         knee_stops=float(first.z0),
         knee_slope=float(first.m0),
         peak_stops=peak_stops,
+        allow_subdivision=True,
     )

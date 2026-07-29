@@ -182,7 +182,7 @@ flowchart TB
 
     subgraph HDR["4B. 独立 HDR AgX 分支 - 仅支持 AgX"]
         direction TB
-        HDRPLAN["编译 HdrAgxPlan<br/>可靠 RAW 尾部 -> 请求扩展白点<br/>求解具有减速肩部的最小 AgX gamma<br/>原生曲线不可行时降低峰值"]
+        HDRPLAN["编译 HdrAgxPlan<br/>可靠 RAW 尾部 -> 请求扩展白点<br/>K 以下固定 gamma 的 darktable body<br/>K 以上单段单调 log-stop Hermite shoulder"]
         HRETREAT["HDR 自有 RAW clip retreat"]
         HINSET["AgX inset<br/>原生扩展白逐通道 C1 formation"]
         PATH["HDR 色彩几何<br/>reference-white 与原生色度路径混合<br/>CFA 剪切会局部收回 rho<br/>原生曲线始终是唯一 Y 权威"]
@@ -705,14 +705,20 @@ RAW 剪切证据筛过的可靠高光尾部决定。LibRaw 用逐像素 CFA mask
 剪切 cell 比例从亮度顶部做保守的 rank trim。没有足够 RAW 证据时 headroom 就是 0，导出会
 明确失败，不会用重建高光或 SDR white endpoint 冒充传感器信息。
 
-这个请求会直接成为 darktable 式 AgX C1 solver 的扩展 display-linear 白点。编译器只把内部
-curve gamma 提高到形成真正减速 sigmoid shoulder 所需的最小值；如果目标白点会迫使通用
-solver 进入 `power < 1` 的加速 fallback，就降低实际白点。管线里不再有曲线后的
-smootherstep gain、knee、allocation window 或 lift-rate 启发式。
+这个请求会编译成一条不改写 body 的 HDR 曲线。K 以下继续使用 darktable 式 AgX body，内部
+gamma 固定为历史值 2.2；K 以上在 output-stop 坐标中接一段 cubic Hermite，从实际渲染 body
+的数值与解析切线出发，在 W 到达场景挣得的峰值并以零导数结束。只有归一化起点切线
+`alpha <= 3` 才接受。由于 W 和请求 headroom 都来自同一个可靠 RAW 尾部，默认 contrast=3
+时普通场景上界为 1.8494、稀疏光源为 1.9537；把用户可调 contrast=1.5-4.5 的完整范围也
+纳入后，上界分别为 2.7358 与 2.9306，仍低于 3。以后若策略或控制范围重调使它越界，编译会
+明确关闭 HDR，不会静默换用另一种 tone shape。管线里没有整体 gamma 抬升、曲线后 smootherstep gain、
+allocation window 或 lift-rate 启发式。
 
 原生 HDR 曲线是唯一亮度权威。`rho` 只在 reference-white AgX 色度路径和扩展白原生路径之间
-混合，两条路径先对齐到原生曲线决定的同一 Y；逐像素 CFA 剪切 mask 会从不可信通道撤回原生
-路径。最后用保持 Y 的中性轴投影收进扩展 P3 `[0, peak]` 色彩体积，不做逐通道硬裁。这里保持
+混合，两条路径先对齐到原生曲线决定的同一 Y。固定为 1.0 的 reference-white endpoint 不与
+场景 W 耦合，因此这个辅助色度候选可以显式细分 Hermite 区间；它不进入权威 tone plan，也
+不能改变输出 Y。逐像素 CFA 剪切 mask 会从不可信通道撤回原生路径。最后用保持 Y 的中性轴
+投影收进扩展 P3 `[0, peak]` 色彩体积，不做逐通道硬裁。这里保持
 的是线性 P3 的 opponent direction，不是严格的感知色相。ACES 2 在色貌模型 JMh 中完成更强
 的色相约束；dngscan 当前投影器刻意更简单，这也是 HDR 仍需实机标定的边界之一。
 
@@ -720,7 +726,7 @@ Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每
 都会重新展开 HDR 像素，检查 P3 profile、4:4:4、RGB 辅助图、声明 headroom 与全图
 像素/色品误差；任一门禁不过就不会保留输出文件。现在 HDR 不支持 display look/filter，
 因为这些 SDR 算子还没有独立 HDR 定义。数学约束和验收线在
-[`docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md`](docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md)。
+[`docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md`](docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md)。
 
 ### HDR 对比
 

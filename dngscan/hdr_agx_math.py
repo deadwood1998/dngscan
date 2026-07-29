@@ -24,9 +24,9 @@ reduction of dz/de toward zero.
 
 Monotonicity is decided by a stated condition rather than inspection: with the white
 tangent pinned at zero, a single cubic Hermite is monotone exactly when the normalized
-start tangent alpha lies in [0, 3]. When a scene asks for more than one segment can carry,
-the interval is subdivided -- never by relaxing M_K or the zero white slope, since those
-are the C1 joins this design exists to guarantee.
+start tangent alpha lies in [0, 3]. The authoritative HDR tone compiler accepts only that
+single segment and fails closed outside it. Subdivision is an explicit opt-in reserved for
+the reference-white chroma candidate, which never owns output luminance.
 
 Float64 and image-free: this is the oracle the float32 runtime is checked against.
 """
@@ -47,8 +47,9 @@ from .constants import (
 # Fritsch-Carlson monotonicity region evaluated at beta = 0.
 MAX_SINGLE_SEGMENT_ALPHA = 3.0
 
-# Subdivision ceiling. Each split roughly halves alpha, so the reachable range grows
-# exponentially; a plan needing more than this is malformed rather than demanding.
+# Auxiliary chroma-path subdivision ceiling. Authoritative tone plans never use it.
+# Each split roughly halves alpha, so the reachable range grows exponentially; a candidate
+# needing more than this is malformed rather than demanding.
 MAX_SHOULDER_SEGMENTS = 16
 
 _EPS = 1e-12
@@ -138,7 +139,7 @@ def body_anchor_at_ev(
 
 
 def body_anchor_from_curve(
-    evaluate_body, ev: float, step: float = 1e-5, midgray: float = SCENE_MIDGRAY
+    evaluate_body_with_derivative, ev: float, midgray: float = SCENE_MIDGRAY
 ) -> tuple[float, float, float]:
     """Anchor taken from the body curve that will actually render, not a closed form.
 
@@ -148,15 +149,16 @@ def body_anchor_from_curve(
     to the chosen K. The closed form is then off by ~4e-5 in T, which is small but makes
     the C1 join approximate -- and that join is the property the whole design rests on.
 
-    Sampling the real curve makes the join exact by construction for any K, whichever
-    segment it falls in. The curve is C1 there, so a central difference is well behaved.
+    The callback returns the actual production value and its analytic `dT/de` from the
+    same compiled curve parameters. This makes the join independent of which segment K
+    falls in. A finite difference is deliberately not used: the production body renders
+    in float32, and steps small enough to localize the transition lose derivative precision.
     """
-    value = float(evaluate_body(ev))
+    value, slope_t = evaluate_body_with_derivative(ev)
+    value = float(value)
+    slope_t = float(slope_t)
     if value <= _EPS:
         return 0.0, -math.inf, math.inf
-    lo = float(evaluate_body(ev - step))
-    hi = float(evaluate_body(ev + step))
-    slope_t = (hi - lo) / (2.0 * step)
     stops = math.log2(value / float(midgray))
     slope_z = slope_t / (math.log(2.0) * value)
     return value, stops, slope_z
@@ -210,14 +212,13 @@ def adaptive_monotone_segments(
     peak_stops: float,
     knee_slope: float,
 ) -> tuple[HdrShoulderSegment, ...]:
-    """Subdivide until every piece is monotone, holding both end tangents fixed.
+    """Build an auxiliary monotone chain while holding both end tangents fixed.
 
-    A general PCHIP limiter is the wrong tool here. Limiters achieve monotonicity by
-    rescaling tangents, and rescaling the first one would break the C1 join with the body
-    -- the entire property this design is built to keep. Subdividing instead adds interior
-    knots, whose tangents are free, while `knee_slope` at K and zero at W stay exactly as
-    given. Interior tangents use the harmonic mean of neighbouring secants, which is the
-    Fritsch-Carlson choice and is monotone by construction.
+    This is not an authoritative tone fallback. It exists for the reference-white chroma
+    candidate, whose endpoint is intentionally decoupled from the scene-derived W/H pair.
+    A general PCHIP limiter would rescale the first tangent and break the C1 body join;
+    subdivision instead adds free interior knots while preserving `knee_slope` and the
+    zero tangent at W. Interior tangents use the Fritsch-Carlson harmonic mean.
     """
     span_e = float(white_ev) - float(knee_ev)
     span_z = float(peak_stops) - float(knee_stops)
@@ -269,11 +270,14 @@ def compile_hdr_shoulder_from_anchor(
     knee_stops: float,
     knee_slope: float,
     peak_stops: float,
+    allow_subdivision: bool = False,
 ) -> tuple[HdrShoulderSegment, ...]:
     """Same solve, but with the knee anchor supplied rather than derived.
 
     Lets a second endpoint reuse one compiled anchor, so two candidate curves provably
-    leave the body at the same value and slope and differ only above K.
+    leave the body at the same value and slope and differ only above K. Authoritative tone
+    compilation keeps `allow_subdivision=False`; only the luminance-neutral auxiliary
+    chroma candidate opts in.
     """
     span_e = float(white_ev) - float(knee_ev)
     span_z = float(peak_stops) - float(knee_stops)
@@ -286,9 +290,11 @@ def compile_hdr_shoulder_from_anchor(
     )
     if _segment_is_monotone(single):
         return (single,)
-    return adaptive_monotone_segments(
-        knee_ev, white_ev, knee_stops, peak_stops, knee_slope
-    )
+    if allow_subdivision:
+        return adaptive_monotone_segments(
+            knee_ev, white_ev, knee_stops, peak_stops, knee_slope
+        )
+    return ()
 
 
 def compile_hdr_shoulder(
@@ -299,23 +305,25 @@ def compile_hdr_shoulder(
     body_gamma: float = DARKTABLE_BASE_GAMMA,
     midgray: float = SCENE_MIDGRAY,
     reference_range_ev: float = AGX_REFERENCE_RANGE_EV,
-    evaluate_body=None,
+    evaluate_body_with_derivative=None,
+    allow_subdivision: bool = False,
 ) -> tuple[HdrShoulderSegment, ...]:
     """Build the shoulder joining the body at K to the content peak at W.
 
-    Pass `evaluate_body` to anchor on the real rendering curve; without it the central-line
-    closed form is used, which is exact only when K lies on the linear latitude segment.
-    Production always passes it, because on real plans K lands at or just past the body's
-    own shoulder transition.
+    Pass `evaluate_body_with_derivative` to anchor on the real rendering curve; without it
+    the central-line closed form is used, which is exact only when K lies on the linear
+    latitude segment. Production always passes an actual value plus analytic derivative,
+    because on real plans K lands at or just past the body's own shoulder transition.
 
-    Tries one segment first because that is the smooth case; subdivides only when the
-    scene asks for more stop growth than a single monotone cubic can deliver. Returns an
-    empty tuple when the request is degenerate, which callers must treat as "no HDR"
-    rather than substituting something that merely renders.
+    The authoritative compiler accepts one monotone segment only. Its scene-derived W and
+    H are coupled, and the complete production policy stays below alpha=3. If a retune
+    violates that proof, the default returns an empty tuple and the caller disables HDR;
+    it does not silently enter an unvalidated tone shape. `allow_subdivision` is reserved
+    for the reference-white chroma candidate and must be explicit.
     """
-    if evaluate_body is not None:
+    if evaluate_body_with_derivative is not None:
         _, knee_stops, knee_slope = body_anchor_from_curve(
-            evaluate_body, knee_ev, midgray=midgray
+            evaluate_body_with_derivative, knee_ev, midgray=midgray
         )
     else:
         _, knee_stops, knee_slope = body_anchor_at_ev(
@@ -335,9 +343,11 @@ def compile_hdr_shoulder(
     )
     if _segment_is_monotone(single):
         return (single,)
-    return adaptive_monotone_segments(
-        knee_ev, white_ev, knee_stops, peak_stops, knee_slope
-    )
+    if allow_subdivision:
+        return adaptive_monotone_segments(
+            knee_ev, white_ev, knee_stops, peak_stops, knee_slope
+        )
+    return ()
 
 
 def validate_hdr_shoulder(

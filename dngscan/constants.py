@@ -81,8 +81,8 @@ AGX_REFERENCE_RANGE_EV = 16.5
 # pixel compatibility and its Y row does not sum to exactly one.
 REC2020_LUMA = (0.2627, 0.6780, 0.0593)
 # HDR display rendering transforms. "agx" is dngscan's native extended-white curve around
-# darktable's AgX formation, described by docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md. darktable
-# itself does not define this extended-P3 rendition or the gain-map delivery contract.
+# darktable's AgX formation, described by docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md.
+# darktable itself does not define this extended-P3 rendition or the gain-map contract.
 HDR_DRT_CHOICES = ("agx",)
 DEFAULT_HDR_DRT = "agx"
 
