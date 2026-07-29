@@ -17,6 +17,103 @@ with the code, parameters, and data from other cameras.
 
 [中文说明](README.zh-CN.md) · [License](LICENSE) · [Third-party notices](NOTICE.md)
 
+## How to read this
+
+To just convert a photo, [Quick start](#quick-start) is enough; the rest is optional.
+
+To understand why a stage behaves the way it does, read the four layers in order:
+
+| Layer | Decides | Does not decide |
+|---|---|---|
+| [Capture](#layer-1--capture-where-the-raw-evidence-comes-from) | measurable facts read from the RAW | anything about taste |
+| [Tone](#layer-2--tone-exposure-and-curve-construction) | luminance relationships and display range | hue or chroma |
+| [Color geometry](#layer-3--color-geometry-what-agx-actually-changes) | hue paths, chroma compression, path to white | the black and white endpoints |
+| [Delivery](#layer-4--delivery-sdr-and-hdr-output) | encoding, container, gain map | pixels that are already formed |
+
+The [decoder](#decoders-libraw-and-the-optional-core-image--raw-9-path) is an axis
+orthogonal to all four: it decides how RAW becomes scene-linear pixels, not what happens
+to those pixels afterwards.
+
+The separation is deliberate. When a stage changes the image, its reason should stay
+identifiable -- which is the trade this project makes against a single "make it look
+good" slider.
+
+## Quick start
+
+Python 3.10 or newer is required.
+
+```bash
+git clone https://github.com/Gen-416/dngscan.git
+cd dngscan
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m dngscan.gui
+```
+
+Open the localhost address printed in the terminal. The GUI runs entirely on the local
+machine and uploads nothing. The first open decodes and analyses the file and builds a
+1280px proxy; later previews reuse memory and disk caches, while full export always
+returns to the full-resolution scene buffer. Full export runs in a short-lived worker
+process so its large arrays leave with that process instead of remaining in the GUI
+server.
+
+On macOS the cache defaults to `~/Library/Caches/dngscan/preview-v1`, is limited to
+768 MB, and evicts older entries automatically.
+
+A practical starting point is EV 0 with `AgX`, `base` primaries, camera WB, and highlight
+reconstruction, followed by adjustments based on the photograph. Quality 100 and 4:4:4
+are the default output settings.
+
+### CLI
+
+```bash
+# Default AgX JPEG
+python -m dngscan photo.dng --jpeg photo.jpg
+
+# Highlight reconstruction and Display P3
+python -m dngscan photo.dng --jpeg photo_p3.jpg \
+  --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO 21496-1 HDR gain-map JPEG (macOS, Display P3, AgX only)
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3
+
+# RAW analysis dashboard and CSV
+python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
+
+# Compare another core at the same EV
+python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
+
+# Optional Core Image scene buffer (macOS; evidence stays on LibRaw)
+python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
+python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
+python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
+
+# Deliberately use the brightness reference
+python -m dngscan photo.dng --jpeg reference.jpg --ev auto
+```
+
+Run `python -m dngscan --help` for the complete list.
+
+### Optional C++ acceleration
+
+NumPy is the reference implementation and works without a native build. The pybind11
+C++ kernel accelerates only the normal AgX hot path: formation, C1 curve, hue restoration,
+and punch. RAW analysis, tone-plan compilation, and fallback policy remain in Python.
+
+```bash
+pip install pybind11 cmake
+tools/build_native.sh
+```
+
+`DNGSCAN_FAST=auto` is the default; `0` forces NumPy; `1` requires the native kernel and
+raises if it cannot be used. The kernel releases the GIL and works with the existing
+chunked export path; the AgX hot stage measures at roughly 2x. Import checks its ABI and
+runs a self-test. Current real-scene linear differences are around `2e-6`, with final
+8-bit differences within one dither step. Its job is only to reduce export time, not to
+change the imaging decisions.
+
 ## Why a separate pipeline
 
 darktable's scene-referred pipeline works well as a signal-processing laboratory, where
@@ -289,7 +386,7 @@ Several invariants are intended to survive future changes:
 - `agx` with darktable `base` primaries is the production default. `lum` and `neutral`
   are controlled comparisons; `gated` is the LibRaw-only RAW-evidence experiment.
 
-## Capture: where the RAW evidence comes from
+## Layer 1 — Capture: where the RAW evidence comes from
 
 ### Black, white, and per-channel clipping
 
@@ -329,7 +426,50 @@ GUI/CLI can select `dht / dcb / ahd / aahd / vng / ppg` manually; an algorithm s
 by another LibRaw build only needs an entry in `DEMOSAIC_CHOICES` to use the existing
 availability check and fallback logic.
 
-### Optional Core Image pipeline
+### White balance
+
+`camera` uses the file's AsShot measurement. `daylight` uses LibRaw's calibrated
+daylight multipliers and is useful when a group of images under the same light should
+keep a fixed balance.
+
+Sun, overcast, and shade lie roughly on a predictable daylight locus, where the camera
+measurement is usually useful. Mixed light, narrow-band LED, fluorescent, and sodium
+light are not a simple color-temperature problem. Some changes that look like incorrect
+white balance also come from a tone curve redistributing luminance and purity, which is
+why WB and the DRT remain separate stages. The AsShot deviation from the daylight
+multipliers is also written into the analysis: it is both WB data and evidence about the
+light at capture.
+
+An adapted eye in front of a display is not an absolute white-point meter.
+Hunt, Stevens, Abney, and Bezold-Brücke appearance effects can make changes in luminance
+and purity look like changes in hue or warmth, while memory colors such as skin, sky,
+and foliage are not simple colorimetric targets. When something looks “off,” separating
+the illuminant, camera balance, tone, and color geometry is more useful than immediately
+turning the temperature control.
+
+### Highlight handling
+
+LibRaw's three choices affect the appearance after reconstruction:
+
+- `clip` cuts at saturation. It is closest to sensor state, but staggered channel
+  clipping can leave colored borders.
+- `blend` feathers the clipping boundary.
+- `reconstruct` estimates missing channels from surviving ones. It can recover
+  continuous structure, but its chroma is inferred.
+- Its hue often leans toward the surviving channel, so continuity is not color truth.
+
+For normal photographs, `reconstruct` is the practical default; `clip` is more useful when
+inspecting the sensor or the algorithm itself. The saved RAW clipping evidence is unchanged
+in every case.
+
+LibRaw stores `blend` and `reconstruct` darker in uint16 by exactly the normalized peak
+white-balance multiplier, reserving container codes for reconstructed values above
+nominal white. dngscan records that reserve in `scene_scale` instead of treating it as
+an exposure change. On the Sigma fp sample (`max WB = 2.33`, or 1.22 EV), clip and
+reconstruct now agree in the reliable body within 0.03 EV while reconstruct keeps its
+extra highlight range.
+
+## Decoders: LibRaw and the optional Core Image / RAW 9 path
 
 `--decoder coreimage` is an alternate capture decoder, independent of the selected tone
 core. It is not a quality upgrade and is never the default. Before decoding, dngscan asks
@@ -574,50 +714,7 @@ the decoder token, making two renders traceable to their actual runtime. The gol
 still covers only the stable post-decode algorithm layer; Core Image tests pin properties
 rather than bytes, so an OS update still requires an explicit A/B on the same RAW corpus.
 
-### White balance
-
-`camera` uses the file's AsShot measurement. `daylight` uses LibRaw's calibrated
-daylight multipliers and is useful when a group of images under the same light should
-keep a fixed balance.
-
-Sun, overcast, and shade lie roughly on a predictable daylight locus, where the camera
-measurement is usually useful. Mixed light, narrow-band LED, fluorescent, and sodium
-light are not a simple color-temperature problem. Some changes that look like incorrect
-white balance also come from a tone curve redistributing luminance and purity, which is
-why WB and the DRT remain separate stages. The AsShot deviation from the daylight
-multipliers is also written into the analysis: it is both WB data and evidence about the
-light at capture.
-
-An adapted eye in front of a display is not an absolute white-point meter.
-Hunt, Stevens, Abney, and Bezold-Brücke appearance effects can make changes in luminance
-and purity look like changes in hue or warmth, while memory colors such as skin, sky,
-and foliage are not simple colorimetric targets. When something looks “off,” separating
-the illuminant, camera balance, tone, and color geometry is more useful than immediately
-turning the temperature control.
-
-### Highlight handling
-
-LibRaw's three choices affect the appearance after reconstruction:
-
-- `clip` cuts at saturation. It is closest to sensor state, but staggered channel
-  clipping can leave colored borders.
-- `blend` feathers the clipping boundary.
-- `reconstruct` estimates missing channels from surviving ones. It can recover
-  continuous structure, but its chroma is inferred.
-- Its hue often leans toward the surviving channel, so continuity is not color truth.
-
-For normal photographs, `reconstruct` is the practical default; `clip` is more useful when
-inspecting the sensor or the algorithm itself. The saved RAW clipping evidence is unchanged
-in every case.
-
-LibRaw stores `blend` and `reconstruct` darker in uint16 by exactly the normalized peak
-white-balance multiplier, reserving container codes for reconstructed values above
-nominal white. dngscan records that reserve in `scene_scale` instead of treating it as
-an exposure change. On the Sigma fp sample (`max WB = 2.33`, or 1.22 EV), clip and
-reconstruct now agree in the reliable body within 0.03 EV while reconstruct keeps its
-extra highlight range.
-
-## Tone: exposure and curve construction
+## Layer 2 — Tone: exposure and curve construction
 
 ### Fixed exposure anchor
 
@@ -693,7 +790,7 @@ white EV, producing bright, sharp highlights over a dark body. C1 endpoints plus
 body/tail split make “how wide the scene is” and “where its important content should
 sit” two different questions.
 
-## Color geometry: what AgX actually changes
+## Layer 3 — Color geometry: what AgX actually changes
 
 A bare per-channel S-curve sends R, G, and B into the toe and shoulder at different
 rates, so highly saturated colors change hue with brightness. AgX is not only a
@@ -792,55 +889,7 @@ target sRGB/P3 gamut back along Oklab chroma rather than clipping each RGB chann
 keeps highlight colors retained by AgX or P3 from collapsing into hard primaries at the
 last step.
 
-## The prefeed experiment
-
-The experiment starts from compensating repeatable camera defects with measurements
-before the image reaches AgX. If two sensor and filter-stack responses are measured well
-enough, the same layer can also approximate some response relationships of another
-camera, within the information the original sensor actually recorded.
-
-The included ARRI-like prefeed came from a subjective target: moving the Sigma fp a little
-toward the warm skin and cooler cyan field associated here with ARRI footage. The original
-hypothesis involved the ALEV filter stack's red/near-IR behavior and the different filter
-and magenta behavior of the fp/IMX410.
-
-The current implementation integrates public camera SSFs, illuminant SPDs, and material
-reflectance spectra. It fits constrained 3x3 mappings for skin, foliage, cyan, neutral,
-and magenta classes, then limits every mapping with a soft window in the `(R/G, B/G)`
-chromaticity plane. The windows move with selected white balance through von Kries
-scaling. A neutral-axis constraint prevents it from becoming hidden white balance,
-while per-class residual and cross-class leakage enter its confidence.
-
-The ALEV III SSF was digitized from Leonhardt & Brendel's CIC23 paper. ARRI averaged
-measurements from five ALEXA bodies because interference patterns in the sensor stack
-vary between units. The Sigma fp side currently uses the full-camera Sony A7 III SSF
-measured by Weta Digital in AMPAS `rawtoaces-data`; it shares the IMX410 sensor but is
-not the same complete filter stack as the fp. The camera-to-Rec.2020 profile is fitted
-on AMPAS's 190 training reflectances. The calibration files keep these sources and
-substitutions explicit rather than treating “same CMOS” as “same camera.”
-
-There is a firm physical limit. If two materials have already become metameric on the
-fp, a per-pixel matrix cannot recreate the distinction they would have shown on ALEV.
-Sensor stacks also vary between individual bodies, so serious calibration should target
-the exact camera in hand. Controlled illuminants, targets, and spectral equipment were
-not available for this calibration, so the present result is closer to a restrained
-geometric color mapping than the original ARRI skin target. Sources, assumptions, CSV
-data, and fit reports are in [`dngscan_assets/spectral/`](dngscan_assets/spectral/).
-
-## Looks and LUTs
-
-The repository includes one locally designed and regularly used look,
-`optic_warm_cyan`. It is an Oklab chroma field after AgX, not a vendor LUT and not a
-camera prefeed.
-
-The code also keeps optional `.cube` slots for Kodak 2383, RED IPP2, and Sony
-LC-709TypeA. Legally obtained LUTs can be placed in the corresponding paths under
-`dngscan_assets/vendor_luts/`, where the GUI discovers them automatically. The files
-themselves are not distributed here. Prefeed, AgX geometry, and a display-side LUT sit
-at three different points in the pipeline even when some of their visual effects look
-similar.
-
-## Output
+## Layer 4 — Delivery: SDR and HDR output
 
 SDR output is an 8-bit JPEG with deterministic TPDF dither, quality 100 and 4:4:4 by
 default. Dither is applied before quantization to reduce banding in smooth gradients; it
@@ -922,83 +971,55 @@ and [gamut](https://docs.acescentral.com/system-components/output-transforms/tec
 compression notes. These sources define the contracts and comparison points; they do not
 turn dngscan's project-specific thresholds into upstream constants.
 
-## Quick start
+## Appendix: the prefeed experiment
 
-Python 3.10 or newer is required.
+The experiment starts from compensating repeatable camera defects with measurements
+before the image reaches AgX. If two sensor and filter-stack responses are measured well
+enough, the same layer can also approximate some response relationships of another
+camera, within the information the original sensor actually recorded.
 
-```bash
-git clone https://github.com/Gen-416/dngscan.git
-cd dngscan
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m dngscan.gui
-```
+The included ARRI-like prefeed came from a subjective target: moving the Sigma fp a little
+toward the warm skin and cooler cyan field associated here with ARRI footage. The original
+hypothesis involved the ALEV filter stack's red/near-IR behavior and the different filter
+and magenta behavior of the fp/IMX410.
 
-Open the localhost address printed in the terminal. The GUI runs entirely on the local
-machine and uploads nothing. The first open decodes and analyses the file and builds a
-1280px proxy; later previews reuse memory and disk caches, while full export always
-returns to the full-resolution scene buffer. Full export runs in a short-lived worker
-process so its large arrays leave with that process instead of remaining in the GUI
-server.
+The current implementation integrates public camera SSFs, illuminant SPDs, and material
+reflectance spectra. It fits constrained 3x3 mappings for skin, foliage, cyan, neutral,
+and magenta classes, then limits every mapping with a soft window in the `(R/G, B/G)`
+chromaticity plane. The windows move with selected white balance through von Kries
+scaling. A neutral-axis constraint prevents it from becoming hidden white balance,
+while per-class residual and cross-class leakage enter its confidence.
 
-On macOS the cache defaults to `~/Library/Caches/dngscan/preview-v1`, is limited to
-768 MB, and evicts older entries automatically.
+The ALEV III SSF was digitized from Leonhardt & Brendel's CIC23 paper. ARRI averaged
+measurements from five ALEXA bodies because interference patterns in the sensor stack
+vary between units. The Sigma fp side currently uses the full-camera Sony A7 III SSF
+measured by Weta Digital in AMPAS `rawtoaces-data`; it shares the IMX410 sensor but is
+not the same complete filter stack as the fp. The camera-to-Rec.2020 profile is fitted
+on AMPAS's 190 training reflectances. The calibration files keep these sources and
+substitutions explicit rather than treating “same CMOS” as “same camera.”
 
-A practical starting point is EV 0 with `AgX`, `base` primaries, camera WB, and highlight
-reconstruction, followed by adjustments based on the photograph. Quality 100 and 4:4:4
-are the default output settings.
+There is a firm physical limit. If two materials have already become metameric on the
+fp, a per-pixel matrix cannot recreate the distinction they would have shown on ALEV.
+Sensor stacks also vary between individual bodies, so serious calibration should target
+the exact camera in hand. Controlled illuminants, targets, and spectral equipment were
+not available for this calibration, so the present result is closer to a restrained
+geometric color mapping than the original ARRI skin target. Sources, assumptions, CSV
+data, and fit reports are in [`dngscan_assets/spectral/`](dngscan_assets/spectral/).
 
-### CLI
+## Appendix: looks and LUTs
 
-```bash
-# Default AgX JPEG
-python -m dngscan photo.dng --jpeg photo.jpg
+The repository includes one locally designed and regularly used look,
+`optic_warm_cyan`. It is an Oklab chroma field after AgX, not a vendor LUT and not a
+camera prefeed.
 
-# Highlight reconstruction and Display P3
-python -m dngscan photo.dng --jpeg photo_p3.jpg \
-  --highlight-mode reconstruct --output-gamut p3
+The code also keeps optional `.cube` slots for Kodak 2383, RED IPP2, and Sony
+LC-709TypeA. Legally obtained LUTs can be placed in the corresponding paths under
+`dngscan_assets/vendor_luts/`, where the GUI discovers them automatically. The files
+themselves are not distributed here. Prefeed, AgX geometry, and a display-side LUT sit
+at three different points in the pipeline even when some of their visual effects look
+similar.
 
-# Apple ISO 21496-1 HDR gain-map JPEG (macOS, Display P3, AgX only)
-python -m dngscan photo.dng --jpeg photo_hdr.jpg \
-  --output-format ultrahdr --hdr-headroom 3
-
-# RAW analysis dashboard and CSV
-python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
-
-# Compare another core at the same EV
-python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
-
-# Optional Core Image scene buffer (macOS; evidence stays on LibRaw)
-python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
-python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
-python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
-
-# Deliberately use the brightness reference
-python -m dngscan photo.dng --jpeg reference.jpg --ev auto
-```
-
-Run `python -m dngscan --help` for the complete list.
-
-### Optional C++ acceleration
-
-NumPy is the reference implementation and works without a native build. The pybind11
-C++ kernel accelerates only the normal AgX hot path: formation, C1 curve, hue restoration,
-and punch. RAW analysis, tone-plan compilation, and fallback policy remain in Python.
-
-```bash
-pip install pybind11 cmake
-tools/build_native.sh
-```
-
-`DNGSCAN_FAST=auto` is the default; `0` forces NumPy; `1` requires the native kernel and
-raises if it cannot be used. The kernel releases the GIL and works with the existing
-chunked export path; the AgX hot stage measures at roughly 2x. Import checks its ABI and
-runs a self-test. Current real-scene linear differences are around `2e-6`, with final
-8-bit differences within one dither step. Its job is only to reduce export time, not to
-change the imaging decisions.
-
-## RAW reports
+## Appendix: RAW reports
 
 `--scan` writes a six-panel report with SNR versus stops, separate R/G/B RAW
 distributions, exposure and gamut pressure, spatial exposure zones, clipped-channel

@@ -15,6 +15,95 @@ sRGB 或 Display P3 JPEG。它不是修图工具，更像一个非常偏科的�
 
 [English](README.md) · [许可证](LICENSE) · [第三方声明](NOTICE.md)
 
+## 怎么读这份文档
+
+只想把片子转出来，看[快速开始](#快速开始)就够，后面都可以跳过。
+
+想知道某个环节为什么这样做，按管线的四层往下读：
+
+| 层 | 负责什么 | 不负责什么 |
+|---|---|---|
+| [Capture](#一层：capture--raw-证据从哪里来) | 从 RAW 读出可测量的事实 | 不决定观感 |
+| [Tone](#二层：tone--曝光和曲线怎样确定) | 亮度关系与显示动态范围 | 不动色相与色度 |
+| [Color geometry](#三层：color-geometry--agx-真正改变了什么) | 色相路径、色度压缩、向白过渡 | 不移动黑白端点 |
+| [Delivery](#四层：delivery--sdr-与-hdr-交付) | 编码、容器、gain map | 不改变已成形的像素 |
+
+[解码器](#解码器：libraw-与可选的-core-image--raw-9)是与这四层正交的一根轴：它决定 RAW
+怎样变成 scene-linear 像素，不决定这些像素之后怎么被压缩。
+
+分层是刻意的。调整某个环节时，至少能知道画面为什么发生变化——这也是这个项目相对
+"一个滑块调好看"的取舍。
+
+## 快速开始
+
+需要 Python 3.10 或更新版本。
+
+```bash
+git clone https://github.com/Gen-416/dngscan.git
+cd dngscan
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m dngscan.gui
+```
+
+打开终端里显示的 localhost 地址即可。GUI 完全在本机运行，不上传 RAW。第一次打开文件会
+解码、分析并建立 1280px 代理；后续预览复用内存与磁盘缓存，正式导出始终重新使用全分辨率
+scene buffer。全分辨率导出放在一次性工作进程中，结束后大数组随进程释放，不长期留在 GUI
+服务里。
+
+macOS 缓存默认在 `~/Library/Caches/dngscan/preview-v1`，上限 768 MB，旧条目自动淘汰。
+
+一个实用起点是 EV 0、`AgX`、`base` 原色、camera WB 和 reconstruct 高光，再根据照片本身
+调整。quality 100 和 4:4:4 是默认输出。
+
+### CLI
+
+```bash
+# 默认 AgX JPEG
+python -m dngscan photo.dng --jpeg photo.jpg
+
+# 高光重建 + Display P3
+python -m dngscan photo.dng --jpeg photo_p3.jpg \
+  --highlight-mode reconstruct --output-gamut p3
+
+# Apple ISO 21496-1 HDR gain-map JPEG（macOS、Display P3、仅 AgX）
+python -m dngscan photo.dng --jpeg photo_hdr.jpg \
+  --output-format ultrahdr --hdr-headroom 3
+
+# RAW 分析图和 CSV
+python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
+
+# 相同 EV 下比较另一条核心
+python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
+
+# 可选 Core Image scene 缓冲（macOS；证据层仍为 LibRaw）
+python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
+python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
+python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
+
+# 主动使用亮度参考
+python -m dngscan photo.dng --jpeg reference.jpg --ev auto
+```
+
+完整参数见 `python -m dngscan --help`。
+
+### 可选 C++ 加速
+
+NumPy 是参考实现，不编译原生扩展也可以正常使用。pybind11 C++ 内核只加速正常 AgX 的热点
+路径：formation、C1 curve、hue restore 和 punch；RAW 分析、tone plan 与回退策略仍然在
+Python。
+
+```bash
+pip install pybind11 cmake
+tools/build_native.sh
+```
+
+`DNGSCAN_FAST=auto` 为默认值；`0` 强制 NumPy；`1` 要求必须走原生内核并在失败时报错。
+内核释放 GIL，可以与现有的分块导出配合；AgX 热路径实测约 2×。导入时还会检查 ABI 并跑
+自测，当前真实场景的线性差异控制在约 `2e-6`，最终 8-bit 差异不超过一个抖动步长。原生
+内核的职责只是减少导出时间，不改变成像选择。
+
 ## 为什么单独做这条管线
 
 darktable 的 scene-referred 管线很像一间信号处理实验室，理解每个模块怎样改变信号正是
@@ -26,9 +115,9 @@ Sobotka，并在 Blender / EaryChow 生态里发展；这里主要通过 darktab
 但如果这里只是把 darktable 的 AgX 模块单独拆出来，意义其实不大。dngscan 真正想做的，
 是把 RAW 采集层的信息一直带到最终显示变换里。
 
-darktable 的 AgX 模块工作在去马赛克、白平衡和曝光之后的浮点图像上。它能看到图像，却
+darktable 的 AgX 模块工作在解拜耳、白平衡和曝光之后的浮点图像上。它能看到图像，却
 看不到原始 CFA：不知道哪个通道真的在传感器上剪切了，也不知道一块平滑高光究竟来自
-真实信号还是高光重建。dngscan 是一体化的小管线，可以在去马赛克前保存这些证据，再用
+真实信号还是高光重建。dngscan 是一体化的小管线，可以在解拜耳前保存这些证据，再用
 它们区分可靠的场景主体、传感器尾部和已经丢失的高光信息。
 
 这里的“自动”也建立在同一原则上。自动判断不是替照片决定审美，而是把可以测量的东西交给
@@ -49,7 +138,7 @@ darktable 的 AgX 模块工作在去马赛克、白平衡和曝光之后的浮�
 flowchart TB
     RAW["RAW / DNG"]
 
-    subgraph EVIDENCE["1. Capture 证据 - 始终由 LibRaw 在去马赛克前读取"]
+    subgraph EVIDENCE["1. Capture 证据 - 始终由 LibRaw 在解拜耳前读取"]
         direction TB
         CFA["可见 CFA 马赛克与颜色索引<br/>raw_image_visible / raw_colors_visible"]
         META["元数据<br/>black 与逐通道 white level<br/>camera/daylight WB、BaselineExposure、方向"]
@@ -58,7 +147,7 @@ flowchart TB
     subgraph DECODERS["2. Scene 像素形成 - 解码器是独立选择轴"]
         direction TB
         SELECT{"Scene decoder"}
-        LR["LibRaw<br/>camera 或 daylight WB<br/>去马赛克选择<br/>clip / blend / reconstruct"]
+        LR["LibRaw<br/>camera 或 daylight WB<br/>解拜耳选择<br/>clip / blend / reconstruct"]
         LRRGB["带方向的 linear Rec.2020 uint16<br/>关闭 auto-bright"]
         CIPROBE["CIRAWFilter 能力探测<br/>RAW 9 或显式 RAW 8/7 回退"]
         CI["中性的 Core Image RAW 配方<br/>RAW 9：CoreML 重建 + 降噪<br/>旧版本：对应系统解码器<br/>高光恢复、镜头校正、DNG opcode"]
@@ -135,7 +224,7 @@ flowchart TB
     class REPORTS aside
 ```
 
-配色标记的是**来源**，这是最容易在阅读中丢失的信息：琥珀色是去马赛克前读到的 RAW 证据，
+配色标记的是**来源**，这是最容易在阅读中丢失的信息：琥珀色是解拜耳前读到的 RAW 证据，
 蓝色是 LibRaw 解码器，青色是 Apple 的，灰色是两者共同汇入的契约层，橙色是人给出的意图，
 绿色是编译完成、下游必须遵守的 plan。
 
@@ -253,7 +342,7 @@ RAW 9 不是第五条 tone curve，`neutral` 也不是另一种 RAW 解码器。
 
 以后修改这套管线时，下面几条应当保持不变：
 
-- 原始 CFA、黑白电平、剪切比例与噪声统计始终由 LibRaw 在去马赛克前读取。只有
+- 原始 CFA、黑白电平、剪切比例与噪声统计始终由 LibRaw 在解拜耳前读取。只有
   LibRaw 的 scene frame 能携带对应的空间 mask；Core Image 执行了不同几何，只能接收
   聚合证据，不能借用逐像素 mask。
 - 两种解码器都交接 scene-linear Rec.2020。负色彩分量和 diffuse white 以上的数值在
@@ -261,16 +350,16 @@ RAW 9 不是第五条 tone curve，`neutral` 也不是另一种 RAW 解码器。
 - DNG [`BaselineExposure`](https://developer.apple.com/documentation/coreimage/cirawfilter/baselineexposure)
   是文件写入的基线显影补偿。它不是快门/光圈/ISO，不是传感器
   绝对标定，也不是内容自适应自动曝光；显式 `--ev` 调整发生在它之后。
-- 场景亮度只编译 tone endpoint 与 toe/shoulder；RAW 剪切和输出色域压力只编译颜色
+- 场景亮度只编译 tone endpoint 与趾部/肩部；RAW 剪切和输出色域压力只编译颜色
   权限。颜色指标不能移动黑白端点，亮度百分位也不能冒充已经丢失的 CFA 色彩。
 - `agx` 配 darktable `base` primaries 是成片默认。`lum`、`neutral` 是受控对照，
   `gated` 是仅限 LibRaw 的 RAW 证据实验。
 
-## Capture：RAW 证据从哪里来
+## 一层：Capture — RAW 证据从哪里来
 
 ### 黑白电平与逐通道剪切
 
-dngscan 从 `raw_image_visible` 和 `raw_colors_visible` 读取去马赛克前的 CFA 数据。黑电平
+dngscan 从 `raw_image_visible` 和 `raw_colors_visible` 读取解拜耳前的 CFA 数据。黑电平
 来自 metadata；full-well 则先检查每个通道顶端是否存在可信的饱和堆积，有就使用实测
 ceiling，没有才回退到逐通道 metadata white level。它不会拿一个标量替所有 R/G/B，
 剪切阈值因此也是一张按 CFA 颜色生成的 threshold map。没有任何通道出现可靠堆积时，
@@ -284,19 +373,52 @@ ceiling，没有才回退到逐通道 metadata white level。它不会拿一个�
 高光重建可以补出连续的亮度和看起来合理的颜色，但它不能重新获得传感器没有记录的信号。
 因此剪切证据在重建之前保存，后面重建得再平滑，也不能反过来定义全图的 white endpoint。
 
-### 去马赛克
+### 解拜耳
 
 全分辨率导出的 `auto` 顺序是 DHT → DCB → AHD，具体取当前 rawpy/LibRaw 构建实际支持的
 最高优先级算法；X-Trans 等非 Bayer 数据继续走 LibRaw 对应路径。预览使用 half-size
 2×2 超像素合并，所以预览适合看曝光、颜色和高光路径，不适合评价最终纹理。
 
-dngscan 不做降噪，因此去马赛克也是主要的纹理选择。DHT 适合低 ISO 的干净信号；重噪声
+dngscan 不做降噪，因此解拜耳也是主要的纹理选择。DHT 适合低 ISO 的干净信号；重噪声
 夜景里，DCB、AAHD、VNG 或 PPG 有时比更激进的细节插值自然。标准 rawpy wheel 不一定包含
 AMaZE、LMMSE、VCD、AFD 等 GPL demosaic pack 算法，实际可选项取决于本机 LibRaw 构建。
 GUI/CLI 可手动指定 `dht / dcb / ahd / aahd / vng / ppg`；如果本机 LibRaw 还带有其他
 算法，把它加入 `DEMOSAIC_CHOICES` 即可交给现有的可用性检测与回退逻辑。
 
-### 可选 Core Image 管线
+### 白平衡
+
+`camera` 使用文件里的 AsShot 测量，`daylight` 使用 LibRaw 的日光标定乘子。前者跟随拍摄
+现场，后者适合让同一光线下的一组照片保持固定配平。
+
+日光、阴天和阴影大致落在可预测的日光轨迹上，机内测量通常足够有用；混合光、窄谱 LED、
+荧光灯和钠灯则不是一个简单的色温问题。还有些看起来像“白平衡不对”的变化，实际来自
+tone curve 对亮度与纯度的重新分配，所以 WB 与 DRT 在管线里保持独立。AsShot 相对日光
+乘子的偏离也会写入分析结果，它既是白平衡数据，也是拍摄现场光源留下的信息。
+
+显示器前已经适应环境的肉眼不能作为绝对白点测量。Hunt、
+Stevens、Abney、Bezold–Brücke 等色貌效应还会让亮度和纯度变化被感知成色相或冷暖变化，
+肤色、天空和植物这些记忆色也不是简单的色度学目标。看见“偏色”时，先区分它来自光源、
+相机配平，还是 tone/color geometry，通常比直接转动色温更有用。
+
+### 高光处理
+
+LibRaw 的三种选择处理的是重建后的观感：
+
+- `clip` 在饱和处直接截断，最接近传感器实际状态，但逐通道剪切可能留下色边。
+- `blend` 在剪切边界混合，让过渡更平缓。
+- `reconstruct` 根据幸存通道估算丢失通道，可以恢复连续结构，但色度属于推断。
+- 重建色相往往会向幸存通道偏移，因此连续不等于色彩真实。
+
+日常出片通常以 `reconstruct` 为实用默认，检查传感器和算法本身时则更适合用 `clip`。
+无论选哪一个，RAW 剪切证据都不会改变。
+
+LibRaw 会把 `blend` 和 `reconstruct` 的 uint16 整幅缩暗，倍数正好是归一化后的最大
+白平衡增益，目的是给名义白点以上的重建值留容器码值。dngscan 现在把这段余量记进
+`scene_scale`，不再把它当成整张照片的曝光下降。Sigma fp 样张上 `max WB = 2.33`，也就是
+1.22 EV；修正后 clip 与 reconstruct 的可靠主体在 0.03 EV 内一致，而 reconstruct 仍保留更多
+高光范围。
+
+## 解码器：LibRaw 与可选的 Core Image / RAW 9
 
 `--decoder coreimage` 是另一种 capture decoder，与 tone core 的选择彼此独立；它不是
 默认画质升级。解码前，dngscan 会查询当前文件的
@@ -352,7 +474,7 @@ Sigma fp 固定 `1/1.0293` 倍率，用来复现早期 A/B。三个模式现在�
   样张差 -0.020 EV；近乎全黑的 ISO 25600 样张则差 -0.413 EV，而且几乎全部来自 RAW 9
   解码本身。这也是它仍作为对照路径而非静默替换 LibRaw 的原因。
 
-**RAW 9 的降噪来自架构本身。** Apple 把它描述为一个把去马赛克与降噪融合在一起的分块
+**RAW 9 的降噪来自架构本身。** Apple 把它描述为一个把解拜耳与降噪融合在一起的分块
 CoreML 模型（[WWDC26 session 305](https://developer.apple.com/videos/play/wwdc2026/305/)），所以不存在"未处理模式"可以索取：重建本身就是解码器。
 也因此 `luminanceNoiseReductionAmount` 为 0 **并不等于"不降噪"**——它只是在一个始终运行
 的模型上选中了标定范围里最不平滑的一端。
@@ -388,8 +510,8 @@ Apple 默认值实测，版本 9 上真正起作用的只有三项，而当前�
 色噪的清理是稳定的，亮噪不是。模型的优势主要来自信噪比真正糟糕的地方；在曝光正常的
 片子上，最暗的 30% 只是**影调**暗而并不缺信号，两条路径于是几乎收敛。阴影并没有付出
 代价：`shadowBias` 清零后（见下），纯黑像素比例与 LibRaw 路径相差约一个百分点。把
-LibRaw 换成更平滑的去马赛克（VNG、PPG）并不能缩小差距，所以这是模型本身而非插值选择。
-这一点与本工具"不做降噪、把纹理选择留给去马赛克"的立场需要各自权衡。
+LibRaw 换成更平滑的解拜耳（VNG、PPG）并不能缩小差距，所以这是模型本身而非插值选择。
+这一点与本工具"不做降噪、把纹理选择留给解拜耳"的立场需要各自权衡。
 
 **解码严格采用 Apple 的线性提取结构。** `baselineExposure`、`shadowBias`、`boostAmount`、
 `localToneMapAmount` 和 RAW `exposure` 在 CIRAWFilter 内部清零，EDR 与 gamut mapping 关闭，
@@ -478,40 +600,7 @@ RAW 9 随系统分发，一次 macOS 更新就可能换掉模型，而 `decoderV
 回归仍只覆盖预解码后的稳定算法层；Core Image 解码测试断言性质而非固定字节，系统升级后仍需
 用同一组 RAW 做显式 A/B，不能把相同的版本号当作相同模型。
 
-### 白平衡
-
-`camera` 使用文件里的 AsShot 测量，`daylight` 使用 LibRaw 的日光标定乘子。前者跟随拍摄
-现场，后者适合让同一光线下的一组照片保持固定配平。
-
-日光、阴天和阴影大致落在可预测的日光轨迹上，机内测量通常足够有用；混合光、窄谱 LED、
-荧光灯和钠灯则不是一个简单的色温问题。还有些看起来像“白平衡不对”的变化，实际来自
-tone curve 对亮度与纯度的重新分配，所以 WB 与 DRT 在管线里保持独立。AsShot 相对日光
-乘子的偏离也会写入分析结果，它既是白平衡数据，也是拍摄现场光源留下的信息。
-
-显示器前已经适应环境的肉眼不能作为绝对白点测量。Hunt、
-Stevens、Abney、Bezold–Brücke 等色貌效应还会让亮度和纯度变化被感知成色相或冷暖变化，
-肤色、天空和植物这些记忆色也不是简单的色度学目标。看见“偏色”时，先区分它来自光源、
-相机配平，还是 tone/color geometry，通常比直接转动色温更有用。
-
-### 高光处理
-
-LibRaw 的三种选择处理的是重建后的观感：
-
-- `clip` 在饱和处直接截断，最接近传感器实际状态，但逐通道剪切可能留下色边。
-- `blend` 在剪切边界混合，让过渡更平缓。
-- `reconstruct` 根据幸存通道估算丢失通道，可以恢复连续结构，但色度属于推断。
-- 重建色相往往会向幸存通道偏移，因此连续不等于色彩真实。
-
-日常出片通常以 `reconstruct` 为实用默认，检查传感器和算法本身时则更适合用 `clip`。
-无论选哪一个，RAW 剪切证据都不会改变。
-
-LibRaw 会把 `blend` 和 `reconstruct` 的 uint16 整幅缩暗，倍数正好是归一化后的最大
-白平衡增益，目的是给名义白点以上的重建值留容器码值。dngscan 现在把这段余量记进
-`scene_scale`，不再把它当成整张照片的曝光下降。Sigma fp 样张上 `max WB = 2.33`，也就是
-1.22 EV；修正后 clip 与 reconstruct 的可靠主体在 0.03 EV 内一致，而 reconstruct 仍保留更多
-高光范围。
-
-## Tone：曝光和曲线怎样确定
+## 二层：Tone — 曝光和曲线怎样确定
 
 ### 固定曝光锚点
 
@@ -530,7 +619,7 @@ plan 上尝试候选 EV，不会边测边改变目标。全图统计仍可能被
 
 Tone plan 会把可靠主体和高光尾部分开。LibRaw 路径剔除空间 CFA clip mask 对应的样本；
 Core Image 路径使用前文的聚合 rank trim。SNR 会约束黑端和 gated 颜色权限，但不是另一张
-主体 mask。尾部只负责给 shoulder 留出空间。点状灯源与大面积明亮表面也不是同一种高光：
+主体 mask。尾部只负责给肩部留出空间。点状灯源与大面积明亮表面也不是同一种高光：
 前者可以进入 roll-off，后者如果被同样压到顶端，会让整张图显得又暗又刺眼。
 
 因此 tone plan 里的几件事分别有自己的依据：
@@ -543,20 +632,20 @@ Core Image 路径使用前文的聚合 rank trim。SNR 会约束黑端和 gated 
 
 ### GUI 中的四个明暗微调
 
-GUI 不直接暴露校准 pivot 或编译后的 black/white EV，而是在 tone plan 上提供四个有限
+GUI 不直接暴露校准支点或编译后的 black/white EV，而是在 tone plan 上提供四个有限
 偏置。四个滑块的`自动`中心值就是分析结果，不是另一套 preset；全部归零时直接沿用原来的
 render plan，输出不变。
 
 | 选项 | 向左 | 向右 | 不会改变什么 |
 | --- | --- | --- | --- |
 | `中间调亮度` | 主体更沉、更暗 | 提亮主体和可见暗部 | 不移动 scene exposure、黑点或白点 |
-| `中间调对比` | 中间调更柔和 | 拉开校准 pivot 两侧的明暗距离 | 不移动 pivot 本身 |
-| `暗部过渡` | toe 更深，更快沉入黑场 | toe 更开放，阴影层次更容易看见 | 不移动黑点，也不会创造低 SNR 信号 |
-| `高光过渡` | shoulder 更直接，高光更有冲击力 | shoulder 更柔和，更早保留亮部层次 | 不移动白点或 RAW 剪切位置 |
+| `中间调对比` | 中间调更柔和 | 拉开校准支点两侧的明暗距离 | 不移动支点本身 |
+| `暗部过渡` | 趾部更深，更快沉入黑场 | 趾部更开放，阴影层次更容易看见 | 不移动黑点，也不会创造低 SNR 信号 |
+| `高光过渡` | 肩部更直接，高光更有冲击力 | 肩部更柔和，更早保留亮部层次 | 不移动白点或 RAW 剪切位置 |
 
 `中间调亮度`和曝光 EV 最容易混淆。曝光 EV 在 scene-linear 域缩放信号，会改变进入
-shoulder 的位置并消耗高光余量；中间调亮度是显示侧的内部曲线调整，真黑和目标白保持不动。
-`中间调对比`也不是另一个亮度控制：它围绕校准 pivot 改变斜率，决定主体内部的明暗距离，
+肩部的位置并消耗高光余量；中间调亮度是显示侧的内部曲线调整，真黑和目标白保持不动。
+`中间调对比`也不是另一个亮度控制：它围绕校准支点改变斜率，决定主体内部的明暗距离，
 而不是把主体整体上下移动。
 
 实际使用时，先用`中间调亮度`确定主体明暗，再用`中间调对比`确定立体感，最后分别调整
@@ -565,17 +654,17 @@ shoulder 的位置并消耗高光余量；中间调亮度是显示侧的内部�
 
 ### darktable 风格的 C1 曲线
 
-现在的主曲线沿用 darktable AgX 的 C1 分段构造：toe、线性 latitude 和 shoulder 在连接点
-同时保持数值与一阶导数连续。black/white EV、contrast、toe/shoulder power 和 latitude
+现在的主曲线沿用 darktable AgX 的 C1 分段构造：趾部、线性 latitude 和肩部在连接点
+同时保持数值与一阶导数连续。black/white EV、contrast、趾部/肩部 power 和 latitude
 由 tone plan 提供，但 EV 0 到 18% 的校准锚点保持稳定。
 
 采用这条结构，是因为只把场景 min/max 塞进一条普通 sigmoid 很容易让少数灯源定义
 white EV，结果就是高光很刺眼而主体仍然偏暗。C1 端点和主体/尾部分离，让“场景有多宽”
 与“主要内容应该落在哪里”成为两件不同的事。
 
-## Color geometry：AgX 真正改变了什么
+## 三层：Color geometry — AgX 真正改变了什么
 
-裸的逐通道 S 曲线会让 R/G/B 以不同速度进入 toe 和 shoulder，高纯度颜色的色相因此会
+裸的逐通道 S 曲线会让 R/G/B 以不同速度进入趾部和肩部，高纯度颜色的色相因此会
 随亮度漂移。AgX 不只是一条 sigmoid；它的关键是曲线前后的原色几何。
 
 曲线前的 `inset` 把工作原色向中性轴收缩并做小幅旋转，避免极纯颜色直接撞上单通道上限，
@@ -597,7 +686,7 @@ hue restore 是**逐预设**的值而不是一个全局默认：编译器给 `ba
 的旧 plan 对象才会读到的 `AGX_HUE_RESTORE` 兜底，因此测试把三层全部钉住。只断言那个常量
 是没有意义的：改掉它，全部 golden 渲染逐字节不变。
 
-AgX 的代价也来自同一个结构。inset 在曲线前先降低纯度，而这份纯度主要由落入 toe 的内容
+AgX 的代价也来自同一个结构。inset 在曲线前先降低纯度，而这份纯度主要由落入趾部的内容
 通过逐通道扩张赚回来，因此高 ISO 夜景有时反而显得很浓，明亮宽 DR 日景却容易偏平。
 Blender 生态常把 Base 与 Punchy look 配套使用，本质上也是在处理这件事。另一个代价是
 色度与内容在曲线上的位置耦合：同一个物体换一个构图或曝光，落入不同曲线区间后可能得到
@@ -630,7 +719,7 @@ darktable 模块本身看不到的 CFA 信息：某个颜色变化究竟来自�
 
 ### RAW clip retreat、punch 与 gamut fit
 
-RAW headroom retreat 只在去马赛克前 CFA 表明通道接近或到达 full-well 时工作。95% 到 99%
+RAW headroom retreat 只在解拜耳前 CFA 表明通道接近或到达 full-well 时工作。95% 到 99%
 的软渐变是保守权限信号：低端表示“开始不可靠”，不表示“已经剪切”。它在曲线前把颜色向
 该亮度下的中性轴收回。它与 AgX 的全局 inset 不同：一个由传感器余量驱动，一个是显示变换
 本身的颜色几何。
@@ -643,51 +732,14 @@ RAW headroom retreat 只在去马赛克前 CFA 表明通道接近或到达 full-
 只是分析值的倍率，`1` 使用自动值，`0` 完全关闭。这仍然是基于有限样张调出的全局策略，
 不是传感器测量本身。
 
-`高光褪白`是另一层很轻的显示侧色度偏置。它不改亮度 shoulder，也不冒充 RAW 高光重建；
+`高光褪白`是另一层很轻的显示侧色度偏置。它不改亮度肩部，也不冒充 RAW 高光重建；
 向右让接近显示白的颜色更早收向中性轴，向左则在最终 gamut fit 的保护下保留更多高光色度。
 
 最后的 gamut fit 发生在 tone 和风格之后。它把无法装进目标 sRGB/P3 的颜色沿 Oklab 色度
 方向压回边界，而不是简单逐通道 clip。这样 AgX 或 P3 保下来的高光颜色不会在最后一步突然
 崩成硬原色。
 
-## 保留的前馈实验
-
-这个实验始于“在进入 AgX 之前，先用测量数据补偿相机某些可重复缺陷”的想法。更进一步，
-如果两套传感器与滤镜栈的光谱响应都测得足够清楚，也可以在原相机真正记录到的信息范围内，
-近似另一台相机的部分响应关系。
-
-项目里的 ARRI-like 前馈来自一个主观目标：让 Sigma fp 稍微靠近这个实验预期的 ARRI 肤色，
-也就是血色撑起来的温润感，以及偏冷 cyan 环境带来的衬托。最初的猜想与 ALEV 滤镜栈
-较宽松的红光/近红外响应有关，而 fp/IMX410 本身也有不同的滤镜和洋红行为。
-
-现在这份实现把公开的相机 SSF、光源 SPD 和材料反射谱做光谱积分，对皮肤、植物、cyan、
-中性与洋红等材料类别拟合受约束的 3×3 映射，再用 `(R/G, B/G)` 色度平面上的软窗口限制
-每个映射的作用域。窗口会通过 von Kries 缩放随所选白平衡移动；中性轴约束避免它变成
-隐性白平衡，逐类残差和跨类泄漏则进入置信度。
-
-ALEV III SSF 数字化自 Leonhardt & Brendel 的 CIC23 论文。ARRI 在论文中对五台 ALEXA
-的测量取平均，因为传感器叠层的干涉纹理会随个体变化。Sigma fp 一侧使用 AMPAS
-`rawtoaces-data` 中由 Weta Digital 测量的 Sony A7 III 整机 SSF；它同样基于 IMX410，
-但不能等同于 fp 自己的完整滤镜栈。相机到 Rec.2020 的 profile 使用 AMPAS 的 190 条训练
-反射谱拟合。这里的来源和替代关系都保留在标定文件里，不把“同一块 CMOS”写成“同一台
-相机”。
-
-它有很明确的物理边界：如果两种材料在 fp 上已经成为同色异谱，逐像素矩阵不可能重新创造
-它们在 ALEV 上本应有的区别。而且传感器滤镜栈存在个体差异，严肃标定应该针对实际使用的
-每一台相机。目前缺少可控光源、标准靶和光谱设备，所以现有结果更接近一个克制的几何颜色映射，
-离最初设定的 ARRI 肤色目标仍有距离。数据来源、假设、CSV 和拟合报告放在
-[`dngscan_assets/spectral/`](dngscan_assets/spectral/) 里。
-
-## 风格与 LUT
-
-仓库自带一个本地设计且日常使用的 `optic_warm_cyan`。它是 AgX 之后的 Oklab 色度场，
-不是厂商 LUT，也不冒充相机前馈。
-
-代码还留了 Kodak 2383、RED IPP2 和 Sony LC-709TypeA 的可选 `.cube` 槽位。合法拥有的
-LUT 可以放进 `dngscan_assets/vendor_luts/` 下对应路径，GUI 会自动识别；仓库本身不分发
-这些文件。前馈、AgX 几何和显示端 LUT 分属三个不同位置，效果即使相似，含义也不一样。
-
-## 输出
+## 四层：Delivery — SDR 与 HDR 交付
 
 SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4。抖动发生在量化前，
 用来减轻平滑渐变的断层；它不改变 tone plan。也可以选择 4:2:2 或 4:2:0 来减小文件，
@@ -753,77 +805,44 @@ macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩
 和 [gamut](https://docs.acescentral.com/system-components/output-transforms/technical-details/gamut-compression/)
 compression 说明。它们定义职责边界和参照方法，不会把 dngscan 自己的阈值变成上游常数。
 
-## 快速开始
+## 附：保留的前馈实验
 
-需要 Python 3.10 或更新版本。
+这个实验始于“在进入 AgX 之前，先用测量数据补偿相机某些可重复缺陷”的想法。更进一步，
+如果两套传感器与滤镜栈的光谱响应都测得足够清楚，也可以在原相机真正记录到的信息范围内，
+近似另一台相机的部分响应关系。
 
-```bash
-git clone https://github.com/Gen-416/dngscan.git
-cd dngscan
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m dngscan.gui
-```
+项目里的 ARRI-like 前馈来自一个主观目标：让 Sigma fp 稍微靠近这个实验预期的 ARRI 肤色，
+也就是血色撑起来的温润感，以及偏冷 cyan 环境带来的衬托。最初的猜想与 ALEV 滤镜栈
+较宽松的红光/近红外响应有关，而 fp/IMX410 本身也有不同的滤镜和洋红行为。
 
-打开终端里显示的 localhost 地址即可。GUI 完全在本机运行，不上传 RAW。第一次打开文件会
-解码、分析并建立 1280px 代理；后续预览复用内存与磁盘缓存，正式导出始终重新使用全分辨率
-scene buffer。全分辨率导出放在一次性工作进程中，结束后大数组随进程释放，不长期留在 GUI
-服务里。
+现在这份实现把公开的相机 SSF、光源 SPD 和材料反射谱做光谱积分，对皮肤、植物、cyan、
+中性与洋红等材料类别拟合受约束的 3×3 映射，再用 `(R/G, B/G)` 色度平面上的软窗口限制
+每个映射的作用域。窗口会通过 von Kries 缩放随所选白平衡移动；中性轴约束避免它变成
+隐性白平衡，逐类残差和跨类泄漏则进入置信度。
 
-macOS 缓存默认在 `~/Library/Caches/dngscan/preview-v1`，上限 768 MB，旧条目自动淘汰。
+ALEV III SSF 数字化自 Leonhardt & Brendel 的 CIC23 论文。ARRI 在论文中对五台 ALEXA
+的测量取平均，因为传感器叠层的干涉纹理会随个体变化。Sigma fp 一侧使用 AMPAS
+`rawtoaces-data` 中由 Weta Digital 测量的 Sony A7 III 整机 SSF；它同样基于 IMX410，
+但不能等同于 fp 自己的完整滤镜栈。相机到 Rec.2020 的 profile 使用 AMPAS 的 190 条训练
+反射谱拟合。这里的来源和替代关系都保留在标定文件里，不把“同一块 CMOS”写成“同一台
+相机”。
 
-一个实用起点是 EV 0、`AgX`、`base` 原色、camera WB 和 reconstruct 高光，再根据照片本身
-调整。quality 100 和 4:4:4 是默认输出。
+它有很明确的物理边界：如果两种材料在 fp 上已经成为同色异谱，逐像素矩阵不可能重新创造
+它们在 ALEV 上本应有的区别。而且传感器滤镜栈存在个体差异，严肃标定应该针对实际使用的
+每一台相机。目前缺少可控光源、标准靶和光谱设备，所以现有结果更接近一个克制的几何颜色映射，
+离最初设定的 ARRI 肤色目标仍有距离。数据来源、假设、CSV 和拟合报告放在
+[`dngscan_assets/spectral/`](dngscan_assets/spectral/) 里。
 
-### CLI
+## 附：风格与 LUT
 
-```bash
-# 默认 AgX JPEG
-python -m dngscan photo.dng --jpeg photo.jpg
+仓库自带一个本地设计且日常使用的 `optic_warm_cyan`。它是 AgX 之后的 Oklab 色度场，
+不是厂商 LUT，也不冒充相机前馈。
 
-# 高光重建 + Display P3
-python -m dngscan photo.dng --jpeg photo_p3.jpg \
-  --highlight-mode reconstruct --output-gamut p3
+代码还留了 Kodak 2383、RED IPP2 和 Sony LC-709TypeA 的可选 `.cube` 槽位。合法拥有的
+LUT 可以放进 `dngscan_assets/vendor_luts/` 下对应路径，GUI 会自动识别；仓库本身不分发
+这些文件。前馈、AgX 几何和显示端 LUT 分属三个不同位置，效果即使相似，含义也不一样。
 
-# Apple ISO 21496-1 HDR gain-map JPEG（macOS、Display P3、仅 AgX）
-python -m dngscan photo.dng --jpeg photo_hdr.jpg \
-  --output-format ultrahdr --hdr-headroom 3
-
-# RAW 分析图和 CSV
-python -m dngscan photo.dng --jpeg photo.jpg --scan --csv photo.csv
-
-# 相同 EV 下比较另一条核心
-python -m dngscan photo.dng --jpeg gated.jpg --tone-core gated
-
-# 可选 Core Image scene 缓冲（macOS；证据层仍为 LibRaw）
-python -m dngscan photo.dng --jpeg ci.jpg --decoder coreimage
-python -m dngscan photo.dng --jpeg ci8.jpg --decoder coreimage --coreimage-version 8
-python -m dngscan photo.dng --jpeg ci1.jpg --decoder coreimage --coreimage-scale unity
-
-# 主动使用亮度参考
-python -m dngscan photo.dng --jpeg reference.jpg --ev auto
-```
-
-完整参数见 `python -m dngscan --help`。
-
-### 可选 C++ 加速
-
-NumPy 是参考实现，不编译原生扩展也可以正常使用。pybind11 C++ 内核只加速正常 AgX 的热点
-路径：formation、C1 curve、hue restore 和 punch；RAW 分析、tone plan 与回退策略仍然在
-Python。
-
-```bash
-pip install pybind11 cmake
-tools/build_native.sh
-```
-
-`DNGSCAN_FAST=auto` 为默认值；`0` 强制 NumPy；`1` 要求必须走原生内核并在失败时报错。
-内核释放 GIL，可以与现有的分块导出配合；AgX 热路径实测约 2×。导入时还会检查 ABI 并跑
-自测，当前真实场景的线性差异控制在约 `2e-6`，最终 8-bit 差异不超过一个抖动步长。原生
-内核的职责只是减少导出时间，不改变成像选择。
-
-## RAW 分析图
+## 附：RAW 分析图
 
 `--scan` 输出六面板报告，包括 SNR 对档数、分离的 R/G/B RAW 分布、曝光与色域压力、空间
 曝光区与剪切通道图，并列出逐通道 full-well、clip、black level 和 WB 读数。RAW 分布横轴
