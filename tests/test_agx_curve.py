@@ -182,6 +182,21 @@ class TargetBlackTest(unittest.TestCase):
         self.assertGreater(float(y_full[-1]), float(y_fade[-1]))
         self.assertLess(float(y_fade[-1]), 0.92)
 
+    def test_target_white_accepts_extended_linear_white(self) -> None:
+        p_sdr = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, target_white_linear=1.0)
+        p_hdr = curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, target_white_linear=8.0)
+        self.assertNotEqual(p_sdr, p_hdr)
+        self.assertGreater(float(p_hdr["target_white"]), 1.0)
+
+        x = np.linspace(0.0, 1.0, 4001, dtype=np.float32)
+        y_hdr = apply_curve(x, p_hdr).astype(np.float64) ** float(p_hdr["gamma"])
+        self.assertAlmostEqual(float(y_hdr[-1]), 8.0, places=4)
+        self.assertGreaterEqual(float(np.diff(y_hdr).min()), -1e-6)
+
+    def test_target_white_rejects_nonfinite_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "target_white_linear must be finite"):
+            curve_params(-8.0, 4.0, 3.0, 1.5, 3.3, target_white_linear=float("inf"))
+
 
 class OutsetPresetTest(unittest.TestCase):
     def test_base_preset_matches_default_geometry(self) -> None:

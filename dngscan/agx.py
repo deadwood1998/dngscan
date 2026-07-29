@@ -289,8 +289,16 @@ def _build_curve_params(
     pivot_y = max(EPS, pivot_y_linear) ** (1.0 / gamma)
     target_black = _clamp_float(target_black_linear, 0.0, 0.15) ** (1.0 / gamma) if target_black_linear > 0.0 else 0.0
     # darktable's curve_target_display_white_ratio: <1 makes the shoulder converge to a
-    # faded (sub-display-white) top instead of pure white. Encoded via 1/gamma like black.
-    target_white = _clamp_float(target_white_linear, 0.2, 1.0) ** (1.0 / gamma)
+    # faded (sub-display-white) top instead of pure white. The upstream UI is SDR-bound,
+    # but the curve itself is display-linear and can represent an extended-white target.
+    # Keep the useful lower guard while deliberately avoiding an SDR upper clamp: silently
+    # turning an HDR request such as 8.0 into 1.0 makes the parameter contract false. The
+    # independent HDR compiler now uses this extended endpoint directly, after proving the
+    # resulting shoulder will not enter the accelerating fallback below.
+    target_white_linear = float(target_white_linear)
+    if not math.isfinite(target_white_linear):
+        raise ValueError("target_white_linear must be finite")
+    target_white = max(0.2, target_white_linear) ** (1.0 / gamma)
     range_adjusted_slope = contrast * (range_ev / 16.5)
     # Contrast compensation (darktable): keep the pivot's slope in LINEAR output terms
     # constant when gamma / pivot_y move, so "contrast" means the same thing whether the
@@ -681,6 +689,9 @@ def apply_formation_curve(inset: Any, plan: Any) -> Any:
             round(float(getattr(plan, "pivot_ev_offset", 0.0)), 3),
             round(float(getattr(plan, "target_black_linear", 0.0)), 4),
             round(float(getattr(plan, "target_white_linear", 1.0)), 4),
+            curve_gamma=round(
+                float(getattr(plan, "curve_gamma", DEFAULT_CURVE_GAMMA)), 4
+            ),
         )
         log_encoded = (
             np.log2(np.maximum(inset / 0.18, EPS)) - float(params["black_ev"])

@@ -182,16 +182,16 @@ flowchart TB
 
     subgraph HDR["4B. 独立 HDR AgX 分支 - 仅支持 AgX"]
         direction TB
-        HDRPLAN["编译 HdrAgxPlan<br/>HDR 自有 formation white endpoint<br/>可靠 RAW 尾部 -> knee / window / lift budget<br/>显示容量 + 通道分离权限"]
+        HDRPLAN["编译 HdrAgxPlan<br/>可靠 RAW 尾部 -> 请求扩展白点<br/>求解具有减速肩部的最小 AgX gamma<br/>原生曲线不可行时降低峰值"]
         HRETREAT["HDR 自有 RAW clip retreat"]
-        HINSET["AgX inset + HDR 逐通道 C1 formation"]
-        LIFT["formation 内的 HDR allocation<br/>公共亮度进度 + rho 通道进度<br/>smootherstep 提升，CFA 剪切会局部收回权限"]
+        HINSET["AgX inset<br/>原生扩展白逐通道 C1 formation"]
+        PATH["HDR 色彩几何<br/>reference-white 与原生色度路径混合<br/>CFA 剪切会局部收回 rho<br/>原生曲线始终是唯一 Y 权威"]
         HFINISH["Hue restore + outset + punch"]
         HP3["Rec.2020 -> extended-linear Display P3"]
         HVOLUME["HDR color-volume fit<br/>可靠尾部限制峰值<br/>保持 linear Y 与 RGB opponent direction"]
         ALT["Float16 RGB HDR alternate rendition"]
 
-        HDRPLAN --> HRETREAT --> HINSET --> LIFT --> HFINISH --> HP3 --> HVOLUME --> ALT
+        HDRPLAN --> HRETREAT --> HINSET --> PATH --> HFINISH --> HP3 --> HVOLUME --> ALT
     end
 
     PREFEED --> RETREAT
@@ -204,7 +204,7 @@ flowchart TB
     MASKS -.-> RETREAT
     MASKS -.-> GATED
     MASKS -.-> HRETREAT
-    MASKS -.-> LIFT
+    MASKS -.-> PATH
 
     ENCODE --> FORMAT{"输出格式"}
     FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
@@ -697,18 +697,24 @@ SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4
 HDR 输出是可选的 Apple ISO 21496-1 gain-map JPEG，目前只在 macOS/Core Image 后端
 可用，并且只接 AgX tone core。它不是把 SDR 成片直接放大：同一份 scene-linear
 Rec.2020 在 display formation 前分成 SDR AgX 与 HDR AgX 两条独立 DRT。两者共享拍摄曝光
-意图和 RAW 分析，但 HDR 自己持有 tone plan、色彩几何和扩展 P3 投影，不要求 knee 以下与
-SDR 逐像素一致。
+意图和 RAW 分析，但 HDR 自己持有 tone curve、色彩几何和扩展 P3 投影，不要求任何像素区域
+与 SDR 成片一致。
 
-HDR 可用余量不是用户所选屏幕容量的同义词。屏幕容量只是上限；真正的画面预算由
+HDR 可用余量不是用户所选屏幕容量的同义词。屏幕容量只是上限；初始请求由
 RAW 剪切证据筛过的可靠高光尾部决定。LibRaw 用逐像素 CFA mask，RAW9 则按全分辨率
-剪切 cell 比例从亮度顶部做保守的 rank trim。没有足够 RAW 证据时预算就是 0，导出会明确失败，
-不会用重建高光或 SDR white endpoint 冒充传感器信息。额外亮度在 HDR AgX 的
-inset/per-channel formation 曲线之后、hue restore/outset 之前分配；逐像素 CFA 剪切
-mask 会撤回不可信通道的独立色度路径，最后用保持 Y 的中性轴投影收进扩展 P3
-`[0, peak]` 色彩体积，不做逐通道硬裁。这里保持的是线性 P3 的 opponent direction，不是
-严格的感知色相。ACES 2 在色貌模型 JMh 中完成更强的色相约束；dngscan 当前投影器刻意更
-简单，这也是 HDR 仍需实机标定的边界之一。
+剪切 cell 比例从亮度顶部做保守的 rank trim。没有足够 RAW 证据时 headroom 就是 0，导出会
+明确失败，不会用重建高光或 SDR white endpoint 冒充传感器信息。
+
+这个请求会直接成为 darktable 式 AgX C1 solver 的扩展 display-linear 白点。编译器只把内部
+curve gamma 提高到形成真正减速 sigmoid shoulder 所需的最小值；如果目标白点会迫使通用
+solver 进入 `power < 1` 的加速 fallback，就降低实际白点。管线里不再有曲线后的
+smootherstep gain、knee、allocation window 或 lift-rate 启发式。
+
+原生 HDR 曲线是唯一亮度权威。`rho` 只在 reference-white AgX 色度路径和扩展白原生路径之间
+混合，两条路径先对齐到原生曲线决定的同一 Y；逐像素 CFA 剪切 mask 会从不可信通道撤回原生
+路径。最后用保持 Y 的中性轴投影收进扩展 P3 `[0, peak]` 色彩体积，不做逐通道硬裁。这里保持
+的是线性 P3 的 opponent direction，不是严格的感知色相。ACES 2 在色貌模型 JMh 中完成更强
+的色相约束；dngscan 当前投影器刻意更简单，这也是 HDR 仍需实机标定的边界之一。
 
 Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每个文件写完后
 都会重新展开 HDR 像素，检查 P3 profile、4:4:4、RGB 辅助图、声明 headroom 与全图
@@ -718,20 +724,20 @@ Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每
 
 ### HDR 对比
 
-下面是 SDR 诊断图，不是 HDR 屏幕截图。下排 HDR 面板会按实测 headroom 主动降曝光，把
-reference white 以上的细节压回普通网页可显示的范围，所以它理应比上排 SDR 更暗。
+下面是 SDR 诊断图，不是 HDR 屏幕截图。每张依次是 SDR、按实测 headroom 降曝光后的原生
+HDR，以及 curve expansion map。中间面板把 reference white 以上的细节压回普通网页范围，
+所以理应更暗。
 
-| RAW9 / LibRaw，日间 | RAW9 / LibRaw，室内灯光 |
+| 混合光室内人像 | 舞台高光 |
 |---|---|
-| ![RAW9 与 LibRaw 的 SDR/HDR AgX 日间对比](docs/assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg) | ![RAW9 与 LibRaw 的 SDR/HDR AgX 室内对比](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg) |
+| ![原生扩展白 HDR AgX 混合光诊断](docs/assets/hdr-comparisons/_SDI0150_native_hdr_ab.jpg) | ![原生扩展白 HDR AgX 舞台灯诊断](docs/assets/hdr-comparisons/_SDI0199_native_hdr_ab.jpg) |
 
-| RAW9 AgX / neutral，日间 | RAW9 AgX / neutral，室内灯光 |
-|---|---|
-| ![RAW9 AgX 与 neutral 的 SDR/HDR 日间对比](docs/assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg) | ![RAW9 AgX 与 neutral 的 SDR/HDR 室内对比](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg) |
+![原生扩展白 HDR AgX 餐厅高光诊断](docs/assets/hdr-comparisons/_SDI0133_native_hdr_ab.jpg)
 
-[完整对比页](docs/HDR_COMPARISONS.md)包含 12 张图和当时记录的 metrics。Core Image/ISO
-在 macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩参数的 EDR 样张标定
-仍需要真机完成。
+[早期对比页](docs/HDR_COMPARISONS.md)保留使用已删除 smootherstep allocator 时做的
+RAW9/LibRaw 与 AgX/neutral 实验，作为开发记录，不再是当前像素参考。Core Image/ISO 在
+macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩参数的 EDR 样张标定仍
+需要真机完成。
 
 这次 HDR 边界核对使用了 Apple 的 [Adaptive HDR 与 Core Image
 流程](https://developer.apple.com/videos/play/wwdc2024/10177/)、Android 的

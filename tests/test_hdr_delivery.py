@@ -161,7 +161,7 @@ class EndToEndDeliveryTests(unittest.TestCase):
             self.assertLessEqual(info["base_max_code_error"], 12.0)
             # Declared headroom must not exceed what the scene was allowed.
             self.assertLessEqual(
-                float(np.log2(probe["headroom"])), info["budget_headroom_ev"] + 1e-3
+                float(np.log2(probe["headroom"])), info["rendered_headroom_ev"] + 1e-3
             )
 
     def test_sdr_base_is_the_same_rendition_as_a_plain_export(self) -> None:

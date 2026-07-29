@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""HDR colour geometry: how much of the extra range each channel spends on its own.
+"""HDR colour geometry around the native extended-white AgX formation.
 
-Two failure modes bound the problem. A purely common lift keeps the HDR base formation's
-path-to-white exactly, so extra range buys brightness but no additional highlight colour.
-Letting the three channels expand independently produces neon highlights,
-because a channel with a high scene EV runs away from its neighbours. `rho` is the
-continuous geometry between them:
+The HDR curve is the sole brightness authority. Colour is chosen between two formations
+of the same inset RGB: a reference-white AgX response supplies the conservative common
+chroma path, while the extended-white AgX response supplies the native per-channel path.
+Both candidates are aligned to the extended response's luminance before `rho` mixes them:
 
-    w_mix = (1-rho)*w_Y + rho*w_c
-    p     = f * 2**(H_budget * w_mix)
+    common = reference * Y_native / Y_reference
+    result = normalize_Y((1-rho)*common + rho*native, Y_native)
 
-The result is renormalised back onto the common luminance target, so `rho`
-changes only chromaticity and never brightness. That renormalisation is what makes `rho`
-a colour control rather than a second, hidden tone control.
+No smootherstep or second tone gain remains. `rho` changes only chromaticity, CFA masks
+can withdraw per-channel freedom, and the native HDR curve always owns luminance.
 
 The gamut fit is a separate function from the SDR one on purpose. The SDR fitter targets
 [0,1]; an HDR rendition legitimately lives in [0, R_display], and reusing the SDR fitter
@@ -24,7 +22,6 @@ from typing import Any
 
 from ._deps import np
 from .constants import REC2020_LUMA, RGB_TO_XYZ
-from .hdr_agx_math import smootherstep
 
 _EPS = np.float32(1e-6)
 
@@ -78,89 +75,49 @@ def raw_gated_channel_separation(rho: float, clip_masks_rgb: Any | None) -> Any:
     return base * channel_permission * multi_permission[..., None]
 
 
-def channel_lift_weights(
-    scene_rec2020: Any,
-    knee_ev: float,
-    white_ev: float,
-    rho: Any,
-    channel_scene_rgb: Any | None = None,
-) -> Any:
-    """Per-channel smootherstep weight, mixed with the common luminance one by `rho`.
-
-    Scene luminance is read from Rec.2020 before any inset, as the design requires: if the
-    rendering primaries fed back into this, changing a colour preset would silently change
-    a tone decision.
-    """
-    rgb = np.asarray(scene_rec2020, dtype=np.float32)
-    window = float(white_ev) - float(knee_ev)
-    if window <= 0.0:
-        return np.zeros_like(rgb)
-
-    luma = (
-        rgb[..., 0] * np.float32(REC2020_LUMA[0])
-        + rgb[..., 1] * np.float32(REC2020_LUMA[1])
-        + rgb[..., 2] * np.float32(REC2020_LUMA[2])
-    )
-    ev_y = np.log2(np.maximum(luma, _EPS) / np.float32(0.18))
-    w_y = smootherstep((ev_y - knee_ev) / window).astype(np.float32)
-    r = np.asarray(rho, dtype=np.float32)
-    if r.ndim == 0 and float(r) <= 0.0:
-        return np.repeat(w_y[..., None], 3, axis=-1)
-
-    channels = rgb if channel_scene_rgb is None else np.asarray(channel_scene_rgb, dtype=np.float32)
-    ev_c = np.log2(np.maximum(channels, _EPS) / np.float32(0.18))
-    w_c = smootherstep((ev_c - knee_ev) / window).astype(np.float32)
-    if r.ndim > 0 and r.shape == w_y.shape:
-        r = r[..., None]
-    r = np.clip(r, 0.0, 1.0)
-    # HDR owns its colour formation, so a bright channel may enter its shoulder before the
-    # common luminance does. This is intentional: forcing w_Y=0 to freeze every channel
-    # would reintroduce the discarded requirement that HDR equal SDR below one scalar knee.
-    common = w_y[..., None]
-    return (np.float32(1.0) - r) * common + r * w_c
-
-
-def apply_channel_lift(
-    formation_rgb: Any,
-    scene_rec2020: Any,
-    knee_ev: float,
-    white_ev: float,
-    budget_ev: float,
+def blend_native_hdr_paths(
+    reference_formation_rgb: Any,
+    native_formation_rgb: Any,
     rho: Any,
     luma_weights: Any,
-    channel_scene_rgb: Any | None = None,
 ) -> Any:
-    """Lift per channel, then restore the common luminance target.
+    """Mix conservative and native HDR chroma paths at one authoritative luminance.
 
-    Without the second step `rho` would also brighten, and every colour A/B would be
-    confounded by a tone change. With it, the identities the design asks for hold exactly:
-    a zero budget is the HDR base formation, and `rho = 0` leaves the renormalisation at
-    exactly 1 because the proposal already equals the target.
+    ``reference`` and ``native`` are both HDR-branch calculations from the same inset
+    scene RGB. The former uses a 1.0 endpoint only to define path-to-white chromaticity;
+    it never contributes a tone target. The latter uses the solved extended endpoint and
+    defines Y. Scalar or CFA-gated per-channel rho is allowed; the final normalization
+    prevents either form from becoming an implicit brightness control.
     """
-    f = np.asarray(formation_rgb, dtype=np.float32)
-    if float(budget_ev) <= 0.0:
-        return f
-
-    weights = channel_lift_weights(
-        scene_rec2020, knee_ev, white_ev, rho, channel_scene_rgb=channel_scene_rgb
-    )
-    proposal = f * np.exp2(np.float32(budget_ev) * weights)
-    if bool(np.all(np.asarray(rho, dtype=np.float32) <= 0.0)):
-        return proposal
+    reference = np.asarray(reference_formation_rgb, dtype=np.float32)
+    native = np.asarray(native_formation_rgb, dtype=np.float32)
+    if reference.shape != native.shape:
+        raise ValueError("reference and native HDR formation shapes must match")
+    if bool(np.array_equal(reference, native)):
+        return native
 
     w = np.asarray(luma_weights, dtype=np.float32)
-    y0 = np.tensordot(f, w, axes=([-1], [0]))
-    # The common-lift weight is the rho=0 column of the mix, recovered without a second
-    # smootherstep evaluation.
-    w_y = channel_lift_weights(scene_rec2020, knee_ev, white_ev, 0.0)[..., 0]
-    y_target = y0 * np.exp2(np.float32(budget_ev) * w_y)
-    y_prop = np.tensordot(proposal, w, axes=([-1], [0]))
-    scale = y_target / np.maximum(y_prop, _EPS)
-    lifted = proposal * scale[..., None]
-    # Where both common and channel paths are inactive, avoid sending an identity proposal
-    # through a luminance divide: y/y can round away from one and very dark y is clamped.
-    inactive = np.all(weights == np.float32(0.0), axis=-1)
-    return np.where(inactive[..., None], f, lifted)
+    y_native = np.tensordot(native, w, axes=([-1], [0]))
+    y_reference = np.tensordot(reference, w, axes=([-1], [0]))
+    valid_reference = y_reference > _EPS
+    common_scale = y_native / np.maximum(y_reference, _EPS)
+    common = reference * common_scale[..., None]
+    common = np.where(valid_reference[..., None], common, native)
+
+    r = np.clip(np.asarray(rho, dtype=np.float32), 0.0, 1.0)
+    if r.ndim > 0 and r.shape == y_native.shape:
+        r = r[..., None]
+    if bool(np.all(r <= 0.0)):
+        return common.astype(np.float32, copy=False)
+    if bool(np.all(r >= 1.0)):
+        return native
+
+    proposal = (np.float32(1.0) - r) * common + r * native
+    y_proposal = np.tensordot(proposal, w, axes=([-1], [0]))
+    scale = y_native / np.maximum(y_proposal, _EPS)
+    mixed = proposal * scale[..., None]
+    valid = (y_native > _EPS) & (y_proposal > _EPS)
+    return np.where(valid[..., None], mixed, native).astype(np.float32, copy=False)
 
 
 def neutral_axis_lambda(rgb: Any, peak: float, luma_weights: Any) -> Any:

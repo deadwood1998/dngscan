@@ -9,8 +9,7 @@ import numpy as np
 from dngscan.agx import formation_matrices
 from dngscan.constants import REC2020_LUMA, RGB_TO_XYZ
 from dngscan.hdr_color import (
-    apply_channel_lift,
-    channel_lift_weights,
+    blend_native_hdr_paths,
     fit_hdr_color_volume,
     neutral_axis_lambda,
     output_luma_weights,
@@ -18,13 +17,7 @@ from dngscan.hdr_color import (
     raw_gated_channel_separation,
 )
 
-KNEE, WHITE, BUDGET = 2.4739311883324122, 6.5, 3.0
 P3_LUMA = output_luma_weights("p3")
-
-
-def _scene(n: int = 40000, seed: int = 3) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    return rng.uniform(0.001, 20.0, size=(n, 3)).astype(np.float32)
 
 
 def _formation(n: int = 40000, seed: int = 4) -> np.ndarray:
@@ -32,68 +25,59 @@ def _formation(n: int = 40000, seed: int = 4) -> np.ndarray:
     return rng.uniform(0.0, 1.0, size=(n, 3)).astype(np.float32)
 
 
-class ChannelLiftIdentityTests(unittest.TestCase):
+class NativePathBlendTests(unittest.TestCase):
     """Tone/color separation identities of the independent HDR formation."""
 
-    def test_zero_budget_returns_the_formation_untouched(self) -> None:
-        f, s = _formation(), _scene()
+    def test_equal_paths_are_bit_identical_at_every_rho(self) -> None:
+        f = _formation()
         for rho in (0.0, 0.5, 1.0):
             with self.subTest(rho=rho):
-                out = apply_channel_lift(f, s, KNEE, WHITE, 0.0, rho, P3_LUMA)
+                out = blend_native_hdr_paths(f, f, rho, P3_LUMA)
                 self.assertTrue(bool(np.array_equal(out, f)))
 
-    def test_rho_zero_needs_no_renormalisation(self) -> None:
-        """At rho = 0 the proposal already is the target, so the factor is exactly 1."""
-        f, s = _formation(), _scene()
-        weights = channel_lift_weights(s, KNEE, WHITE, 0.0)
-        expected = f * np.exp2(np.float32(BUDGET) * weights)
-        out = apply_channel_lift(f, s, KNEE, WHITE, BUDGET, 0.0, P3_LUMA)
-        self.assertTrue(bool(np.array_equal(out, expected)))
+    def test_rho_zero_uses_reference_chromaticity_at_native_luminance(self) -> None:
+        reference = np.asarray([[0.30, 0.10, 0.10]], dtype=np.float32)
+        native = np.asarray([[1.20, 0.20, 0.10]], dtype=np.float32)
+        out = blend_native_hdr_paths(reference, native, 0.0, P3_LUMA)
+        np.testing.assert_allclose(out @ P3_LUMA, native @ P3_LUMA, atol=2e-7, rtol=0.0)
+        ref_ratio = reference[0] / reference[0, 1]
+        out_ratio = out[0] / out[0, 1]
+        np.testing.assert_allclose(out_ratio, ref_ratio, atol=2e-6, rtol=0.0)
 
-    def test_bright_channel_can_take_an_independent_path_below_luma_knee(self) -> None:
-        # Luminance is below the common knee while red itself is well above it. An HDR DRT
-        # may change chroma here; forcing identity would make SDR's scalar knee authoritative
-        # over the independent HDR colour formation.
-        scene = np.repeat(np.array([[3.0, 0.05, 0.05]], dtype=np.float32), 2000, axis=0)
-        formation = np.repeat(np.array([[0.30, 0.10, 0.10]], dtype=np.float32), 2000, axis=0)
-        common = channel_lift_weights(scene, KNEE, WHITE, 0.0)
-        separated = channel_lift_weights(scene, KNEE, WHITE, 0.5)
-        self.assertTrue(bool(np.all(common == 0.0)))
-        self.assertGreater(float(separated[:, 0].max()), 0.0)
-
-        out = apply_channel_lift(formation, scene, KNEE, WHITE, BUDGET, 0.5, P3_LUMA)
-        self.assertFalse(bool(np.array_equal(out, formation)))
-        np.testing.assert_allclose(out @ P3_LUMA, formation @ P3_LUMA, atol=2e-7, rtol=0.0)
+    def test_rho_one_returns_native_path_exactly(self) -> None:
+        reference, native = _formation(seed=2), _formation(seed=8) * np.float32(3.0)
+        out = blend_native_hdr_paths(reference, native, 1.0, P3_LUMA)
+        self.assertTrue(bool(np.array_equal(out, native)))
 
     def test_rho_does_not_move_luminance(self) -> None:
         """The whole point: rho is a colour control, not a second tone control."""
-        f, s = _formation(), _scene()
-        base = apply_channel_lift(f, s, KNEE, WHITE, BUDGET, 0.0, P3_LUMA) @ P3_LUMA
+        reference, native = _formation(seed=2), _formation(seed=8) * np.float32(3.0)
+        target = native @ P3_LUMA
         for rho in (0.25, 0.5, 0.75, 1.0):
             with self.subTest(rho=rho):
-                y = apply_channel_lift(f, s, KNEE, WHITE, BUDGET, rho, P3_LUMA) @ P3_LUMA
-                rel = np.abs(y - base) / np.maximum(base, 1e-4)
+                y = blend_native_hdr_paths(reference, native, rho, P3_LUMA) @ P3_LUMA
+                rel = np.abs(y - target) / np.maximum(target, 1e-4)
                 self.assertLess(float(np.median(rel)), 1e-6)
                 self.assertLess(float(np.max(rel)), 1e-2)
 
     def test_neutral_input_stays_neutral_at_every_rho(self) -> None:
-        scene = np.repeat(np.linspace(0.01, 20.0, 2000, dtype=np.float32)[:, None], 3, axis=1)
-        form = np.repeat(np.linspace(0.01, 1.0, 2000, dtype=np.float32)[:, None], 3, axis=1)
+        reference = np.repeat(np.linspace(0.01, 1.0, 2000, dtype=np.float32)[:, None], 3, axis=1)
+        native = np.repeat(np.linspace(0.01, 4.0, 2000, dtype=np.float32)[:, None], 3, axis=1)
         for rho in (0.0, 0.5, 1.0):
             with self.subTest(rho=rho):
-                out = apply_channel_lift(form, scene, KNEE, WHITE, BUDGET, rho, P3_LUMA)
+                out = blend_native_hdr_paths(reference, native, rho, P3_LUMA)
                 self.assertEqual(float(np.max(out.max(1) - out.min(1))), 0.0)
 
-    def test_higher_rho_keeps_more_highlight_chroma(self) -> None:
+    def test_higher_rho_moves_toward_native_highlight_chroma(self) -> None:
         """Otherwise rho would be an inert parameter that only looks like a control."""
         rng = np.random.default_rng(11)
-        # Saturated scene highlights: the case a common lift washes out.
-        scene = rng.uniform(4.0, 40.0, size=(20000, 3)).astype(np.float32)
-        scene[:, 2] *= 0.15
-        form = np.clip(scene / 60.0, 0.0, 1.0).astype(np.float32)
+        reference = rng.uniform(0.2, 0.8, size=(20000, 3)).astype(np.float32)
+        reference = reference * np.float32(0.35) + np.mean(reference, axis=1, keepdims=True) * np.float32(0.65)
+        native = rng.uniform(0.2, 4.0, size=(20000, 3)).astype(np.float32)
+        native[:, 2] *= np.float32(0.15)
         sats = []
         for rho in (0.0, 0.5, 1.0):
-            out = apply_channel_lift(form, scene, KNEE, WHITE, BUDGET, rho, P3_LUMA)
+            out = blend_native_hdr_paths(reference, native, rho, P3_LUMA)
             hi, lo = out.max(1), out.min(1)
             sats.append(float(np.median((hi - lo) / np.maximum(hi, 1e-6))))
         self.assertLess(sats[0], sats[1])
@@ -104,14 +88,6 @@ class ChannelLiftIdentityTests(unittest.TestCase):
         rho = raw_gated_channel_separation(0.5, masks)
         np.testing.assert_allclose(rho[0], [0.25, 0.5, 0.5], atol=0.0, rtol=0.0)
         np.testing.assert_allclose(rho[1], [0.0, 0.0, 0.0], atol=0.0, rtol=0.0)
-
-    def test_channel_ev_can_be_measured_in_inset_space(self) -> None:
-        scene = np.full((1, 3), 2.0, dtype=np.float32)
-        inset = np.array([[8.0, 0.5, 0.5]], dtype=np.float32)
-        direct = channel_lift_weights(scene, KNEE, WHITE, 1.0)
-        formed = channel_lift_weights(scene, KNEE, WHITE, 1.0, channel_scene_rgb=inset)
-        self.assertFalse(bool(np.array_equal(direct, formed)))
-        self.assertGreater(float(formed[0, 0]), float(formed[0, 1]))
 
     def test_formation_luma_uses_the_actual_outset_not_inverse_inset(self) -> None:
         class Plan:

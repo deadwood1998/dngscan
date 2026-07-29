@@ -125,6 +125,15 @@ class LookOverrideC1InteractionTest(unittest.TestCase):
         self.assertGreater(float(full[-1]), float(milky[-1]))
         self.assertLess(float(milky[-1]), 0.92)
 
+    def test_target_white_extends_c1_endpoint_above_sdr_white(self) -> None:
+        plan = _plan()
+        extended = ToneCompressionPlan(**{**plan.__dict__, "target_white_linear": 8.0})
+        white_ev = np.asarray([plan.white_ev], dtype=np.float32)
+        sdr = apply_c1_endpoints(white_ev, plan)
+        hdr = apply_c1_endpoints(white_ev, extended)
+        self.assertAlmostEqual(float(sdr[0]), 1.0, places=5)
+        self.assertAlmostEqual(float(hdr[0]), 8.0, places=4)
+
     def test_hue_restore_override_changes_agx_core_output(self) -> None:
         from dngscan.agx import AGX_INSET_REC2020, AGX_OUTSET_REC2020, apply_core
 

@@ -69,7 +69,7 @@ def export_ultrahdr_jpeg(
 
     Both renditions come from the same scene-linear buffer, then enter independent SDR and
     HDR display formations. The gain map is only their delivery representation; it does
-    not constrain the HDR rendition to match SDR below a knee. A viewer that ignores it
+    not constrain any HDR pixel region to match SDR. A viewer that ignores it
     still sees the existing SDR photograph.
 
     That base is the same *rendition* as an ordinary SDR export -- the identical
@@ -118,7 +118,7 @@ def export_ultrahdr_jpeg(
         hdr_plan = compile_hdr_agx_plan(
             plan, target, analysis=analysis, scene_decoder=str(bundle.scene_decoder)
         )
-        if hdr_plan.tone.budget_headroom_ev <= 0.0:
+        if hdr_plan.tone.rendered_headroom_ev <= 0.0:
             raise RuntimeError(
                 "该场景的可靠高光尾部不支持任何 HDR 余量："
                 f"{describe_hdr_plan(hdr_plan)}。请改用 --output-format sdr"
@@ -142,8 +142,17 @@ def export_ultrahdr_jpeg(
             hdr_plan.tone.display_headroom_ev,
         )
         info["hdr_plan"] = describe_hdr_plan(hdr_plan)
-        info["budget_headroom_ev"] = float(hdr_plan.tone.budget_headroom_ev)
+        # All four headrooms, never one standing in for another: capacity, what the RAW
+        # tail earned, what the compiled shoulder carries, and what pixels reached.
+        info["display_headroom_ev"] = float(hdr_plan.tone.display_headroom_ev)
+        info["requested_headroom_ev"] = float(hdr_plan.tone.requested_headroom_ev)
+        info["rendered_headroom_ev"] = float(hdr_plan.tone.rendered_headroom_ev)
         info["actual_headroom_ev"] = float(actual)
+        info["reliable_tail_ev"] = float(hdr_plan.tone.reliable_tail_ev)
+        info["shoulder_start_ev"] = float(hdr_plan.tone.shoulder_start_ev)
+        info["hdr_white_ev"] = float(hdr_plan.tone.white_ev)
+        info["shoulder_alpha"] = float(hdr_plan.tone.shoulder_alpha)
+        info["shoulder_segments"] = len(hdr_plan.tone.shoulder_segments)
         info["channel_separation"] = float(hdr_plan.color.channel_separation)
         return info
     except RuntimeError:

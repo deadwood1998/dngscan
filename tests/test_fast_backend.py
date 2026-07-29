@@ -104,6 +104,14 @@ class NativeAgxParityTests(unittest.TestCase):
             out = apply_agx_core(rgb, plan)
             np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5)
 
+    def test_extended_target_white_matches_reference(self) -> None:
+        plan = _sample_plan(target_white_linear=8.0)
+        rgb = np.asarray([[0.18, 0.18, 0.18], [8.0, 4.0, 1.0]], dtype=np.float32)
+        ref = _reference_agx_core(rgb, plan)
+        out = apply_agx_core(rgb, plan)
+        self.assertGreater(float(np.max(ref)), 1.0)
+        np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5)
+
     def test_fast_does_not_mutate_input(self) -> None:
         plan = _sample_plan()
         rgb = np.asarray([[0.2, 0.3, 0.4]], dtype=np.float32)

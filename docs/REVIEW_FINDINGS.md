@@ -1,59 +1,44 @@
-# Review findings — HDR AgX pipeline
+# Review findings - HDR AgX pipeline
 
-Reviewed at `538e790`, 306 tests passing. Nothing here blocks the pipeline; it is a
-record of gaps between what the design document specifies and what the code does, so a
-later reader does not have to rediscover them.
+Reviewed after the native extended-white curve migration on 2026-07-29. No item below
+invalidates the mathematical tone path; these are the remaining calibration and delivery
+boundaries.
 
-## 1. Delivery tolerances were fitted to the implementation, not to the design
+## 1. Delivery tolerances are engineering gates
 
-The most substantive finding. Measured on `_SDI0150` at half size, the shipped gates in
-`gainmap.py` sit just above the errors the implementation actually produces:
+The ISO gain-map file is a lossy JPEG base plus a lossy auxiliary rendition. Current
+whole-frame round-trip gates (median 1.5%, p95 8%, p99 12%) were calibrated against the
+macOS Core Image writer at quality 100. They are regression limits, not a lossless claim
+or constants from ISO 21496-1. A successful write still requires the per-file readback.
 
-| metric | measured | shipped gate | design §15.4 |
-| --- | --- | --- | --- |
-| HDR round-trip, median relative | 0.0124 | 0.015 | **0.005** |
-| HDR round-trip, p99 relative | 0.0616 | 0.12 | **0.02** |
-| SDR base, max code error | 7 | 12 | **pixel-identical** |
-| declared headroom error | 0.000 EV | 0.05 | 0.05 ✓ |
+Cross-platform interpretation by Android, Chrome, Quick Look versions other than the test
+host, and social-platform transcodes remains a real device test. Local Core Image success
+does not prove that interoperability.
 
-Every gate passes, but two of them pass because they were set to pass. The design
-document's own constant ledger (§4.1) names this exact anti-pattern: "不得把'测试能通过的
-误差范围'反写成 DRT 参数". The headroom gate is the one that was genuinely met.
+## 2. Tone endpoint boundary
 
-Note also that §15.4's "SDR-only decode is pixel-identical to the input rendition" is not
-achievable through a lossy JPEG base at all. The requirement and the implementation
-conflict, and the conflict was resolved silently in favour of the implementation. One of
-the two has to change: either the document admits a code-value budget for JPEG, or the
-base is stored losslessly.
+The native HDR compiler now refuses the generic AgX `power < 1` accelerating shoulder and
+reduces target white when necessary. Internal toe/latitude/shoulder joins are C1. The
+finite white-EV input clamp is not a zero-derivative endpoint, however; reliable-tail
+margins keep trustworthy pixels away from that boundary. A future true zero-slope endpoint
+would require a different sigmoid boundary solve, not another post-curve gain layer.
 
-## 2. Smaller items
+## 3. Colour calibration boundaries
 
-- `hdr_color.py:154` — the comment says the common-lift weight is "recovered without a
-  second smootherstep evaluation", but the line below it calls `channel_lift_weights`
-  again, which evaluates smootherstep on `ev_y`. The code is correct; the comment
-  describes an optimisation that is not there.
-- `hdr_agx_math.py:32` — imports `DIFFUSE_WHITE_EV` from constants without using it. It
-  exists only so `test_hdr_agx_math.py` can import it from this module. That is an
-  undeclared re-export; the test should read it from `constants` directly.
-- `HdrColorGeometry.snr_gate` is hard-wired to 1.0 and multiplied into rho in
-  `hdr_agx.py:139`, so it is a documented no-op. The reason is sound (SNR is only
-  measured when `diagnostics=True`, and a render must not depend on a diagnostic flag),
-  but the field currently reads as live configuration.
-- Design §6.3(4) still states monotonicity in the log-derivative form `TH'/TH = T0'/T0 +
-  ...`, which divides by `T0` and invents a singularity at the black end. The
-  implementation uses the product rule and is correct; the document was not updated.
+`HdrColorGeometry.snr_gate` remains fixed at 1.0. Production rendering must not change
+according to whether diagnostics were requested, and a production-path per-channel tail
+SNR metric does not exist yet.
 
-## 3. Verified as sound
+The extended-P3 projector preserves linear Y and an RGB opponent direction. It is not a
+perceptual JMh hue compressor. `rho_base`, RAW9's aggregate-confidence cap, and HDR-specific
+outset geometry still need a broader EDR corpus.
 
-Checked directly rather than assumed:
+## 4. Verified in this migration
 
-- `rho` does not change luminance: relative deviation 1.5e-07 to 2.0e-07 across
-  rho = 0.25 / 0.5 / 1.0, i.e. float32 noise.
-- `rho = 0` returns the common-lift result exactly, and a zero budget returns the input
-  array exactly.
-- The HDR gamut projector holds its stated guarantees: output within [0, peak], neutral
-  input stays neutral, and Y drifts by at most 2.2e-07 where Y is in range.
-- The delivered container is a genuine three-channel gain map
-  (`444YpCbCr8BiPlanarFullRange`), not the single-channel L008 the writer rejects. A
-  `BytesPerRow` of 4096 against a width of 4042 looks like one byte per pixel but is the
-  first plane of a biplanar format.
+- SDR golden and byte-freeze fixtures are unchanged.
+- Native HDR curves remain monotone, preserve EV0 at 0.18, reach their solved endpoints,
+  and never enter the accelerating fallback.
+- `rho` changes chromaticity without changing the native curve's formation luminance.
+- Extended-P3 projection remains bounded and preserves Y where the target volume permits.
+- Core Image live tests pass outside the filesystem sandbox.
+- Apple ISO gain-map writer and readback tests pass with the new HDR pixels.

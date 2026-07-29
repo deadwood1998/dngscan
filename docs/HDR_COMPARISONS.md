@@ -1,5 +1,11 @@
 # HDR comparison gallery / HDR 对比页
 
+> Archived development record: these sheets use the retired post-curve smootherstep HDR
+> allocator and are not a pixel reference for the current native extended-white solver.
+>
+> 归档开发记录：这些图使用已经删除的曲线后 smootherstep HDR allocator，不代表当前原生
+> 扩展白 solver 的像素输出。
+
 These sheets were generated from three iPhone 16 Pro Standard RAW frames and three Sigma
 fp DNG frames on 2026-07-28. They are diagnostics for the rendition pipeline, not a way to
 judge peak brightness on an SDR browser.

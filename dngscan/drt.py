@@ -35,6 +35,7 @@ def curve_params_from_plan(plan: Any) -> dict[str, float | bool]:
         target_black_linear=float(getattr(plan, "target_black_linear", 0.0)),
         target_white_linear=float(getattr(plan, "target_white_linear", 1.0)),
         keep_pivot_diagonal=abs(pivot) > 1e-6,
+        curve_gamma=float(getattr(plan, "curve_gamma", agx.DEFAULT_CURVE_GAMMA)),
     )
 
 

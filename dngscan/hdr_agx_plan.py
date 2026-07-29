@@ -16,19 +16,20 @@ import math
 from dataclasses import replace
 
 from ._deps import np
+from .constants import DARKTABLE_BASE_GAMMA, OUTPUT_REFERENCE_WHITE_STOPS
 from .hdr_agx_math import (
-    DIFFUSE_WHITE_EV,
-    MAX_LIFT_RATE,
-    MINIMUM_WINDOW_EV,
-    SMOOTHERSTEP_PEAK_SLOPE,
-    compile_budget,
+    body_anchor_from_curve,
+    compile_hdr_shoulder,
+    requested_headroom_ev,
+    validate_hdr_shoulder,
 )
 from .models import (
     Analysis,
     HdrAgxPlan,
     HdrColorGeometry,
     HdrDisplayTarget,
-    HdrToneAllocation,
+    HdrShoulderSegment,
+    HdrToneCurve,
     RenderPlan,
 )
 
@@ -64,6 +65,12 @@ SPARSE_EMITTER_WHITE_MARGIN_EV = 0.50
 NORMAL_MINIMUM_WHITE_EV = 3.00
 SPARSE_EMITTER_MINIMUM_WHITE_EV = 3.50
 MAXIMUM_WHITE_EV = 8.50
+# Where the HDR shoulder leaves the darktable body, in scene EV above mid gray. A small
+# positive value keeps ordinary bright subject matter on the body's own contrast; sparse
+# emitters start at the pivot because their highlights are the subject. Both are project
+# latitude policy awaiting corpus calibration, not values defined by darktable or AgX.
+NORMAL_SHOULDER_START_EV = 0.20
+SPARSE_EMITTER_SHOULDER_START_EV = 0.00
 
 
 def compile_channel_separation(
@@ -128,18 +135,9 @@ def compile_hdr_agx_plan(
     target: HdrDisplayTarget | None = None,
     analysis: Analysis | None = None,
     scene_decoder: str = "libraw",
-    knee_ev: float | None = None,
-    minimum_window_ev: float = MINIMUM_WINDOW_EV,
-    max_lift_rate: float = MAX_LIFT_RATE,
 ) -> HdrAgxPlan:
-    """Decide how many extra stops this photograph justifies, and where they go.
-
-    The knee defaults to diffuse white, so HDR range opens above the point where a white
-    object is already white rather than lifting the subject. It only marks where the extra
-    range *begins*; nothing forces an actual white object to land at 1.0.
-    """
+    """Compile scene-earned headroom into an independent native HDR AgX curve."""
     display = target if target is not None else HdrDisplayTarget()
-    knee = float(DIFFUSE_WHITE_EV if knee_ev is None else knee_ev)
     tail = reliable_tail_ev(scene_plan)
     scene = getattr(scene_plan, "scene", None)
     sparse = bool(getattr(scene, "sparse_emitter_tail", False))
@@ -157,23 +155,68 @@ def compile_hdr_agx_plan(
         else minimum_white
     )
     headroom = float(display.display_headroom_ev)
+    requested = requested_headroom_ev(tail, headroom)
+    knee = SPARSE_EMITTER_SHOULDER_START_EV if sparse else NORMAL_SHOULDER_START_EV
+    contrast = float(scene_plan.tone.contrast)
 
-    budget = compile_budget(
-        reliable_tail_ev=tail,
-        knee_ev=knee,
+    # The shoulder is the only part of the curve headroom may touch, so the body is built
+    # first and never revisited. HDR keeps a fixed pivot: a movable one would have to be
+    # solved jointly with the shoulder anchors, and inheriting an SDR offset would move
+    # the EV=0 output the whole coordinate system is anchored on.
+    formation = replace(
+        scene_plan.tone,
+        tone_core="agx",
         white_ev=white,
-        display_headroom_ev=headroom,
-        minimum_window_ev=minimum_window_ev,
-        max_rate=max_lift_rate,
+        dynamic_range_ev=white - float(scene_plan.tone.black_ev),
+        pivot_ev_offset=0.0,
+        curve_gamma=DARKTABLE_BASE_GAMMA,
+        target_white_linear=1.0,
     )
 
-    tone = HdrToneAllocation(
-        knee_ev=knee,
+    peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + requested
+    # Anchor on the body that will actually render. K lands at or just past the darktable
+    # curve's own shoulder transition on real plans, so the central-line closed form would
+    # make the C1 join approximate rather than exact.
+    from .drt import apply_c1_endpoints
+
+    def _body(ev: float) -> float:
+        return float(apply_c1_endpoints(np.asarray([ev], dtype=np.float32), formation)[0])
+
+    segments = (
+        compile_hdr_shoulder(knee, white, peak_stops, contrast, evaluate_body=_body)
+        if requested > 0.0
+        else ()
+    )
+    _, _, knee_slope = body_anchor_from_curve(_body, knee)
+    rendered = requested
+    if segments:
+        ok, reason = validate_hdr_shoulder(segments, knee_slope, peak_stops)
+        if not ok:
+            # A shoulder that fails its own structural contract is not rendered at reduced
+            # strength; the plan reports no HDR. Degrading here would ship a curve whose
+            # C1 join or monotonicity was never established.
+            segments, rendered = (), 0.0
+    else:
+        rendered = 0.0
+
+    tone = HdrToneCurve(
+        black_ev=float(formation.black_ev),
+        shoulder_start_ev=float(knee),
         white_ev=white,
+        body_gamma=DARKTABLE_BASE_GAMMA,
+        body_contrast=contrast,
+        toe_power=float(formation.toe_power),
+        reference_white_stops=OUTPUT_REFERENCE_WHITE_STOPS,
         display_headroom_ev=headroom,
-        budget_headroom_ev=budget,
+        requested_headroom_ev=requested,
+        rendered_headroom_ev=rendered,
+        peak_linear=2.0 ** rendered,
         reliable_tail_ev=tail,
-        minimum_window_ev=float(minimum_window_ev),
+        white_margin_ev=float(white_margin),
+        shoulder_segments=tuple(
+            HdrShoulderSegment(s.e0, s.e1, s.z0, s.z1, s.m0, s.m1) for s in segments
+        ),
+        shoulder_alpha=float(segments[0].alpha) if segments else float("nan"),
     )
     # Compiled from RAW evidence when it is available. Without an Analysis there is no
     # evidence to justify per-channel freedom, so the answer is none rather than a guess:
@@ -195,39 +238,31 @@ def compile_hdr_agx_plan(
         primaries_preset=str(scene_plan.tone.agx_primaries),
         gamut_fit_margin=0.0,
     )
-    # Give the HDR branch its own formation plan. Parameters unrelated to the output target
-    # start from shared scene intent, while the white endpoint is independently compiled
-    # above. Later HDR-specific contrast/shoulder tuning cannot mutate SDR.
-    formation = replace(
-        scene_plan.tone,
-        tone_core="agx",
-        white_ev=white,
-        dynamic_range_ev=white - float(scene_plan.tone.black_ev),
-    )
     return HdrAgxPlan(formation=formation, display=display, tone=tone, color=color)
 
 
 def describe_hdr_plan(plan: HdrAgxPlan) -> str:
-    """One line naming all three headrooms, because only reporting one hides the point."""
+    """One line naming capture request, solved endpoint and display capacity."""
     tone = plan.tone
-    window = tone.white_ev - tone.knee_ev
-    if tone.budget_headroom_ev <= 0.0:
+    if tone.rendered_headroom_ev <= 0.0:
         tail_text = (
             f"{tone.reliable_tail_ev:+.2f}EV"
             if math.isfinite(tone.reliable_tail_ev)
             else "不可用"
         )
         return (
-            f"HDR: 无预算（可靠尾部 {tail_text}，窗宽 {window:.2f}EV，"
+            f"HDR: 无可用扩展白（可靠尾部 {tail_text}，"
             f"显示容量 +{tone.display_headroom_ev:.2f}EV）"
         )
-    rate = (
-        tone.budget_headroom_ev * SMOOTHERSTEP_PEAK_SLOPE / window
-        if window > 0
-        else float("inf")
+    reduced = (
+        f"，RAW 请求 +{tone.requested_headroom_ev:.2f}EV"
+        if tone.rendered_headroom_ev + 1e-4 < tone.requested_headroom_ev
+        else ""
     )
     return (
-        f"HDR: 预算 +{tone.budget_headroom_ev:.2f}EV / 容量 +{tone.display_headroom_ev:.2f}EV；"
-        f"knee {tone.knee_ev:+.2f}EV，窗宽 {window:.2f}EV，提升速率 {rate:.2f}EV/EV，"
+        f"HDR: 原生 AgX 白点 +{tone.rendered_headroom_ev:.2f}EV / "
+        f"容量 +{tone.display_headroom_ev:.2f}EV{reduced}；"
+        f"K {tone.shoulder_start_ev:+.2f}EV / W {tone.white_ev:+.2f}EV，"
+        f"alpha {tone.shoulder_alpha:.3f}，肩部 {len(tone.shoulder_segments)} 段，"
         f"可靠尾部 {tone.reliable_tail_ev:+.2f}EV"
     )

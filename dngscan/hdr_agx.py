@@ -1,21 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""dngscan's independent HDR extension around darktable-style AgX formation.
+"""dngscan's independent extended-white HDR AgX formation.
 
 The HDR and SDR renditions share capture data and scene intent, then split before display
-formation.  HDR owns its formation plan, extended colour volume and scene-driven highlight
-allocation.  It never renders or corrects against SDR pixels.  Extra display stops are
-inserted after the HDR per-channel curve and before hue restore/outset:
+formation. HDR owns its curve, extended colour volume and scene-driven white endpoint; it
+never renders or corrects against SDR pixels. The endpoint is solved inside AgX itself:
 
-    p = f * 2 ** (H_budget * S(u(e_Y)))
+    inset -> native extended-white C1 sigmoid -> hue restore/outset
 
-`rho` continuously mixes common luminance progress with inset-channel progress. CFA masks
-can withdraw that freedom locally, and a formation-space luminance normalization prevents
-rho from becoming a hidden tone control. The completed image then receives hue
-restore/outset and a bounded extended-P3 neutral-axis projection. The final projector
-preserves linear Y and an RGB opponent direction, not a perceptual colour-appearance hue.
+`rho` mixes only chromaticity between a reference-white AgX path and the native extended
+path, both normalized to the native curve's luminance. CFA masks can withdraw that freedom
+locally. The completed image receives a bounded extended-P3 neutral-axis projection. The
+projector preserves linear Y and an RGB opponent direction, not a perceptual CAM hue.
 
-The two dispatchers may share AgX primitives, but neither their completed curves nor the
-pixels below the HDR allocation knee are an equality contract.
+The two dispatchers share AgX primitives, but their completed curves are independent and
+no pixel region is required to match between SDR and HDR.
 """
 from __future__ import annotations
 
@@ -28,52 +26,15 @@ from . import punch as punch_engine
 from . import scene_transform as scene_transform_engine
 from . import retreat as retreat_engine
 from .color import rec2020_to_output
-from .constants import GRAY_EV, REC2020_LUMA
-from .hdr_agx_math import lift_stops
+from .hdr_curve import apply_hdr_curve
 from .hdr_color import (
-    apply_channel_lift,
+    blend_native_hdr_paths,
     fit_hdr_color_volume,
     formation_luma_weights,
     raw_gated_channel_separation,
 )
 from .models import HdrAgxPlan, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import scene_rec2020_to_float
-
-_EPS = 1e-12
-
-
-def scene_luminance_ev(scene_rec2020: Any) -> Any:
-    """Scene EV relative to mid gray, from Rec.2020 luminance.
-
-    Clamped at the bottom only to keep log2 finite; the value there is irrelevant because
-    the allocation window sits far above it and smootherstep clamps to zero anyway.
-    """
-    rgb = np.asarray(scene_rec2020, dtype=np.float32)
-    y = (
-        rgb[..., 0] * np.float32(REC2020_LUMA[0])
-        + rgb[..., 1] * np.float32(REC2020_LUMA[1])
-        + rgb[..., 2] * np.float32(REC2020_LUMA[2])
-    )
-    return np.log2(np.maximum(y, np.float32(_EPS))) - np.float32(GRAY_EV)
-
-
-def hdr_lift_factor(scene_rec2020: Any, hdr_plan: HdrAgxPlan) -> Any:
-    """Linear gain per pixel: `2 ** (H_budget * S(u))`.
-
-    Exactly 1.0 everywhere when the budget is zero. This is an identity of the HDR
-    allocation stage, not a promise that the completed HDR and SDR renditions are equal.
-    """
-    tone = hdr_plan.tone
-    if float(tone.budget_headroom_ev) <= 0.0:
-        return np.ones(np.asarray(scene_rec2020).shape[:-1], dtype=np.float32)
-    stops = lift_stops(
-        scene_luminance_ev(scene_rec2020),
-        float(tone.knee_ev),
-        float(tone.white_ev),
-        float(tone.budget_headroom_ev),
-    )
-    return np.exp2(stops).astype(np.float32, copy=False)
-
 
 def scene_render_to_hdr_display_linear(
     bundle: RawBundle,
@@ -112,10 +73,9 @@ def scene_render_to_hdr_display_linear(
     if getattr(bundle, "clip_masks", None) is not None:
         clip_masks = retreat_engine.clip_masks_for_shape(bundle, (h, w)).reshape(-1, 3)
 
-    # The scene-authorized HDR colour volume. Display capacity is only the outer ceiling;
-    # using it here would let outset/gamut geometry spend stops the reliable RAW tail never
-    # earned even when the explicit allocation stayed within budget.
-    peak = float(2.0 ** hdr_plan.tone.budget_headroom_ev)
+    # The scene-authorized native curve endpoint. Display capacity is only the container's
+    # outer ceiling; using it here would normalize every photograph to display peak.
+    peak = float(hdr_plan.tone.peak_linear)
     peak *= max(0.0, 1.0 - float(hdr_plan.color.gamut_fit_margin))
 
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
@@ -135,20 +95,24 @@ def scene_render_to_hdr_display_linear(
                 rec, clip_masks[start:end], retreat_strength
             )
         inset, pre_hue = agx_engine.prepare_formation(rec, hdr_tone_plan, inset_matrix)
-        base_formation = agx_engine.apply_formation_curve(inset, hdr_tone_plan)
+        # Both chroma candidates run the same v2 primitive and share one compiled knee
+        # anchor, so they leave the body at identical value and slope and differ only in
+        # where they head. A tone difference between them would confound every rho A/B.
+        native_formation = apply_hdr_curve(inset, hdr_plan.tone, hdr_tone_plan)
+        reference_formation = (
+            native_formation
+            if float(hdr_plan.tone.rendered_headroom_ev) <= 0.0
+            else apply_hdr_curve(inset, hdr_plan.tone, hdr_tone_plan, peak_linear=1.0)
+        )
         rho = float(hdr_plan.color.channel_separation) * float(hdr_plan.color.snr_gate)
         rho = raw_gated_channel_separation(
             rho, clip_masks[start:end] if clip_masks is not None else None
         )
-        formation = apply_channel_lift(
-            base_formation,
-            rec,
-            float(hdr_plan.tone.knee_ev),
-            float(hdr_plan.tone.white_ev),
-            float(hdr_plan.tone.budget_headroom_ev),
+        formation = blend_native_hdr_paths(
+            reference_formation,
+            native_formation,
             rho,
             formation_y,
-            channel_scene_rgb=inset,
         )
         mapped_rec = agx_engine.finish_formation(
             formation, pre_hue, hdr_tone_plan, outset_matrix

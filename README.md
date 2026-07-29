@@ -195,16 +195,16 @@ flowchart TB
 
     subgraph HDR["4B. Independent HDR AgX branch - AgX only"]
         direction TB
-        HDRPLAN["Compile HdrAgxPlan<br/>HDR-owned formation white endpoint<br/>reliable RAW tail -> knee / window / lift budget<br/>display capacity + channel-separation permission"]
+        HDRPLAN["Compile HdrAgxPlan<br/>reliable RAW tail -> requested extended white<br/>solve minimum AgX gamma with a decelerating shoulder<br/>reduce peak if the native curve is infeasible"]
         HRETREAT["HDR-owned RAW clip retreat"]
-        HINSET["AgX inset + HDR per-channel C1 formation"]
-        LIFT["HDR allocation inside formation<br/>common luminance progress + rho channel progress<br/>smootherstep lift, locally withdrawn by CFA clipping"]
+        HINSET["AgX inset<br/>native extended-white per-channel C1 formation"]
+        PATH["HDR color geometry<br/>reference-white vs native chroma path<br/>rho is locally withdrawn by CFA clipping<br/>native curve remains the sole Y authority"]
         HFINISH["Hue restore + outset + punch"]
         HP3["Rec.2020 -> extended-linear Display P3"]
         HVOLUME["HDR color-volume fit<br/>reliable-tail peak ceiling<br/>preserve linear Y and RGB opponent direction"]
         ALT["Float16 RGB HDR alternate rendition"]
 
-        HDRPLAN --> HRETREAT --> HINSET --> LIFT --> HFINISH --> HP3 --> HVOLUME --> ALT
+        HDRPLAN --> HRETREAT --> HINSET --> PATH --> HFINISH --> HP3 --> HVOLUME --> ALT
     end
 
     PREFEED --> RETREAT
@@ -217,7 +217,7 @@ flowchart TB
     MASKS -.-> RETREAT
     MASKS -.-> GATED
     MASKS -.-> HRETREAT
-    MASKS -.-> LIFT
+    MASKS -.-> PATH
 
     ENCODE --> FORMAT{"Output format"}
     FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
@@ -852,21 +852,29 @@ HDR output is an optional Apple ISO 21496-1 gain-map JPEG, currently available o
 the macOS/Core Image backend and only with the AgX tone core. It does not amplify the
 finished SDR image. The same scene-linear Rec.2020 buffer splits before display formation
 into independent SDR and HDR AgX DRTs. They share capture exposure intent and RAW analysis,
-but HDR owns its tone plan, colour geometry, and extended-P3 projection; pixel equality
-below an SDR knee is not a constraint.
+but HDR owns its tone curve, colour geometry, and extended-P3 projection; no pixel region
+is required to equal the SDR rendition.
 
-Selected display headroom is a ceiling, not a target. The actual budget comes from a
+Selected display headroom is a ceiling, not a target. The initial request comes from a
 reliable highlight tail filtered by RAW clipping evidence. LibRaw uses its aligned
 per-pixel CFA mask; RAW9 conservatively rank-trims the luminance tail by the full-resolution
-clipped-cell fraction. Insufficient evidence means zero budget and an explicitly refused
-HDR export; reconstructed highlights and the SDR white endpoint cannot
-stand in for sensor evidence. The lift is inserted after HDR AgX inset/per-channel formation
-and before hue restore/outset. Per-pixel CFA clipping withdraws independent colour paths
-from unreliable channels, and a Y-preserving neutral-axis projection fits the result into
-the extended P3 `[0, peak]` colour volume without per-channel hard clipping. That last step
-preserves a linear-P3 opponent direction, not a strict perceptual hue. ACES 2 does the
-stronger job in a colour-appearance JMh space; dngscan's current projector is intentionally
-simpler and remains one of the HDR calibration boundaries.
+clipped-cell fraction. Insufficient evidence means zero headroom and an explicitly refused
+HDR export; reconstructed highlights and the SDR white endpoint cannot stand in for sensor
+evidence.
+
+That request is compiled directly into an extended display-linear white endpoint of the
+darktable-style AgX C1 solver. The compiler raises the internal curve gamma only as far as
+needed for a genuinely decelerating sigmoid shoulder. If the endpoint would require the
+generic solver's accelerating `power < 1` fallback, the endpoint is reduced instead. There
+is no post-curve smootherstep gain, knee, allocation window, or lift-rate heuristic.
+
+The native HDR curve is the only luminance authority. `rho` mixes chromaticity between a
+reference-white AgX path and the extended-white native path after both are aligned to that
+native luminance; per-pixel CFA clipping withdraws the native path from unreliable channels.
+A Y-preserving neutral-axis projection then fits the result into extended P3 `[0, peak]`
+without per-channel hard clipping. It preserves a linear-P3 opponent direction, not a
+strict perceptual hue. ACES 2 does the stronger job in a colour-appearance JMh space;
+dngscan's current projector is intentionally simpler and remains an HDR calibration boundary.
 
 Core Image only packages the two completed SDR/HDR renditions as an RGB gain map. Every
 written file is expanded again and checked for its P3 profile, 4:4:4 base, RGB auxiliary
@@ -878,20 +886,21 @@ gates are documented in
 
 ### HDR comparisons
 
-These are SDR diagnostic sheets, not screenshots of an HDR display. The lower HDR panels
-are deliberately exposed down by their measured headroom so detail above reference white
-fits on this page; they are expected to look darker than the SDR panels.
+These are SDR diagnostic sheets, not screenshots of an HDR display. Each sheet shows SDR,
+the native HDR rendition exposed down by its measured headroom, and the curve-expansion map.
+The middle panel is expected to look darker because reference-white-plus detail has been
+brought back into the page's SDR range.
 
-| RAW9 / LibRaw, daylight | RAW9 / LibRaw, indoor light |
+| Mixed indoor portrait | Stage highlights |
 |---|---|
-| ![RAW9 and LibRaw SDR/HDR AgX daylight comparison](docs/assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg) | ![RAW9 and LibRaw SDR/HDR AgX indoor comparison](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg) |
+| ![Native extended-white HDR AgX mixed-light diagnostic](docs/assets/hdr-comparisons/_SDI0150_native_hdr_ab.jpg) | ![Native extended-white HDR AgX stage-light diagnostic](docs/assets/hdr-comparisons/_SDI0199_native_hdr_ab.jpg) |
 
-| RAW9 AgX / neutral, daylight | RAW9 AgX / neutral, indoor light |
-|---|---|
-| ![RAW9 AgX and neutral SDR/HDR daylight comparison](docs/assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg) | ![RAW9 AgX and neutral SDR/HDR indoor comparison](docs/assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg) |
+![Native extended-white HDR AgX restaurant-highlight diagnostic](docs/assets/hdr-comparisons/_SDI0133_native_hdr_ab.jpg)
 
-The [complete comparison gallery](docs/HDR_COMPARISONS.md) contains all twelve sheets and
-the captured metrics. Core Image/ISO delivery round-trips on macOS; Android/Chrome
+The [earlier comparison gallery](docs/HDR_COMPARISONS.md) records the RAW9/LibRaw and
+AgX/neutral experiments made with the retired smootherstep allocator. It is kept as
+development history, not as a current pixel reference. Core Image/ISO delivery round-trips
+on macOS; Android/Chrome
 interoperability and EDR corpus calibration of the project-specific colour parameters still
 need physical-device testing.
 

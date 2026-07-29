@@ -5,18 +5,16 @@ from __future__ import annotations
 import dataclasses
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 
 from dngscan.analysis import analyze
 from dngscan.color import luminance_from_rgb_space
+from dngscan.drt import curve_params_from_plan
 from dngscan.grade import RENDER_MODE
 from dngscan.hdr_agx import (
     achieved_headroom,
-    hdr_lift_factor,
-    scene_luminance_ev,
     scene_render_to_hdr_display_linear,
 )
 from dngscan.hdr_agx_plan import compile_hdr_agx_plan, describe_hdr_plan, reliable_tail_ev
@@ -49,29 +47,6 @@ def _p3_luminance(rgb: np.ndarray) -> np.ndarray:
     return luminance_from_rgb_space(rgb.reshape(-1, 3), "p3").reshape(rgb.shape[:-1])
 
 
-class SceneLuminanceTests(unittest.TestCase):
-    def test_midgray_is_ev_zero(self) -> None:
-        rgb = np.full((1, 3), 0.18, dtype=np.float32)
-        self.assertAlmostEqual(float(scene_luminance_ev(rgb)[0]), 0.0, places=5)
-
-    def test_black_is_finite(self) -> None:
-        """log2 of zero must not reach the allocation; the window clamps it anyway."""
-        ev = scene_luminance_ev(np.zeros((4, 3), dtype=np.float32))
-        self.assertTrue(bool(np.all(np.isfinite(ev))))
-
-
-class LiftFactorTests(unittest.TestCase):
-    def test_zero_budget_is_exactly_one(self) -> None:
-        """Zero budget is an identity inside HDR, independent of the SDR rendition."""
-        rgb = np.linspace(0.0, 4.0, 300, dtype=np.float32).reshape(-1, 1).repeat(3, axis=1)
-        from dngscan.models import HdrToneAllocation
-
-        tone = HdrToneAllocation(2.47, 6.5, 3.0, 0.0, 8.0, 0.5)
-        fake = SimpleNamespace(tone=tone)
-        lift = hdr_lift_factor(rgb, fake)
-        self.assertTrue(bool(np.all(lift == np.float32(1.0))))
-
-
 @unittest.skipUnless(FRAMES["daylight"].is_file(), "sample frames unavailable")
 class FormationExitConditionTests(unittest.TestCase):
     """Image-level conditions the independent HDR DRT must satisfy."""
@@ -80,7 +55,14 @@ class FormationExitConditionTests(unittest.TestCase):
         """H=0 disables HDR allocation; it does not turn HDR into an SDR function call."""
         bundle, plan, hdr_plan, _, _ = _render_pair(FRAMES["daylight"])
         zeroed = dataclasses.replace(
-            hdr_plan, tone=dataclasses.replace(hdr_plan.tone, budget_headroom_ev=0.0)
+            hdr_plan,
+            tone=dataclasses.replace(
+                hdr_plan.tone,
+                requested_headroom_ev=0.0,
+                rendered_headroom_ev=0.0,
+                peak_linear=1.0,
+                shoulder_segments=(),
+            ),
         )
         with mock.patch(
             "dngscan.render.scene_render_to_display_linear",
@@ -142,15 +124,27 @@ class FormationExitConditionTests(unittest.TestCase):
             with self.subTest(frame=name):
                 _, _, hdr_plan, _, hdr = _render_pair(path)
                 actual = achieved_headroom(hdr)
-                self.assertLessEqual(actual, hdr_plan.tone.budget_headroom_ev + 1e-6)
+                self.assertLessEqual(actual, hdr_plan.tone.rendered_headroom_ev + 1e-6)
                 self.assertLessEqual(
-                    hdr_plan.tone.budget_headroom_ev, hdr_plan.tone.display_headroom_ev + 1e-9
+                    hdr_plan.tone.rendered_headroom_ev, hdr_plan.tone.display_headroom_ev + 1e-9
                 )
 
     def test_hdr_plan_owns_a_distinct_formation_object(self) -> None:
         _, plan, hdr_plan, _, _ = _render_pair(FRAMES["daylight"])
         self.assertIsNot(hdr_plan.formation, plan.tone)
         self.assertEqual(hdr_plan.formation.tone_core, "agx")
+        # v2 keeps the extended peak entirely in the shoulder. The formation object stays
+        # a reference-white body: if target_white_linear or curve_gamma ever moved with
+        # headroom again, that would be v1's toe-rewriting mechanism returning.
+        self.assertEqual(hdr_plan.formation.target_white_linear, 1.0)
+        self.assertEqual(hdr_plan.formation.curve_gamma, hdr_plan.tone.body_gamma)
+        self.assertEqual(hdr_plan.tone.body_gamma, 2.2)
+        self.assertGreater(len(hdr_plan.tone.shoulder_segments), 0)
+        self.assertAlmostEqual(
+            float(np.log2(hdr_plan.tone.peak_linear)),
+            hdr_plan.tone.rendered_headroom_ev,
+            places=9,
+        )
 
 
 @unittest.skipUnless(FRAMES["daylight"].is_file(), "sample frames unavailable")
@@ -158,16 +152,16 @@ class PlanCompilationTests(unittest.TestCase):
     def test_headrooms_are_reported_separately(self) -> None:
         _, _, hdr_plan, _, _ = _render_pair(FRAMES["daylight"])
         text = describe_hdr_plan(hdr_plan)
-        self.assertIn("预算", text)
+        self.assertIn("白点", text)
         self.assertIn("容量", text)
 
-    def test_bigger_display_target_never_moves_the_knee(self) -> None:
+    def test_bigger_display_target_never_moves_scene_white_endpoint(self) -> None:
         bundle = load_raw(FRAMES["daylight"], scene_half_size=True)
         analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
         plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
         small = compile_hdr_agx_plan(plan, HdrDisplayTarget(peak_nits=400.0))
         large = compile_hdr_agx_plan(plan, HdrDisplayTarget(peak_nits=4000.0))
-        self.assertEqual(small.tone.knee_ev, large.tone.knee_ev)
+        self.assertEqual(small.tone.white_ev, large.tone.white_ev)
         self.assertGreaterEqual(large.tone.budget_headroom_ev, small.tone.budget_headroom_ev)
 
     def test_absent_tail_measurement_does_not_grant_headroom(self) -> None:

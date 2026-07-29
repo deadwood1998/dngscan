@@ -137,6 +137,31 @@ def body_anchor_at_ev(
     return value, stops, slope_z
 
 
+def body_anchor_from_curve(
+    evaluate_body, ev: float, step: float = 1e-5, midgray: float = SCENE_MIDGRAY
+) -> tuple[float, float, float]:
+    """Anchor taken from the body curve that will actually render, not a closed form.
+
+    `body_anchor_at_ev` assumes K sits on the central encoded line. In production it does
+    not reliably: the darktable body's own shoulder transition lands within a few 1e-4 of
+    K on real plans and past it on some, because the plan's latitude happens to be close
+    to the chosen K. The closed form is then off by ~4e-5 in T, which is small but makes
+    the C1 join approximate -- and that join is the property the whole design rests on.
+
+    Sampling the real curve makes the join exact by construction for any K, whichever
+    segment it falls in. The curve is C1 there, so a central difference is well behaved.
+    """
+    value = float(evaluate_body(ev))
+    if value <= _EPS:
+        return 0.0, -math.inf, math.inf
+    lo = float(evaluate_body(ev - step))
+    hi = float(evaluate_body(ev + step))
+    slope_t = (hi - lo) / (2.0 * step)
+    stops = math.log2(value / float(midgray))
+    slope_z = slope_t / (math.log(2.0) * value)
+    return value, stops, slope_z
+
+
 def _hermite(u: float, z0: float, z1: float, m0: float, m1: float, span_e: float) -> float:
     u2 = u * u
     u3 = u2 * u
@@ -238,6 +263,34 @@ def _segment_is_monotone(seg: HdrShoulderSegment) -> bool:
     return alpha * alpha + beta * beta <= MAX_SINGLE_SEGMENT_ALPHA ** 2 + 1e-12
 
 
+def compile_hdr_shoulder_from_anchor(
+    knee_ev: float,
+    white_ev: float,
+    knee_stops: float,
+    knee_slope: float,
+    peak_stops: float,
+) -> tuple[HdrShoulderSegment, ...]:
+    """Same solve, but with the knee anchor supplied rather than derived.
+
+    Lets a second endpoint reuse one compiled anchor, so two candidate curves provably
+    leave the body at the same value and slope and differ only above K.
+    """
+    span_e = float(white_ev) - float(knee_ev)
+    span_z = float(peak_stops) - float(knee_stops)
+    if span_e <= 0.0 or span_z <= _EPS:
+        return ()
+    single = HdrShoulderSegment(
+        e0=float(knee_ev), e1=float(white_ev),
+        z0=float(knee_stops), z1=float(peak_stops),
+        m0=float(knee_slope), m1=0.0,
+    )
+    if _segment_is_monotone(single):
+        return (single,)
+    return adaptive_monotone_segments(
+        knee_ev, white_ev, knee_stops, peak_stops, knee_slope
+    )
+
+
 def compile_hdr_shoulder(
     knee_ev: float,
     white_ev: float,
@@ -246,17 +299,28 @@ def compile_hdr_shoulder(
     body_gamma: float = DARKTABLE_BASE_GAMMA,
     midgray: float = SCENE_MIDGRAY,
     reference_range_ev: float = AGX_REFERENCE_RANGE_EV,
+    evaluate_body=None,
 ) -> tuple[HdrShoulderSegment, ...]:
     """Build the shoulder joining the body at K to the content peak at W.
+
+    Pass `evaluate_body` to anchor on the real rendering curve; without it the central-line
+    closed form is used, which is exact only when K lies on the linear latitude segment.
+    Production always passes it, because on real plans K lands at or just past the body's
+    own shoulder transition.
 
     Tries one segment first because that is the smooth case; subdivides only when the
     scene asks for more stop growth than a single monotone cubic can deliver. Returns an
     empty tuple when the request is degenerate, which callers must treat as "no HDR"
     rather than substituting something that merely renders.
     """
-    _, knee_stops, knee_slope = body_anchor_at_ev(
-        knee_ev, contrast, body_gamma, midgray, reference_range_ev
-    )
+    if evaluate_body is not None:
+        _, knee_stops, knee_slope = body_anchor_from_curve(
+            evaluate_body, knee_ev, midgray=midgray
+        )
+    else:
+        _, knee_stops, knee_slope = body_anchor_at_ev(
+            knee_ev, contrast, body_gamma, midgray, reference_range_ev
+        )
     if not math.isfinite(knee_stops) or not math.isfinite(knee_slope):
         return ()
     span_e = float(white_ev) - float(knee_ev)

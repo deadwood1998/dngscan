@@ -183,9 +183,13 @@ class ToneCompressionPlan:
     hue_restore: float = 0.6
     # Linear output floor of the curve; >0 lifts blacks for faded film looks.
     target_black_linear: float = 0.0
-    # Linear output ceiling of the curve (darktable target_white); <1 converges the
-    # shoulder to a faded, sub-display-white top for milky/print-style looks.
+    # Curve endpoint in display-linear units (darktable target_white): <1 fades an SDR
+    # white, 1 is reference white, and >1 requests extended white.
     target_white_linear: float = 1.0
+    # Internal AgX curve encoding. SDR keeps darktable's historical 2.2. The independent
+    # HDR compiler may raise it so an extended white endpoint can be reached by a genuinely
+    # decelerating sigmoid shoulder instead of the accelerating fallback branch.
+    curve_gamma: float = 2.2
     # AgX primaries preset (base/punchy/muted/smooth); pinned darktable uses base.
     agx_primaries: str = "base"
     # The endpoint-normalized C1 DRT keeps the calibrated scene EV=0 pivot fixed while
@@ -356,20 +360,55 @@ class HdrDisplayTarget:
 
 
 @dataclass(frozen=True)
-class HdrToneAllocation:
-    """Where the extra display stops are spent, and how many the scene justifies.
+class HdrShoulderSegment:
+    """One monotone cubic Hermite piece of the HDR shoulder, in (scene EV -> stops)."""
 
-    Three headrooms stay separate on purpose: display is capacity, budget is what this
-    scene's reliable tail supports, actual is what the render reached. Collapsing them is
-    how HDR implementations end up normalising every frame to peak white.
+    e0: float
+    e1: float
+    z0: float
+    z1: float
+    m0: float
+    m1: float
+
+
+@dataclass(frozen=True)
+class HdrToneCurve:
+    """The scene-authorized native HDR AgX curve.
+
+    Three headrooms stay separate: display is capacity, requested is what the reliable RAW
+    tail earns, and rendered is the endpoint the shoulder actually carries. Actual is
+    measured from rendered pixels afterwards. Collapsing them is how HDR implementations
+    end up normalising every frame to peak white.
+
+    The body fields describe everything below `shoulder_start_ev`, and no field here that
+    depends on headroom may influence them. That separation is the whole design: v1 raised
+    a global gamma to buy peak, which silently darkened the shadows by up to three stops.
     """
 
-    knee_ev: float
+    black_ev: float
+    shoulder_start_ev: float
     white_ev: float
+    body_gamma: float
+    body_contrast: float
+    toe_power: float
+
+    reference_white_stops: float
     display_headroom_ev: float
-    budget_headroom_ev: float
+    requested_headroom_ev: float
+    rendered_headroom_ev: float
+    peak_linear: float
     reliable_tail_ev: float
-    minimum_window_ev: float
+    white_margin_ev: float
+
+    shoulder_segments: tuple[HdrShoulderSegment, ...] = ()
+    # Diagnostic only. Never re-read to make a second decision: the compiler already used
+    # it to choose between one segment and subdivision.
+    shoulder_alpha: float = float("nan")
+
+    @property
+    def budget_headroom_ev(self) -> float:
+        """Deprecated alias for `rendered_headroom_ev`, kept for one version."""
+        return self.rendered_headroom_ev
 
 
 @dataclass(frozen=True)
@@ -395,5 +434,5 @@ class HdrAgxPlan:
 
     formation: ToneCompressionPlan
     display: HdrDisplayTarget
-    tone: HdrToneAllocation
+    tone: HdrToneCurve
     color: HdrColorGeometry

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Look at what the HDR AgX allocation did, on a screen that cannot show HDR.
+"""Inspect the native extended-white HDR AgX curve on an SDR screen.
 
-This diagnostic renders the extended-linear P3 result onto an SDR sheet so the allocation
+This diagnostic renders the extended-linear P3 result onto an SDR sheet so the HDR curve
 can be inspected without depending on an EDR display, three panels per frame:
 
     SDR            what ships today
     HDR -H_act     the HDR rendition exposed down by its own achieved headroom, which
                    brings the extra highlight range into an SDR screen's range
-    lift map       where the allocation spent stops, in EV
+    expansion map  HDR/reference-white response ratio, in EV
 
-The middle panel is the useful one. If the allocation is behaving, its shadows and
+The middle panel is the useful one. If the curve is behaving, its shadows and
 midtones look *darker* than the SDR panel by exactly the exposure applied, while its
 highlights hold detail the SDR panel has already compressed. Highlights that look the
 same in both mean the scene had no reliable tail to spend, which is a correct outcome,
@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -38,7 +39,7 @@ import numpy as np
 
 from dngscan.analysis import analyze
 from dngscan.grade import RENDER_MODE
-from dngscan.hdr_agx import achieved_headroom, hdr_lift_factor, scene_render_to_hdr_display_linear
+from dngscan.hdr_agx import achieved_headroom, scene_render_to_hdr_display_linear
 from dngscan.hdr_agx_plan import compile_hdr_agx_plan, describe_hdr_plan
 from dngscan.models import HdrDisplayTarget
 from dngscan.raw_io import load_raw
@@ -112,15 +113,23 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
     # point is to see the range the render used, and dividing by an unused allowance
     # would just darken everything and hide it.
     exposure = 2.0 ** -actual if actual > 0.0 else 1.0
-    # The lift map re-derives the gain from the scene buffer. That matches the render
-    # only because this tool never applies a scene transform; adding one as an option
-    # means routing it here too, or the map will describe a render that did not happen.
-    lift = hdr_lift_factor(
-        np.asarray(bundle.scene_rec2020_render, dtype=np.float32)[:, :, :3]
-        / np.float32(bundle.scene_scale)
-        * np.float32(bundle.exposure_gain),
+    # A second HDR-branch render with a 1.0 endpoint provides the diagnostic denominator.
+    # This is not the SDR image and does not constrain the native rendition; it isolates
+    # the response change created by the solved extended-white curve.
+    reference_plan = dataclasses.replace(
         hdr_plan,
+        formation=dataclasses.replace(hdr_plan.formation, target_white_linear=1.0),
+        tone=dataclasses.replace(
+            hdr_plan.tone,
+            requested_headroom_ev=0.0,
+            rendered_headroom_ev=0.0,
+            shoulder_segments=(),
+        ),
     )
+    reference_hdr = scene_render_to_hdr_display_linear(bundle, plan, reference_plan, "p3")
+    y_reference = reference_hdr @ LUMA
+    y_native = hdr @ LUMA
+    lift = y_native / np.maximum(y_reference, np.float32(1e-6))
 
     sdr_final = finalize_output_linear(sdr, "p3", color_plan=plan.color)
     y_sdr, y_hdr = sdr_final @ LUMA, hdr @ LUMA
@@ -136,7 +145,7 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
                 f"HDR  -{actual:.2f}EV",
                 _encode_hdr_diagnostic(hdr * np.float32(exposure)),
             ),
-            (f"lift map  0..{hdr_plan.tone.budget_headroom_ev:.2f}EV", _lift_map_u8(lift, hdr_plan.tone.budget_headroom_ev)),
+            (f"curve expansion  0..{hdr_plan.tone.rendered_headroom_ev:.2f}EV", _lift_map_u8(lift, hdr_plan.tone.rendered_headroom_ev)),
         ]
     )
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -147,9 +156,10 @@ def process(path: Path, out_dir: Path, target: HdrDisplayTarget, half: bool) -> 
 
     return {
         "name": path.stem,
-        "budget": hdr_plan.tone.budget_headroom_ev,
+        "budget": hdr_plan.tone.rendered_headroom_ev,
         "actual": actual,
-        "window": hdr_plan.tone.white_ev - hdr_plan.tone.knee_ev,
+        "white": hdr_plan.tone.white_ev,
+        "gamma": hdr_plan.tone.curve_gamma,
         "tail": hdr_plan.tone.reliable_tail_ev,
         "body_delta_ev": body_delta,
         "above_one_pct": 100.0 * float(np.count_nonzero(hdr > 1.0)) / hdr.size,
@@ -175,7 +185,7 @@ def main(argv: list[str]) -> int:
         f"= +{target.display_headroom_ev:.2f} EV capacity"
     )
     print(
-        f"\n  {'frame':16s} {'window':>7s} {'tail':>7s} {'budget':>7s} {'actual':>7s} "
+        f"\n  {'frame':16s} {'white':>7s} {'gamma':>7s} {'tail':>7s} {'target':>7s} {'actual':>7s} "
         f"{'body dEV':>9s} {'>1.0':>7s}"
     )
     rows = []
@@ -186,7 +196,7 @@ def main(argv: list[str]) -> int:
         row = process(path, args.out, target, half=not args.full)
         rows.append(row)
         print(
-            f"  {row['name']:16s} {row['window']:7.2f} {row['tail']:+7.2f} "
+            f"  {row['name']:16s} {row['white']:7.2f} {row['gamma']:7.3f} {row['tail']:+7.2f} "
             f"{row['budget']:7.2f} {row['actual']:7.2f} {row['body_delta_ev']:+9.5f} "
             f"{row['above_one_pct']:6.2f}%"
         )
