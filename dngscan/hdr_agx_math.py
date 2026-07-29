@@ -1,227 +1,309 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""HDR AgX tone allocation: the one-dimensional math, with no image in sight.
+"""HDR AgX v2 tone math: a log-stop shoulder that cannot reach into the toe.
 
-The HDR rendition is a second AgX rendered from the same scene-linear data, not the SDR
-image with gain applied. What this module owns is only the question of how the extra
-display stops are spent along the EV axis of the HDR branch:
+v1 bought its extended white by raising the whole curve's encoding gamma. That works
+arithmetically -- the encoded shoulder does reach 2^H -- but gamma is a coordinate of the
+*entire* curve, so raising it to 4.7 also rewrote the toe. Measured on real frames, mid
+gray and its local derivative held while -4 EV fell about 1.5 EV and the deepest shadows
+lost nearly three stops. Headroom was silently buying darkness.
 
-    TH(e) = BH(e) * 2 ** (H_budget * S(u))
+v2 puts the degree of freedom where the change belongs. Below the shoulder start K the
+curve is the darktable body at its own fixed gamma, and nothing in this module can touch
+it. Above K a cubic Hermite runs in output-stop coordinates
 
-`BH` is the HDR branch's own base formation response, `S` a quintic smootherstep over the
-window between the knee and the plan's white endpoint, and `H_budget` the number of extra
-stops this scene justifies. `S`, `S'` and `S''` vanish at both ends, so allocation joins
-the HDR base smoothly. It does not impose equality with the independently rendered SDR.
+    z(e) = log2(T(e) / 0.18)
 
-Why not simply stretch the existing curve: with dngscan's contrast 3.0, current gamma 2.2
-and the upstream reference window, holding the pivot fixed while reaching a 1000/100 HDR
-white demands an average shoulder slope of 2.13 from a starting slope of 1.05. A concave
-shoulder's slope only falls, so that parameterization has no solution. Generalised, it
-would need a white endpoint beyond 13.1 EV (11.6 EV at the 800 nit preset) against the
-8.5 EV dngscan actually compiles -- the black endpoint cancels out of that condition
-entirely. The test suite pins the current operating range, without pretending no
-imaginable gamma could ever solve a different curve.
+from (K, Z_K) with the body's own slope M_K to (W, Z_peak) with slope exactly zero. The
+structural consequence is the property v1 could not offer: changing H changes only the
+segment above K, so `T(e)` for `e <= K` is bit-identical across headrooms.
 
-Everything here is float64 and array-free per-sample math, so it can act as the oracle the
-float32 runtime is checked against.
+Output stops are the right coordinate because a one-stop scene change is a doubling in
+linear T. Demanding a "decelerating" curve in linear T mistakes ordinary exposure
+proportionality for runaway growth; in z it is just slope 1, and a shoulder is honestly a
+reduction of dz/de toward zero.
+
+Monotonicity is decided by a stated condition rather than inspection: with the white
+tangent pinned at zero, a single cubic Hermite is monotone exactly when the normalized
+start tangent alpha lies in [0, 3]. When a scene asks for more than one segment can carry,
+the interval is subdivided -- never by relaxing M_K or the zero white slope, since those
+are the C1 joins this design exists to guarantee.
+
+Float64 and image-free: this is the oracle the float32 runtime is checked against.
 """
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
-from ._deps import np
-from .constants import DIFFUSE_WHITE_EV
+from .constants import (
+    AGX_REFERENCE_RANGE_EV,
+    DARKTABLE_BASE_GAMMA,
+    OUTPUT_REFERENCE_WHITE_STOPS,
+    SCENE_MIDGRAY,
+)
 
-# Smootherstep's derivative peaks at S'(0.5) = 1.875. Dividing that by the window width
-# gives the steepest rate at which HDR gain is added, in EV of lift per EV of scene.
-SMOOTHERSTEP_PEAK_SLOPE = 1.875
+# A single cubic Hermite with a zero end tangent is monotone iff its normalized start
+# tangent is within this bound. Exact, not a tuned threshold: it is the alpha axis of the
+# Fritsch-Carlson monotonicity region evaluated at beta = 0.
+MAX_SINGLE_SEGMENT_ALPHA = 3.0
 
-# Temporary policy gate. Smootherstep itself remains numerically well-defined for any
-# positive window; 0.5 EV is therefore not a mathematical stability threshold. Keep it
-# explicit until the corpus decides whether a hard gate is useful at all.
-MINIMUM_WINDOW_EV = 0.5
+# Subdivision ceiling. Each split roughly halves alpha, so the reachable range grows
+# exponentially; a plan needing more than this is malformed rather than demanding.
+MAX_SHOULDER_SEGMENTS = 16
 
-# Temporary aesthetic cap, in added log2-output EV per scene EV. It is deliberately not
-# identified with AgX contrast=3.0: AgX contrast is an encoded-curve slope in normalized
-# x, so the two 3.0 values live in different coordinate systems. This value needs EDR
-# corpus calibration before it should be treated as a stable imaging parameter.
-MAX_LIFT_RATE = 3.0
-
-
-# Upstream's parameter normalisation base, from the -10..+6.5 EV reference window. AgX
-# contrast is quoted against this span, so a plan with a different window has a different
-# encoded slope for the same contrast value.
-REFERENCE_WINDOW_EV = 16.5
+_EPS = 1e-12
 
 
-def sdr_encoded_slope(
-    contrast: float,
-    black_ev: float,
-    white_ev: float,
-    reference_window_ev: float = REFERENCE_WINDOW_EV,
-) -> float:
-    """Encoded-curve slope at the pivot: `C * (W - B) / 16.5`.
+@dataclass(frozen=True)
+class HdrShoulderSegment:
+    """One monotone cubic Hermite piece in (scene EV -> output stops)."""
 
-    Contrast alone is not the slope. It is quoted against the upstream 16.5 EV reference
-    window, so a plan compiled to a narrower window has a proportionally smaller encoded
-    slope. Reading `contrast = 3.0` as "slope 3.0" only happens to be right when the plan
-    window is exactly the reference one.
-    """
-    return float(contrast) * (float(white_ev) - float(black_ev)) / float(reference_window_ev)
+    e0: float
+    e1: float
+    z0: float
+    z1: float
+    m0: float
+    m1: float
 
+    @property
+    def alpha(self) -> float:
+        """Normalized start tangent. The monotonicity test is alpha <= 3 when m1 = 0."""
+        span_e = self.e1 - self.e0
+        span_z = self.z1 - self.z0
+        if span_e <= 0.0 or span_z <= _EPS:
+            return math.inf
+        return self.m0 * span_e / span_z
 
-def single_curve_minimum_white_ev(
-    contrast: float,
-    peak_ratio: float,
-    curve_gamma: float,
-    reference_window_ev: float = REFERENCE_WINDOW_EV,
-) -> float:
-    """Smallest white EV at which stretching one C1 curve to HDR could work at all.
-
-    From requiring the HDR pivot slope to be at least the average slope needed to reach
-    encoded white:
-
-        s_hdr >= s_avg
-        C*(W-B)/16.5 * R^(-1/g) >= (1-q_pivot)*(W-B)/W
-
-    The (W-B) factors cancel, so the black endpoint drops out entirely and the condition
-    reduces to a bound on W alone. Returning that bound rather than a yes/no keeps the
-    refutation checkable against whatever window a plan actually compiles.
-    """
-    q_pivot = (0.18 / float(peak_ratio)) ** (1.0 / float(curve_gamma))
-    return (
-        float(reference_window_ev)
-        * (1.0 - q_pivot)
-        / (float(contrast) * float(peak_ratio) ** (-1.0 / float(curve_gamma)))
-    )
+    @property
+    def beta(self) -> float:
+        """Normalized end tangent, zero for the final segment by construction."""
+        span_e = self.e1 - self.e0
+        span_z = self.z1 - self.z0
+        if span_e <= 0.0 or span_z <= _EPS:
+            return math.inf
+        return self.m1 * span_e / span_z
 
 
-def hdr_encoded_pivot_slope(
-    sdr_encoded_slope: float,
-    peak_ratio: float,
-    curve_gamma: float,
-    window_ratio: float = 1.0,
-) -> float:
-    """Encoded-curve slope an HDR pivot would need to match SDR linear contrast.
-
-    Used only to show that a single stretched curve cannot work. Both curves must put
-    Y=0.18 at the pivot, so with Y_sdr = q^g and Y_hdr = R*q^g the encoded pivot values
-    differ by R^(-1/g). Requiring equal dY/de there and substituting that relation
-    collapses the whole expression to
-
-        s_hdr = s_sdr * R^(-1/g)
-
-    -- the q^(g-1) factors cancel exactly. `window_ratio` carries the HDR/SDR EV window
-    length ratio when the two windows differ; at equal windows it is 1.
-
-    This is an *encoded* slope, not a linear-luminance one and not a universal constant.
-    """
-    return float(sdr_encoded_slope) * float(peak_ratio) ** (-1.0 / float(curve_gamma)) * float(
-        window_ratio
-    )
-
-
-def smootherstep(u):
-    """Quintic 6u^5-15u^4+10u^3, clamped to [0,1].
-
-    Chosen over smoothstep because the second derivative also vanishes at both ends: the
-    knee then inherits SDR curvature, not just SDR slope.
-    """
-    x = np.clip(np.asarray(u, dtype=np.float64), 0.0, 1.0)
-    return x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
-
-
-def smootherstep_derivative(u):
-    """30u^2(1-u)^2, zero at both ends and peaking at 1.875."""
-    x = np.clip(np.asarray(u, dtype=np.float64), 0.0, 1.0)
-    return 30.0 * x * x * (1.0 - x) * (1.0 - x)
-
-
-def allocation_window(knee_ev: float, white_ev: float) -> float:
-    """EV span the HDR lift is spread over."""
-    return float(white_ev) - float(knee_ev)
-
-
-def max_lift_rate(budget_ev: float, window_ev: float) -> float:
-    """Steepest HDR gain rate, in EV of lift per EV of scene.
-
-    The number to look at when asking whether HDR will read as a smooth reveal or as a
-    hard edge, because C2 continuity at the knee says nothing about how steep the curve
-    becomes just past it.
-    """
-    if window_ev <= 0.0:
-        return float("inf")
-    return float(budget_ev) * SMOOTHERSTEP_PEAK_SLOPE / float(window_ev)
-
-
-def clamp_budget_to_lift_rate(
-    budget_ev: float, window_ev: float, max_rate: float = MAX_LIFT_RATE
-) -> float:
-    """Cut the budget until the HDR segment is no steeper than `max_rate`.
-
-    A pass/zero gate on window width alone is not enough. dngscan's white endpoint floor
-    of +3.00 EV puts a large share of real frames at a 0.526 EV window, which clears a
-    0.5 EV gate by a hair and would then compress the whole lift into half a stop. Scaling
-    the budget down degrades continuously instead: narrow windows still get HDR, just less
-    of it, and the transition respects the explicitly configured prototype rate cap.
-    """
-    if budget_ev <= 0.0:
-        return 0.0
-    if window_ev <= 0.0:
-        return 0.0
-    ceiling = float(max_rate) * float(window_ev) / SMOOTHERSTEP_PEAK_SLOPE
-    return float(min(float(budget_ev), ceiling))
-
-
-def compile_budget(
+def requested_headroom_ev(
     reliable_tail_ev: float,
-    knee_ev: float,
-    white_ev: float,
     display_headroom_ev: float,
-    minimum_window_ev: float = MINIMUM_WINDOW_EV,
-    max_rate: float = MAX_LIFT_RATE,
+    reference_white_stops: float = OUTPUT_REFERENCE_WHITE_STOPS,
 ) -> float:
-    """How many extra stops this scene justifies, bounded by what the display offers.
+    """Stops above output reference white that the trustworthy capture tail justifies.
 
-    Reads only the reliable tail, so reconstructed highlights cannot buy HDR range the
-    sensor never recorded. A scene whose tail sits at diffuse white gets zero, which is
-    the point: HDR capacity is not a target every frame must reach.
+    The scene median is deliberately absent: HDR capacity must never act as an automatic
+    exposure. A missing or non-finite tail yields exactly zero, so an absent measurement
+    cannot be read as unlimited signal.
     """
-    if not all(
-        math.isfinite(float(value))
-        for value in (reliable_tail_ev, knee_ev, white_ev, display_headroom_ev)
+    if not math.isfinite(float(reliable_tail_ev)) or not math.isfinite(
+        float(display_headroom_ev)
     ):
         return 0.0
-    window = allocation_window(knee_ev, white_ev)
-    if window <= float(minimum_window_ev):
-        return 0.0
-    signal = max(0.0, float(reliable_tail_ev) - float(knee_ev))
-    budget = min(float(display_headroom_ev), signal)
-    return clamp_budget_to_lift_rate(budget, window, max_rate)
+    signal = max(0.0, float(reliable_tail_ev) - float(reference_white_stops))
+    return min(max(0.0, float(display_headroom_ev)), signal)
 
 
-def lift_stops(scene_ev, knee_ev: float, white_ev: float, budget_ev: float):
-    """Extra stops applied at each scene EV: `H_budget * S(u)`."""
-    ev = np.asarray(scene_ev, dtype=np.float64)
-    window = allocation_window(knee_ev, white_ev)
-    if budget_ev <= 0.0 or window <= 0.0:
-        return np.zeros_like(ev)
-    u = (ev - float(knee_ev)) / window
-    return float(budget_ev) * smootherstep(u)
+def body_encoded_slope(contrast: float, reference_range_ev: float = AGX_REFERENCE_RANGE_EV) -> float:
+    """Encoded-curve slope per scene EV on the body's central line: `contrast / 16.5`.
 
-
-def apply_hdr_allocation(hdr_base_response, scene_ev, knee_ev: float, white_ev: float, budget_ev: float):
-    """TH(e) = BH(e) * 2**(H*S(u)).
-
-    Monotonicity follows from the product rule directly -- both TH' terms are non-negative
-    when the HDR base, its derivative and S' are -- and deliberately not from the
-    log-derivative form, which divides by the base and invents a singularity at black.
+    Contrast is quoted against AgX's historical -10..+6.5 EV range, so it is not itself a
+    slope. Deriving this rather than storing it keeps one source of truth.
     """
-    base = np.asarray(hdr_base_response, dtype=np.float64)
-    return base * np.exp2(lift_stops(scene_ev, knee_ev, white_ev, budget_ev))
+    return float(contrast) / float(reference_range_ev)
+
+
+def body_anchor_at_ev(
+    ev: float,
+    contrast: float,
+    body_gamma: float = DARKTABLE_BASE_GAMMA,
+    midgray: float = SCENE_MIDGRAY,
+    reference_range_ev: float = AGX_REFERENCE_RANGE_EV,
+) -> tuple[float, float, float]:
+    """Body value, output stops and output-stop slope at one scene EV.
+
+    Returns `(T, z, dz/de)` on the body's central encoded line, which is where the
+    shoulder must attach. Everything is derived from midgray / gamma / contrast / range,
+    so no anchor value is stored as an independent constant that could drift from them.
+    """
+    q0 = float(midgray) ** (1.0 / float(body_gamma))
+    slope_q = body_encoded_slope(contrast, reference_range_ev)
+    q = q0 + slope_q * float(ev)
+    if q <= _EPS:
+        return 0.0, -math.inf, math.inf
+    value = q ** float(body_gamma)
+    stops = math.log2(value / float(midgray))
+    # dz/de = (dT/de) / (ln2 * T), and dT/de = g*q^(g-1)*a_q, so T cancels to g*a_q/(ln2*q).
+    slope_z = float(body_gamma) * slope_q / (math.log(2.0) * q)
+    return value, stops, slope_z
+
+
+def _hermite(u: float, z0: float, z1: float, m0: float, m1: float, span_e: float) -> float:
+    u2 = u * u
+    u3 = u2 * u
+    h00 = 2.0 * u3 - 3.0 * u2 + 1.0
+    h10 = u3 - 2.0 * u2 + u
+    h01 = -2.0 * u3 + 3.0 * u2
+    h11 = u3 - u2
+    return h00 * z0 + h10 * span_e * m0 + h01 * z1 + h11 * span_e * m1
+
+
+def evaluate_hdr_shoulder(scene_ev: float, segments: tuple[HdrShoulderSegment, ...]) -> float:
+    """Output stops at one scene EV, clamped to the endpoints outside the shoulder."""
+    if not segments:
+        return 0.0
+    if scene_ev <= segments[0].e0:
+        return segments[0].z0
+    if scene_ev >= segments[-1].e1:
+        return segments[-1].z1
+    for seg in segments:
+        if scene_ev <= seg.e1:
+            span = seg.e1 - seg.e0
+            if span <= 0.0:
+                return seg.z1
+            u = (scene_ev - seg.e0) / span
+            return _hermite(u, seg.z0, seg.z1, seg.m0, seg.m1, span)
+    return segments[-1].z1
+
+
+def _segment_chain(
+    knots_e: list[float], knots_z: list[float], knots_m: list[float]
+) -> tuple[HdrShoulderSegment, ...]:
+    return tuple(
+        HdrShoulderSegment(
+            e0=knots_e[i], e1=knots_e[i + 1],
+            z0=knots_z[i], z1=knots_z[i + 1],
+            m0=knots_m[i], m1=knots_m[i + 1],
+        )
+        for i in range(len(knots_e) - 1)
+    )
+
+
+def adaptive_monotone_segments(
+    knee_ev: float,
+    white_ev: float,
+    knee_stops: float,
+    peak_stops: float,
+    knee_slope: float,
+) -> tuple[HdrShoulderSegment, ...]:
+    """Subdivide until every piece is monotone, holding both end tangents fixed.
+
+    A general PCHIP limiter is the wrong tool here. Limiters achieve monotonicity by
+    rescaling tangents, and rescaling the first one would break the C1 join with the body
+    -- the entire property this design is built to keep. Subdividing instead adds interior
+    knots, whose tangents are free, while `knee_slope` at K and zero at W stay exactly as
+    given. Interior tangents use the harmonic mean of neighbouring secants, which is the
+    Fritsch-Carlson choice and is monotone by construction.
+    """
+    span_e = float(white_ev) - float(knee_ev)
+    span_z = float(peak_stops) - float(knee_stops)
+    if span_e <= 0.0 or span_z <= _EPS:
+        return ()
+
+    for count in range(1, MAX_SHOULDER_SEGMENTS + 1):
+        knots_e = [knee_ev + span_e * i / count for i in range(count + 1)]
+        # Interpolate the stop targets along a shape that already decelerates, so the
+        # secants fall monotonically and interior tangents inherit that ordering.
+        fractions = [i / count for i in range(count + 1)]
+        knots_z = [
+            knee_stops + span_z * (1.0 - (1.0 - f) ** 2) for f in fractions
+        ]
+        knots_z[-1] = float(peak_stops)
+
+        secants = [
+            (knots_z[i + 1] - knots_z[i]) / (knots_e[i + 1] - knots_e[i])
+            for i in range(count)
+        ]
+        knots_m = [float(knee_slope)]
+        for i in range(1, count):
+            left, right = secants[i - 1], secants[i]
+            if left <= 0.0 or right <= 0.0:
+                knots_m.append(0.0)
+            else:
+                knots_m.append(2.0 * left * right / (left + right))
+        knots_m.append(0.0)
+
+        segments = _segment_chain(knots_e, knots_z, knots_m)
+        if all(_segment_is_monotone(seg) for seg in segments):
+            return segments
+    return ()
+
+
+def _segment_is_monotone(seg: HdrShoulderSegment) -> bool:
+    """Fritsch-Carlson sufficiency: non-negative tangents inside a radius-3 disc."""
+    alpha, beta = seg.alpha, seg.beta
+    if not (math.isfinite(alpha) and math.isfinite(beta)):
+        return False
+    if alpha < 0.0 or beta < 0.0:
+        return False
+    return alpha * alpha + beta * beta <= MAX_SINGLE_SEGMENT_ALPHA ** 2 + 1e-12
+
+
+def compile_hdr_shoulder(
+    knee_ev: float,
+    white_ev: float,
+    peak_stops: float,
+    contrast: float,
+    body_gamma: float = DARKTABLE_BASE_GAMMA,
+    midgray: float = SCENE_MIDGRAY,
+    reference_range_ev: float = AGX_REFERENCE_RANGE_EV,
+) -> tuple[HdrShoulderSegment, ...]:
+    """Build the shoulder joining the body at K to the content peak at W.
+
+    Tries one segment first because that is the smooth case; subdivides only when the
+    scene asks for more stop growth than a single monotone cubic can deliver. Returns an
+    empty tuple when the request is degenerate, which callers must treat as "no HDR"
+    rather than substituting something that merely renders.
+    """
+    _, knee_stops, knee_slope = body_anchor_at_ev(
+        knee_ev, contrast, body_gamma, midgray, reference_range_ev
+    )
+    if not math.isfinite(knee_stops) or not math.isfinite(knee_slope):
+        return ()
+    span_e = float(white_ev) - float(knee_ev)
+    span_z = float(peak_stops) - float(knee_stops)
+    if span_e <= 0.0 or span_z <= _EPS:
+        return ()
+
+    single = HdrShoulderSegment(
+        e0=float(knee_ev), e1=float(white_ev),
+        z0=float(knee_stops), z1=float(peak_stops),
+        m0=float(knee_slope), m1=0.0,
+    )
+    if _segment_is_monotone(single):
+        return (single,)
+    return adaptive_monotone_segments(
+        knee_ev, white_ev, knee_stops, peak_stops, knee_slope
+    )
+
+
+def validate_hdr_shoulder(
+    segments: tuple[HdrShoulderSegment, ...],
+    knee_slope: float,
+    peak_stops: float,
+) -> tuple[bool, str]:
+    """Check the structural contract: C1 joins, pinned tangents, monotone pieces."""
+    if not segments:
+        return False, "shoulder 为空"
+    if abs(segments[0].m0 - float(knee_slope)) > 1e-9:
+        return False, "起点导数被修改，K 处不再与 body C1"
+    if abs(segments[-1].m1) > 1e-12:
+        return False, "白端导数非零"
+    if abs(segments[-1].z1 - float(peak_stops)) > 1e-9:
+        return False, "白端未到达 Z_peak"
+    for i, seg in enumerate(segments):
+        if not _segment_is_monotone(seg):
+            return False, f"segment {i} 不满足单调条件 (alpha={seg.alpha:.4f})"
+        if i and abs(seg.z0 - segments[i - 1].z1) > 1e-12:
+            return False, f"segment {i} 与前段值不连续"
+        if i and abs(seg.m0 - segments[i - 1].m1) > 1e-12:
+            return False, f"segment {i} 与前段导数不连续"
+    return True, ""
 
 
 def achieved_headroom_ev(hdr_response) -> float:
-    """H_actual: what the render reached, which is not what it was allowed."""
+    """Actual headroom reached by rendered pixels, distinct from the curve's endpoint."""
+    from ._deps import np
+
     arr = np.asarray(hdr_response, dtype=np.float64)
     peak = float(np.max(arr)) if arr.size else 0.0
     return float(math.log2(peak)) if peak > 1.0 else 0.0

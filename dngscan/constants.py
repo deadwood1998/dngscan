@@ -60,17 +60,29 @@ DEFAULT_HDR_HEADROOM_EV = 3.0
 DEFAULT_HDR_PEAK_NITS = HDR_REFERENCE_WHITE_NITS * (2.0 ** DEFAULT_HDR_HEADROOM_EV)
 MAX_HDR_PEAK_NITS = 4000.0
 MAX_HDR_HEADROOM_EV = math.log2(MAX_HDR_PEAK_NITS / HDR_REFERENCE_WHITE_NITS)
-# Nominal 100%-reflectance white relative to the fixed 18% scene-gray anchor. This is a
-# scene-coordinate convention, not a claim that measured diffuse white always lands here.
-DIFFUSE_WHITE_EV = math.log2(1.0 / 0.18)
+# Scene and output mid gray. One value, used as both the scene EV origin and the output
+# stop origin; the two coordinates are distinct even though the anchor number is shared.
+SCENE_MIDGRAY = 0.18
+# Stops from output mid gray up to output reference white (T = 1.0). Named for what it is:
+# a property of the output coordinate system. It is emphatically *not* a measurement of
+# where diffuse white sits in any particular scene, and must never be read as a claim that
+# some scene EV is a white object -- the old DIFFUSE_WHITE_EV name invited exactly that.
+OUTPUT_REFERENCE_WHITE_STOPS = math.log2(1.0 / SCENE_MIDGRAY)
+# darktable's internal AgX encoding exponent, applied as linear = encoded ** gamma. It is
+# not a display transfer function. HDR v2 holds it fixed: the extended white endpoint is
+# carried by the shoulder, so gamma no longer has to buy peak at the toe's expense.
+DARKTABLE_BASE_GAMMA = 2.2
+# AgX's historical -10..+6.5 EV normalization span. `contrast` is quoted against it, so a
+# plan's encoded slope is contrast * (W-B) / 16.5 rather than contrast itself.
+AGX_REFERENCE_RANGE_EV = 16.5
 
 # ITU-R BT.2020/D65 linear-light Y coefficients. Keep these separate from the inverse
 # of dngscan's legacy rounded XYZ matrix: that inverse is intentionally frozen for SDR
 # pixel compatibility and its Y row does not sum to exactly one.
 REC2020_LUMA = (0.2627, 0.6780, 0.0593)
-# HDR display rendering transforms. "agx" is dngscan's HDR extension around darktable's
-# AgX formation, described by docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md. darktable itself does
-# not define this extended-P3 HDR allocation or the gain-map delivery contract.
+# HDR display rendering transforms. "agx" is dngscan's native extended-white curve around
+# darktable's AgX formation, described by docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md. darktable
+# itself does not define this extended-P3 rendition or the gain-map delivery contract.
 HDR_DRT_CHOICES = ("agx",)
 DEFAULT_HDR_DRT = "agx"
 
