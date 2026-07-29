@@ -167,13 +167,14 @@ def apple_gainmap_backend_status() -> tuple[bool, str]:
     """Keep production HDR disabled while the darktable-style HDR AgX is designed.
 
     The private round-trip probe remains available for packaging experiments, but a
-    successful container backend is not enough: the ACES-derived rendition currently in
-    this module is no longer the intended HDR DRT. Public callers must not accidentally
-    promote it to a supported output merely because a future OS passes the probe.
+    successful container backend is not enough: the ACES-derived renderer that used to
+    supply the alternate has been removed, and the darktable-style HDR AgX that replaces
+    it does not exist yet. Public callers must not promote packaging readiness into a
+    supported output merely because a future OS passes the probe.
     """
     return False, (
         "HDR 输出已暂停：正在重新设计独立的 darktable-style HDR AgX 核；"
-        "当前 ACES/gain-map 实验不会写入生产文件"
+        "gain-map 封装可用，但没有可写入的 HDR rendition"
     )
 
 
@@ -439,7 +440,7 @@ def write_apple_gainmap_jpeg(
         if fmt in ("", "L008"):
             raise RuntimeError(
                 f"HDR JPEG gain map 不是 RGB 辅助图（got {fmt or '未知'}）；"
-                "独立 ACES 2-derived color geometry 需要 RGB gain map"
+                "独立 HDR color geometry 需要 RGB gain map"
             )
         if info["headroom"] <= 1.0:
             raise RuntimeError("HDR JPEG 未声明有效的扩展动态范围")

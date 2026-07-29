@@ -44,7 +44,7 @@ class GainCurveTests(unittest.TestCase):
         self.assertEqual(args.grade, "none")
         self.assertEqual(args.jpeg_quality, 100)
         self.assertEqual(args.chroma, "444")
-        self.assertEqual(args.hdr_drt, "aces2")
+        self.assertEqual(args.hdr_drt, "agx")
 
     def test_gain_is_c1_monotone_and_bounded(self) -> None:
         start = HDR_DIFFUSE_WHITE_EV

@@ -98,7 +98,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--hdr-drt",
         choices=HDR_DRT_CHOICES,
         default=DEFAULT_HDR_DRT,
-        help="HDR display rendering transform（当前仅 aces2=ACES 2-derived）",
+        help="HDR display rendering transform（当前仅 agx=darktable 式 HDR AgX，尚未实现）",
     )
     parser.add_argument(
         "--hdr-debug-dir",
@@ -472,7 +472,7 @@ def main(argv: list[str]) -> int:
         if jpeg_path is not None and args.output_format == "ultrahdr":
             print(
                 f"JPEG HDR: Apple Core Image ISO 21496-1；Display P3 SDR 底图；"
-                f"ACES 2-derived RGB gain map；capacity=+{args.hdr_headroom:.2f}EV"
+                f"darktable 式 HDR AgX RGB gain map；capacity=+{args.hdr_headroom:.2f}EV"
             )
         return 0
     except Exception as exc:

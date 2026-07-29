@@ -2,6 +2,8 @@
 """Core datatypes passed through the dngscan pipeline."""
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -334,63 +336,56 @@ class SceneScaleContract:
 
 @dataclass(frozen=True)
 class HdrDisplayTarget:
-    limiting_gamut: str = "p3"
-    white_point: str = "D65"
+    """What the display can show, independent of any photograph.
+
+    reference_white is the SDR anchor, not ITU's 203 nit HDR reference white: changing it
+    would move the 18% gray anchor of every render, so it stays parameterised rather than
+    silently redefined.
+    """
+
     reference_white_nits: float = 100.0
-    capacity_ev: float = 3.0
     peak_nits: float = 800.0
-    linear_output: bool = True
-    aces_version: str = "v2.0.0+2025.04.04-derived"
+    limiting_gamut: str = "p3"
+
+    @property
+    def display_headroom_ev(self) -> float:
+        return math.log2(self.peak_nits / self.reference_white_nits)
 
 
 @dataclass(frozen=True)
-class HdrSceneMetrics:
-    body_ev_p50: float
-    reliable_tail_ev_p9999: float
-    diffuse_white_ev: float
-    broad_highlight_pct: float
-    sparse_emitter_pct: float
-    raw_clip_union_pct: float
-    spatial_evidence: str  # cfa / aggregate / none
-    scale_confidence: str  # calibrated / relative / decoder-native
+class HdrToneAllocation:
+    """Where the extra display stops are spent, and how many the scene justifies.
+
+    Three headrooms stay separate on purpose: display is capacity, budget is what this
+    scene's reliable tail supports, actual is what the render reached. Collapsing them is
+    how HDR implementations end up normalising every frame to peak white.
+    """
+
+    knee_ev: float
+    white_ev: float
+    display_headroom_ev: float
+    budget_headroom_ev: float
+    reliable_tail_ev: float
+    minimum_window_ev: float
 
 
 @dataclass(frozen=True)
-class HdrColorGeometryPlan:
-    target_peak_nits: float
-    limiting_gamut: str
-    chroma_compression_enabled: bool
-    gamut_compression_enabled: bool
-    white_limiting_enabled: bool
-    low_mid_match_enabled: bool
-    reveal_start_ev: float
-    reveal_end_ev: float
-    raw_evidence_strength: float
+class HdrColorGeometry:
+    """How much of the extra range each channel may use independently."""
+
+    channel_separation: float
+    raw_clip_retreat: float
+    snr_gate: float
+    hue_restore: float
+    primaries_preset: str
+    gamut_fit_margin: float
 
 
 @dataclass(frozen=True)
-class HdrRenderPlan:
-    target: HdrDisplayTarget
-    scene: HdrSceneMetrics
-    color: HdrColorGeometryPlan
-    midgray_match_scale: float
-    reference_transform_id: str
+class HdrAgxPlan:
+    """Immutable HDR plan compiled beside, never inside, the SDR plan."""
 
-
-@dataclass(frozen=True)
-class DualRenditionPlan:
-    sdr: RenderPlan
-    hdr: HdrRenderPlan
-    scale: SceneScaleContract
-
-
-@dataclass(frozen=True)
-class HdrRenderDiagnostics:
-    actual_content_headroom: float
-    peak_luminance_ratio: float
-    pct_above_reference_white: float
-    pct_above_2x: float
-    pct_above_4x: float
-    min_channel_gain: tuple[float, float, float]
-    max_channel_gain: tuple[float, float, float]
-    sdr_hdr_midgray_delta_ev: float
+    sdr_base: RenderPlan
+    display: HdrDisplayTarget
+    tone: HdrToneAllocation
+    color: HdrColorGeometry

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compatibility helpers for :class:`~dngscan.models.SceneScaleContract`.
 
-Phase 1 of the ACES 2 HDR plan: name the multiplies that already exist without
+Name the multiplies that already exist without
 reordering them. Pixel maths must stay identical to
 ``stored / bundle.scene_scale * bundle.exposure_gain``.
 """

@@ -52,11 +52,15 @@ JPEG_OUTPUT_FORMATS = ("sdr", "ultrahdr")
 
 
 DEFAULT_HDR_HEADROOM_EV = 3.0
-# First-release ACES2 HDR capacity ceiling: log2(4000/100).
+# HDR capacity ceiling: log2(4000/100). A display-side bound on how much
+# headroom may be requested, not a target any scene has to reach.
 MAX_HDR_HEADROOM_EV = math.log2(4000.0 / 100.0)
 DIFFUSE_WHITE_EV = math.log2(1.0 / 0.18)
-HDR_DRT_CHOICES = ("aces2",)
-DEFAULT_HDR_DRT = "aces2"
+# HDR display rendering transforms. "agx" is the darktable-style HDR AgX being
+# built per docs/DARKTABLE_HDR_AGX_DESIGN.zh-CN.md; it is the only intended DRT, and
+# HDR output stays suspended until its math gates pass.
+HDR_DRT_CHOICES = ("agx",)
+DEFAULT_HDR_DRT = "agx"
 
 
 XYZ_TO_RGB = {

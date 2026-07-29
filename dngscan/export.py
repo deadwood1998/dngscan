@@ -2,14 +2,15 @@
 """SDR and Apple ISO gain-map HDR JPEG export."""
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ._deps import mpimg, np
 from .color import output_gamut_label, output_icc_profile_bytes
-from .constants import DEFAULT_HDR_HEADROOM_EV
-from .gainmap import write_apple_gainmap_jpeg
+from .constants import (
+    DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, HDR_DRT_CHOICES,
+)
+from .gainmap import apple_gainmap_backend_status
 from .models import Analysis, RawBundle, RenderPlan, ToneCompressionPlan
 from .render import render_output_u8
 
@@ -62,62 +63,24 @@ def export_ultrahdr_jpeg(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
-    hdr_drt: str = "aces2",
+    hdr_drt: str = DEFAULT_HDR_DRT,
 ) -> dict[str, Any]:
-    output_gamut = "p3"
-    if look != "none" or display_filter != "none":
-        raise RuntimeError(
-            "Ultrahdr 第一版仅支持 look=none 与 display_filter=none；"
-            "现有 display look/filter 尚未 HDR 化，不能静默忽略"
-        )
-    if str(hdr_drt) != "aces2":
-        raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（当前仅支持 aces2）")
-    try:
-        from .grade import RENDER_MODE
-        from .hdr_render import build_hdr_alternate_from_dual_rendition
-        from .hdr_tone import clamp_hdr_capacity_ev
-        from .models import RenderPlan
-        from .tone import build_render_plan
+    """Refuse HDR export until the darktable-style HDR AgX core exists.
 
-        capacity = clamp_hdr_capacity_ev(hdr_headroom)
-        # When no plan is supplied, honour the caller's core/primaries so a no-plan HDR
-        # export cannot silently diverge from the matching SDR settings.
-        plan = tone_plan if tone_plan is not None else build_render_plan(
-            bundle, analysis, RENDER_MODE, output_gamut, scene_transform, scene_transform_strength,
-            punch_scale, tone_core, lum_norm, agx_primaries=agx_primaries,
-        )
-        if not isinstance(plan, RenderPlan):
-            raise RuntimeError("Ultrahdr 需要完整 RenderPlan")
-        base_u8 = render_output_u8(
-            bundle,
-            analysis,
-            output_gamut,
-            plan,
-            look,
-            look_strength,
-            display_filter,
-            filter_strength,
-            scene_transform,
-            scene_transform_strength,
-            tone_core,
-            lum_norm,
-            agx_primaries,
-        )
-        hdr_rgba, diagnostics, hdr_plan = build_hdr_alternate_from_dual_rendition(
-            bundle,
-            analysis,
-            plan,
-            base_u8,
-            capacity_ev=capacity,
-            scene_transform=scene_transform,
-            scene_transform_strength=scene_transform_strength,
-        )
-        info = write_apple_gainmap_jpeg(base_u8, hdr_rgba, out_path, quality, capacity)
-        info["diagnostics"] = asdict(diagnostics)
-        info["reference_transform_id"] = hdr_plan.reference_transform_id
-        return info
-    except Exception as exc:
-        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {exc}") from exc
+    The ACES 2-derived renderer that used to live behind this entry point has been
+    removed rather than left dormant: keeping an unreachable second DRT around invites
+    it being promoted back by a future edit, and its plan/evidence types would have to
+    be maintained against a design they no longer match. The signature is preserved so
+    callers and their tests keep type-checking while the AgX HDR core is built.
+    """
+    if str(hdr_drt) not in HDR_DRT_CHOICES:
+        raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（可选：{'/'.join(HDR_DRT_CHOICES)}）")
+    supported, reason = apple_gainmap_backend_status()
+    if not supported:
+        raise RuntimeError(f"Cannot export Apple ISO gain-map HDR JPEG: {reason}")
+    raise RuntimeError(
+        "Cannot export Apple ISO gain-map HDR JPEG: darktable-style HDR AgX 核尚未实现"
+    )
 
 
 def export_srgb_jpeg(
@@ -175,7 +138,7 @@ def export_jpeg(
     agx_primaries: str = "base",
     punch_scale: float = 1.0,
     return_rgb: bool = False,
-    hdr_drt: str = "aces2",
+    hdr_drt: str = DEFAULT_HDR_DRT,
 ) -> Any:
     if output_format == "ultrahdr":
         return export_ultrahdr_jpeg(
