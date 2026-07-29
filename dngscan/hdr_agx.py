@@ -17,24 +17,102 @@ no pixel region is required to match between SDR and HDR.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
 
 from ._deps import np
 from . import agx as agx_engine
+from . import guidance as guidance_engine
 from . import punch as punch_engine
-from . import scene_transform as scene_transform_engine
 from . import retreat as retreat_engine
-from .color import rec2020_to_output
-from .hdr_curve import apply_hdr_curve
+from . import scene_transform as scene_transform_engine
+from .color import encode_display_linear, rec2020_to_output
+from .drt import curve_params_from_plan
+from .hdr_curve import apply_hdr_curve_pair
 from .hdr_color import (
     blend_native_hdr_paths,
     fit_hdr_color_volume,
     formation_luma_weights,
     raw_gated_channel_separation,
 )
-from .models import HdrAgxPlan, RawBundle, RenderPlan, ToneCompressionPlan
-from .render import scene_rec2020_to_float
+from .models import Analysis, HdrAgxPlan, RawBundle, RenderPlan, ToneCompressionPlan
+from .render import (
+    STREAM_QUANTIZE_CHUNK,
+    STREAM_RENDER_CHUNK,
+    STREAM_THREAD_MIN_PIXELS,
+    apply_tone_core,
+    dither_quantize_u8,
+    finalize_output_linear,
+    plan_with_look_overrides,
+    scene_rec2020_to_float,
+)
+
+
+def _hdr_tone_plan(hdr_plan: HdrAgxPlan) -> ToneCompressionPlan:
+    return replace(
+        hdr_plan.formation,
+        hue_restore=float(hdr_plan.color.hue_restore),
+        agx_primaries=str(hdr_plan.color.primaries_preset),
+    )
+
+
+def _pack_peak(hdr_plan: HdrAgxPlan) -> float:
+    peak = float(hdr_plan.tone.peak_linear)
+    return peak * max(0.0, 1.0 - float(hdr_plan.color.gamut_fit_margin))
+
+
+def _form_hdr_chunk(
+    intent_rec: Any,
+    hdr_plan: HdrAgxPlan,
+    hdr_tone_plan: ToneCompressionPlan,
+    inset_matrix: Any,
+    outset_matrix: Any,
+    formation_y: Any,
+    body_params: dict[str, float | bool],
+    clip_masks_chunk: Any | None,
+    peak: float,
+    output_gamut: str,
+) -> Any:
+    """One HDR display-linear chunk from shared scene-intent Rec.2020."""
+    inset, pre_hue = agx_engine.prepare_formation(intent_rec, hdr_tone_plan, inset_matrix)
+    global_rho = float(hdr_plan.color.channel_separation) * float(hdr_plan.color.snr_gate)
+    # Algebraic identity: blend with rho==0 returns the native path, so the reference
+    # candidate (and its second Hermite) is pure waste when global permission is zero.
+    need_reference = (
+        global_rho > 0.0
+        and float(hdr_plan.tone.rendered_headroom_ev) > 0.0
+        and abs(float(hdr_plan.tone.peak_linear) - 1.0) > 1e-12
+    )
+    native_formation, reference_formation = apply_hdr_curve_pair(
+        inset,
+        hdr_plan.tone,
+        hdr_tone_plan,
+        need_reference=need_reference,
+        body_params=body_params,
+    )
+    if need_reference:
+        rho = raw_gated_channel_separation(global_rho, clip_masks_chunk)
+        formation = blend_native_hdr_paths(
+            reference_formation,
+            native_formation,
+            rho,
+            formation_y,
+        )
+    else:
+        formation = native_formation
+    mapped_rec = agx_engine.finish_formation(
+        formation, pre_hue, hdr_tone_plan, outset_matrix
+    )
+    mapped_rec = punch_engine.apply_punch_rec2020(
+        mapped_rec, float(getattr(hdr_tone_plan, "punch_strength", 0.0))
+    )
+    output_linear = rec2020_to_output(mapped_rec, output_gamut)
+    output_linear = np.nan_to_num(output_linear, nan=0.0, posinf=1e6, neginf=-1e6)
+    return fit_hdr_color_volume(output_linear, peak, output_gamut).astype(
+        np.float32, copy=False
+    )
+
 
 def scene_render_to_hdr_display_linear(
     bundle: RawBundle,
@@ -55,13 +133,10 @@ def scene_render_to_hdr_display_linear(
 
     # HdrColorGeometry is the source of truth for the HDR branch. The values currently
     # start from shared scene intent, but both the tone object and geometry are HDR-owned.
-    hdr_tone_plan = replace(
-        hdr_plan.formation,
-        hue_restore=float(hdr_plan.color.hue_restore),
-        agx_primaries=str(hdr_plan.color.primaries_preset),
-    )
+    hdr_tone_plan = _hdr_tone_plan(hdr_plan)
     inset_matrix, outset_matrix = agx_engine.formation_matrices(hdr_tone_plan)
     formation_y = formation_luma_weights(outset_matrix)
+    body_params = curve_params_from_plan(hdr_tone_plan)
 
     scene = bundle.scene_rec2020_render
     h, w = scene.shape[:2]
@@ -75,8 +150,7 @@ def scene_render_to_hdr_display_linear(
 
     # The scene-authorized native curve endpoint. Display capacity is only the container's
     # outer ceiling; using it here would normalize every photograph to display peak.
-    peak = float(hdr_plan.tone.peak_linear)
-    peak *= max(0.0, 1.0 - float(hdr_plan.color.gamut_fit_margin))
+    peak = _pack_peak(hdr_plan)
 
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
@@ -94,38 +168,187 @@ def scene_render_to_hdr_display_linear(
             rec = retreat_engine.apply_clip_retreat_rec2020(
                 rec, clip_masks[start:end], retreat_strength
             )
-        inset, pre_hue = agx_engine.prepare_formation(rec, hdr_tone_plan, inset_matrix)
-        # Both chroma candidates run the same v2 primitive and share one compiled knee
-        # anchor, so they leave the body at identical value and slope and differ only in
-        # where they head. A tone difference between them would confound every rho A/B.
-        native_formation = apply_hdr_curve(inset, hdr_plan.tone, hdr_tone_plan)
-        reference_formation = (
-            native_formation
-            if float(hdr_plan.tone.rendered_headroom_ev) <= 0.0
-            else apply_hdr_curve(inset, hdr_plan.tone, hdr_tone_plan, peak_linear=1.0)
-        )
-        rho = float(hdr_plan.color.channel_separation) * float(hdr_plan.color.snr_gate)
-        rho = raw_gated_channel_separation(
-            rho, clip_masks[start:end] if clip_masks is not None else None
-        )
-        formation = blend_native_hdr_paths(
-            reference_formation,
-            native_formation,
-            rho,
+        out[start:end] = _form_hdr_chunk(
+            rec,
+            hdr_plan,
+            hdr_tone_plan,
+            inset_matrix,
+            outset_matrix,
             formation_y,
-        )
-        mapped_rec = agx_engine.finish_formation(
-            formation, pre_hue, hdr_tone_plan, outset_matrix
-        )
-        mapped_rec = punch_engine.apply_punch_rec2020(
-            mapped_rec, float(getattr(hdr_tone_plan, "punch_strength", 0.0))
-        )
-        output_linear = rec2020_to_output(mapped_rec, output_gamut)
-        output_linear = np.nan_to_num(output_linear, nan=0.0, posinf=1e6, neginf=-1e6)
-        out[start:end] = fit_hdr_color_volume(output_linear, peak, output_gamut).astype(
-            np.float32, copy=False
+            body_params,
+            clip_masks[start:end] if clip_masks is not None else None,
+            peak,
+            output_gamut,
         )
     return out.reshape(h, w, 3)
+
+
+def render_ultrahdr_agx_pair(
+    bundle: RawBundle,
+    analysis: Analysis,
+    plan: RenderPlan,
+    hdr_plan: HdrAgxPlan,
+    output_gamut: str = "p3",
+    scene_transform: str = "none",
+    scene_transform_strength: float = 1.0,
+) -> tuple[Any, Any]:
+    """One intent walk producing SDR u8 and HDR display-linear.
+
+    Ultrahdr previously paid for two full-resolution formations of the same scene intent.
+    Scale, scene transform and clip retreat are shared; each branch then runs its own
+    display formation. SDR still goes through ``apply_tone_core`` so the native AgX kernel
+    and dither grouping match a standalone ``render_output_u8`` export.
+    """
+    if str(getattr(plan.tone, "tone_core", "agx")) != "agx":
+        raise RuntimeError("Ultrahdr AgX pair 仅支持 tone_core=agx")
+
+    effective_plan = plan_with_look_overrides(plan, "none", 1.0)
+    effective_tone = effective_plan.tone if isinstance(effective_plan, RenderPlan) else effective_plan
+    color_plan = effective_plan.color if isinstance(effective_plan, RenderPlan) else None
+
+    hdr_tone_plan = _hdr_tone_plan(hdr_plan)
+    inset_matrix, outset_matrix = agx_engine.formation_matrices(hdr_tone_plan)
+    formation_y = formation_luma_weights(outset_matrix)
+    body_params = curve_params_from_plan(hdr_tone_plan)
+    peak = _pack_peak(hdr_plan)
+
+    scene = bundle.scene_rec2020_render
+    h, w = scene.shape[:2]
+    flat_scene = scene.reshape(-1, scene.shape[-1])
+    sdr_out = np.empty((flat_scene.shape[0], 3), dtype=np.uint8)
+    hdr_out = np.empty((flat_scene.shape[0], 3), dtype=np.float32)
+
+    quantize_chunk_size = STREAM_QUANTIZE_CHUNK
+    render_chunk_size = (
+        STREAM_RENDER_CHUNK
+        if flat_scene.shape[0] >= STREAM_THREAD_MIN_PIXELS
+        else quantize_chunk_size
+    )
+    if quantize_chunk_size % render_chunk_size != 0:
+        raise ValueError(
+            f"stream chunking misaligned: quantize {quantize_chunk_size} "
+            f"must be a multiple of render {render_chunk_size}"
+        )
+
+    clip_masks = None
+    raw_guidance = None
+    if color_plan is not None and getattr(bundle, "clip_masks", None) is not None:
+        clip_masks = retreat_engine.clip_masks_for_shape(bundle, (h, w)).reshape(-1, 3)
+        if str(getattr(effective_tone, "tone_core", "agx")) == "gated":
+            raw_guidance = guidance_engine.raw_guidance_for_shape(bundle, (h, w), analysis)
+
+    wb_adapt = scene_transform_engine.wb_adaptation_ratios(
+        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
+    )
+    # Ultrahdr forces look/filter off. HDR copies retreat from the scene plan, so one
+    # shared intent strength matches what each branch would have applied alone.
+    shared_retreat = (
+        float(color_plan.raw_clip_retreat_strength) if color_plan is not None else 0.0
+    )
+
+    def render_pair_chunk(start: int, end: int) -> tuple[Any, Any]:
+        rec = scene_rec2020_to_float(
+            flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain
+        )
+        rec = scene_transform_engine.apply_scene_transform_rec2020(
+            rec, scene_transform, scene_transform_strength, wb_adapt
+        )
+        sample_masks = clip_masks[start:end] if clip_masks is not None else None
+        if sample_masks is not None and shared_retreat > 0.0:
+            rec = retreat_engine.apply_clip_retreat_rec2020(
+                rec, sample_masks, shared_retreat
+            )
+        mapped_rec = apply_tone_core(
+            rec,
+            effective_tone,
+            color_plan,
+            sample_masks,
+            guidance_engine.flatten_raw_guidance(raw_guidance, start, end)
+            if raw_guidance is not None
+            else None,
+        )
+        output_linear = rec2020_to_output(mapped_rec, output_gamut)
+        output_linear = np.nan_to_num(
+            output_linear, nan=0.0, posinf=1e6, neginf=-1e6
+        ).astype(np.float32, copy=False)
+        finalized = finalize_output_linear(
+            output_linear, output_gamut, "none", 1.0, color_plan
+        )
+        sdr_final = np.nan_to_num(
+            finalized.astype(np.float32, copy=False),
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+        )
+        hdr_final = _form_hdr_chunk(
+            rec,
+            hdr_plan,
+            hdr_tone_plan,
+            inset_matrix,
+            outset_matrix,
+            formation_y,
+            body_params,
+            sample_masks,
+            peak,
+            output_gamut,
+        )
+        return sdr_final, hdr_final
+
+    ranges = [
+        (start, min(start + render_chunk_size, flat_scene.shape[0]))
+        for start in range(0, flat_scene.shape[0], render_chunk_size)
+    ]
+    rng = np.random.default_rng(0)
+
+    def quantize_chunk(start: int, end: int, finalized: Any) -> None:
+        encoded = encode_display_linear(finalized, output_gamut)
+        sdr_out[start:end] = dither_quantize_u8(encoded, rng)
+
+    def consume_in_quantize_groups(results: Any) -> None:
+        group_start = 0
+        group_parts: list[Any] = []
+        for start, end, sdr_final, hdr_final in results:
+            hdr_out[start:end] = hdr_final
+            group_parts.append(sdr_final)
+            group_end = min(group_start + quantize_chunk_size, flat_scene.shape[0])
+            if end == group_end:
+                merged = (
+                    group_parts[0]
+                    if len(group_parts) == 1
+                    else np.concatenate(group_parts, axis=0)
+                )
+                quantize_chunk(group_start, group_end, merged)
+                group_start = group_end
+                group_parts = []
+
+    if flat_scene.shape[0] < STREAM_THREAD_MIN_PIXELS or len(ranges) < 2:
+        consume_in_quantize_groups(
+            (start, end, *render_pair_chunk(start, end)) for start, end in ranges
+        )
+    else:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dngscan-ultrahdr") as pool:
+            pending: dict[int, Any] = {}
+            submit_idx = 0
+            while submit_idx < min(2, len(ranges)):
+                start, end = ranges[submit_idx]
+                pending[submit_idx] = pool.submit(render_pair_chunk, start, end)
+                submit_idx += 1
+
+            def ordered_results() -> Any:
+                nonlocal submit_idx
+                for idx, (start, end) in enumerate(ranges):
+                    sdr_final, hdr_final = pending.pop(idx).result()
+                    if submit_idx < len(ranges):
+                        next_start, next_end = ranges[submit_idx]
+                        pending[submit_idx] = pool.submit(
+                            render_pair_chunk, next_start, next_end
+                        )
+                        submit_idx += 1
+                    yield start, end, sdr_final, hdr_final
+
+            consume_in_quantize_groups(ordered_results())
+
+    return sdr_out.reshape(h, w, 3), hdr_out.reshape(h, w, 3)
 
 
 def to_gainmap_alternate(hdr_display_linear: Any, peak: float) -> Any:

@@ -23,19 +23,6 @@ used by Eary Chow's AgX LUT generator:
 
 No third-party display or camera LUT is distributed with dngscan.
 
-## ACES (Apache-2.0)
-
-The ACES 2-derived HDR reference kernel under `dngscan/aces2/` ports algorithms
-from the Academy Software Foundation's ACES project:
-
-- https://github.com/AcademySoftwareFoundation/aces
-- https://github.com/AcademySoftwareFoundation/aces-core
-- https://github.com/AcademySoftwareFoundation/aces-output
-
-That source code is licensed under Apache-2.0. Pinned release commits and the
-Python-to-CTL function map are recorded in `dngscan/aces2/REFERENCE.md`.
-Local reference checkouts under `_ref/` are gitignored and not distributed.
-
 ## RAW to ACES spectral data (Apache-2.0)
 
 Selected camera sensitivities and training reflectances under

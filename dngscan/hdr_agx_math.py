@@ -33,7 +33,6 @@ Float64 and image-free: this is the oracle the float32 runtime is checked agains
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 from .constants import (
     AGX_REFERENCE_RANGE_EV,
@@ -41,6 +40,7 @@ from .constants import (
     OUTPUT_REFERENCE_WHITE_STOPS,
     SCENE_MIDGRAY,
 )
+from .models import HdrShoulderSegment
 
 # A single cubic Hermite with a zero end tangent is monotone iff its normalized start
 # tangent is within this bound. Exact, not a tuned threshold: it is the alpha axis of the
@@ -53,36 +53,6 @@ MAX_SINGLE_SEGMENT_ALPHA = 3.0
 MAX_SHOULDER_SEGMENTS = 16
 
 _EPS = 1e-12
-
-
-@dataclass(frozen=True)
-class HdrShoulderSegment:
-    """One monotone cubic Hermite piece in (scene EV -> output stops)."""
-
-    e0: float
-    e1: float
-    z0: float
-    z1: float
-    m0: float
-    m1: float
-
-    @property
-    def alpha(self) -> float:
-        """Normalized start tangent. The monotonicity test is alpha <= 3 when m1 = 0."""
-        span_e = self.e1 - self.e0
-        span_z = self.z1 - self.z0
-        if span_e <= 0.0 or span_z <= _EPS:
-            return math.inf
-        return self.m0 * span_e / span_z
-
-    @property
-    def beta(self) -> float:
-        """Normalized end tangent, zero for the final segment by construction."""
-        span_e = self.e1 - self.e0
-        span_z = self.z1 - self.z0
-        if span_e <= 0.0 or span_z <= _EPS:
-            return math.inf
-        return self.m1 * span_e / span_z
 
 
 def requested_headroom_ev(

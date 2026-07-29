@@ -28,7 +28,6 @@ from .models import (
     HdrAgxPlan,
     HdrColorGeometry,
     HdrDisplayTarget,
-    HdrShoulderSegment,
     HdrToneCurve,
     RenderPlan,
 )
@@ -220,9 +219,7 @@ def compile_hdr_agx_plan(
         peak_linear=2.0 ** rendered,
         reliable_tail_ev=tail,
         white_margin_ev=float(white_margin),
-        shoulder_segments=tuple(
-            HdrShoulderSegment(s.e0, s.e1, s.z0, s.z1, s.m0, s.m1) for s in segments
-        ),
+        shoulder_segments=tuple(segments),
         shoulder_alpha=float(segments[0].alpha) if segments else float("nan"),
     )
     # Compiled from RAW evidence when it is available. Without an Analysis there is no

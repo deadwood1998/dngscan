@@ -98,7 +98,7 @@ def export_ultrahdr_jpeg(
 
     try:
         from .grade import RENDER_MODE
-        from .hdr_agx import achieved_headroom, scene_render_to_hdr_display_linear, to_gainmap_alternate
+        from .hdr_agx import achieved_headroom, to_gainmap_alternate
         from .hdr_agx_plan import compile_hdr_agx_plan, describe_hdr_plan
         from .models import HdrDisplayTarget, RenderPlan as _RenderPlan
         from .tone import build_render_plan
@@ -126,13 +126,19 @@ def export_ultrahdr_jpeg(
                 f"{describe_hdr_plan(hdr_plan)}。请改用 --output-format sdr"
             )
 
-        base_u8 = render_output_u8(
-            bundle, analysis, output_gamut, plan, look, look_strength, display_filter,
-            filter_strength, scene_transform, scene_transform_strength, tone_core,
-            lum_norm, agx_primaries,
-        )
-        hdr_linear = scene_render_to_hdr_display_linear(
-            bundle, plan, hdr_plan, output_gamut, scene_transform, scene_transform_strength
+        from .hdr_agx import render_ultrahdr_agx_pair
+
+        # One shared intent walk: scale / scene transform / retreat once, then fork into
+        # independent SDR and HDR display formations. Avoids paying for two full-resolution
+        # scene preps on every Ultrahdr export.
+        base_u8, hdr_linear = render_ultrahdr_agx_pair(
+            bundle,
+            analysis,
+            plan,
+            hdr_plan,
+            output_gamut,
+            scene_transform,
+            scene_transform_strength,
         )
         # A robust p99.99 headroom is useful for the report, but it is not the container
         # declaration. The writer derives Apple content headroom from the exact finite peak

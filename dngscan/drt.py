@@ -7,6 +7,7 @@ that makes sparse lights glare while the rest of a dark frame stays unreadable.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from ._deps import np
@@ -15,15 +16,9 @@ from . import agx
 EPS = 1e-6
 
 
-def curve_params_from_plan(plan: Any) -> dict[str, float | bool]:
-    """Compile the darktable-style C1 curve for one scene plan.
-
-    Endpoints stay scene-derived and EV=0 remains the calibrated mid-gray anchor for
-    exposure. When pivot_ev_offset is non-zero the contrast pivot moves toward the
-    scene body (brightness-preserving shifted pivot + adaptive gamma).
-    """
+def _curve_params_key(plan: Any) -> tuple:
     pivot = round(float(getattr(plan, "pivot_ev_offset", 0.0)), 3)
-    return agx.curve_params(
+    return (
         round(float(getattr(plan, "black_ev", -10.0)), 3),
         round(float(getattr(plan, "white_ev", 6.5)), 3),
         round(float(getattr(plan, "contrast", 3.0)), 3),
@@ -31,21 +26,70 @@ def curve_params_from_plan(plan: Any) -> dict[str, float | bool]:
         round(float(getattr(plan, "shoulder_power", 3.3)), 3),
         round(float(getattr(plan, "latitude_lo_ev", 0.0)), 3),
         round(float(getattr(plan, "latitude_hi_ev", 0.0)), 3),
-        pivot_ev_offset=pivot,
-        target_black_linear=float(getattr(plan, "target_black_linear", 0.0)),
-        target_white_linear=float(getattr(plan, "target_white_linear", 1.0)),
-        keep_pivot_diagonal=abs(pivot) > 1e-6,
-        curve_gamma=float(getattr(plan, "curve_gamma", agx.DEFAULT_CURVE_GAMMA)),
+        pivot,
+        float(getattr(plan, "target_black_linear", 0.0)),
+        float(getattr(plan, "target_white_linear", 1.0)),
+        abs(pivot) > 1e-6,
+        float(getattr(plan, "curve_gamma", agx.DEFAULT_CURVE_GAMMA)),
     )
 
 
-def apply_c1_endpoints(ev: Any, plan: Any) -> Any:
+@lru_cache(maxsize=128)
+def _curve_params_cached(key: tuple) -> dict[str, float | bool]:
+    (
+        black_ev,
+        white_ev,
+        contrast,
+        toe_power,
+        shoulder_power,
+        latitude_lo_ev,
+        latitude_hi_ev,
+        pivot,
+        target_black_linear,
+        target_white_linear,
+        keep_pivot_diagonal,
+        curve_gamma,
+    ) = key
+    return agx.curve_params(
+        black_ev,
+        white_ev,
+        contrast,
+        toe_power,
+        shoulder_power,
+        latitude_lo_ev,
+        latitude_hi_ev,
+        pivot_ev_offset=pivot,
+        target_black_linear=target_black_linear,
+        target_white_linear=target_white_linear,
+        keep_pivot_diagonal=keep_pivot_diagonal,
+        curve_gamma=curve_gamma,
+    )
+
+
+def curve_params_from_plan(plan: Any) -> dict[str, float | bool]:
+    """Compile the darktable-style C1 curve for one scene plan.
+
+    Endpoints stay scene-derived and EV=0 remains the calibrated mid-gray anchor for
+    exposure. When pivot_ev_offset is non-zero the contrast pivot moves toward the
+    scene body (brightness-preserving shifted pivot + adaptive gamma).
+
+    Results are cached by the rounded parameter tuple: the hot path rebuilds the same
+    plan for every chunk and every HDR candidate.
+    """
+    return _curve_params_cached(_curve_params_key(plan))
+
+
+def apply_c1_endpoints(
+    ev: Any, plan: Any, params: dict[str, float | bool] | None = None
+) -> Any:
     """Apply darktable-style C1 sigmoid segments in the shared scene-EV domain."""
     e = np.asarray(ev, dtype=np.float32)
-    params = curve_params_from_plan(plan)
-    x = (e - float(params["black_ev"])) / float(params["range_ev"])
-    encoded = agx.apply_curve(np.clip(x, 0.0, 1.0), params)
-    return np.power(np.maximum(encoded, 0.0), float(params["gamma"])).astype(np.float32, copy=False)
+    resolved = params if params is not None else curve_params_from_plan(plan)
+    x = (e - float(resolved["black_ev"])) / float(resolved["range_ev"])
+    encoded = agx.apply_curve(np.clip(x, 0.0, 1.0), resolved)
+    return np.power(np.maximum(encoded, 0.0), float(resolved["gamma"])).astype(
+        np.float32, copy=False
+    )
 
 
 def c1_value_and_derivative_at_ev(ev: float, plan: Any) -> tuple[float, float]:

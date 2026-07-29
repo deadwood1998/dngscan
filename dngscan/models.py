@@ -370,6 +370,24 @@ class HdrShoulderSegment:
     m0: float
     m1: float
 
+    @property
+    def alpha(self) -> float:
+        """Normalized start tangent. Monotone when alpha <= 3 and m1 = 0."""
+        span_e = self.e1 - self.e0
+        span_z = self.z1 - self.z0
+        if span_e <= 0.0 or span_z <= 1e-12:
+            return math.inf
+        return self.m0 * span_e / span_z
+
+    @property
+    def beta(self) -> float:
+        """Normalized end tangent; zero for the final segment by construction."""
+        span_e = self.e1 - self.e0
+        span_z = self.z1 - self.z0
+        if span_e <= 0.0 or span_z <= 1e-12:
+            return math.inf
+        return self.m1 * span_e / span_z
+
 
 @dataclass(frozen=True)
 class HdrToneCurve:

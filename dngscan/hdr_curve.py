@@ -17,7 +17,7 @@ from typing import Any
 
 from ._deps import np
 from .constants import SCENE_MIDGRAY
-from .drt import apply_c1_endpoints
+from .drt import apply_c1_endpoints, curve_params_from_plan
 from .models import HdrShoulderSegment, HdrToneCurve
 
 _EPS = np.float32(1e-12)
@@ -50,11 +50,28 @@ def _hermite_stops(ev: Any, segments: tuple[HdrShoulderSegment, ...]) -> Any:
     return out
 
 
+def _apply_shoulder_above_knee(
+    body: Any,
+    ev: Any,
+    knee: float,
+    segments: tuple[HdrShoulderSegment, ...],
+) -> Any:
+    above = ev > np.float32(knee)
+    if not np.any(above):
+        return np.asarray(body, dtype=np.float32)
+    out = np.asarray(body, dtype=np.float32).copy()
+    stops = _hermite_stops(ev[above], segments)
+    out[above] = np.float32(SCENE_MIDGRAY) * np.exp2(stops)
+    return out
+
+
 def apply_hdr_curve(
     scene_rgb: Any,
     tone: HdrToneCurve,
     formation: Any,
     peak_linear: float | None = None,
+    *,
+    body_params: dict[str, float | bool] | None = None,
 ) -> Any:
     """Scene-linear channel values -> display-linear HDR output.
 
@@ -65,7 +82,8 @@ def apply_hdr_curve(
     """
     rgb = np.asarray(scene_rgb, dtype=np.float32)
     ev = np.log2(np.maximum(rgb, _EPS) / np.float32(SCENE_MIDGRAY))
-    body = apply_c1_endpoints(ev, formation)
+    params = body_params if body_params is not None else curve_params_from_plan(formation)
+    body = apply_c1_endpoints(ev, formation, params=params)
 
     segments = tone.shoulder_segments
     if not segments:
@@ -76,15 +94,49 @@ def apply_hdr_curve(
         if not segments:
             return np.asarray(body, dtype=np.float32)
 
-    knee = np.float32(tone.shoulder_start_ev)
-    above = ev > knee
-    if not np.any(above):
-        return np.asarray(body, dtype=np.float32)
+    return _apply_shoulder_above_knee(body, ev, float(tone.shoulder_start_ev), segments)
 
-    out = np.asarray(body, dtype=np.float32).copy()
-    stops = _hermite_stops(ev[above], segments)
-    out[above] = np.float32(SCENE_MIDGRAY) * np.exp2(stops)
-    return out
+
+def apply_hdr_curve_pair(
+    scene_rgb: Any,
+    tone: HdrToneCurve,
+    formation: Any,
+    *,
+    need_reference: bool,
+    body_params: dict[str, float | bool] | None = None,
+) -> tuple[Any, Any]:
+    """Native extended curve plus optional reference-white chroma candidate.
+
+    The body below K is evaluated once. When ``need_reference`` is false the reference
+    alias is the native array (no second Hermite). This is an exact identity when rho is
+    zero: blend would return native anyway.
+    """
+    rgb = np.asarray(scene_rgb, dtype=np.float32)
+    ev = np.log2(np.maximum(rgb, _EPS) / np.float32(SCENE_MIDGRAY))
+    params = body_params if body_params is not None else curve_params_from_plan(formation)
+    body = apply_c1_endpoints(ev, formation, params=params)
+
+    segments = tone.shoulder_segments
+    if not segments:
+        native = np.asarray(body, dtype=np.float32)
+        return native, native
+
+    native = _apply_shoulder_above_knee(
+        body, ev, float(tone.shoulder_start_ev), segments
+    )
+    if not need_reference:
+        return native, native
+
+    if abs(float(tone.peak_linear) - 1.0) <= 1e-12:
+        return native, native
+
+    reference_segments = _rescaled_segments(tone, 1.0)
+    if not reference_segments:
+        return native, native
+    reference = _apply_shoulder_above_knee(
+        body, ev, float(tone.shoulder_start_ev), reference_segments
+    )
+    return native, reference
 
 
 def _rescaled_segments(
@@ -99,7 +151,6 @@ def _rescaled_segments(
     tone curve.
     """
     from .hdr_agx_math import compile_hdr_shoulder_from_anchor
-    from .constants import OUTPUT_REFERENCE_WHITE_STOPS
     import math
 
     if peak_linear <= 0.0:

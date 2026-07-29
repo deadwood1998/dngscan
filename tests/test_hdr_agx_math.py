@@ -13,7 +13,6 @@ from dngscan.constants import (
 )
 from dngscan.hdr_agx_math import (
     MAX_SINGLE_SEGMENT_ALPHA,
-    HdrShoulderSegment,
     achieved_headroom_ev,
     body_anchor_at_ev,
     body_anchor_from_curve,
@@ -24,6 +23,7 @@ from dngscan.hdr_agx_math import (
     requested_headroom_ev,
     validate_hdr_shoulder,
 )
+from dngscan.models import HdrShoulderSegment
 from dngscan.hdr_agx_plan import (
     MAXIMUM_WHITE_EV,
     NORMAL_MINIMUM_WHITE_EV,
