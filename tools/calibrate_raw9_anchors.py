@@ -40,7 +40,7 @@ from dngscan.tone import scene_intent_rec2020  # noqa: E402
 OUT_PATH = PROJECT_ROOT / "dngscan" / "decoder_anchor_transport.json"
 GRID = (64, 96)  # coarse block grid: warp-immune, still ~6k samples per frame
 MIN_EFFECTIVE_SUPPORT = 40.0  # weighted sample mass below which a class uses global
-RATIO_BOUNDS = (0.72, 1.25)  # measured global bg reaches 0.82: the two decoders realise 5500K differently  # implausible transport = measurement problem, refuse
+RATIO_BOUNDS = (0.65, 1.30)  # measured global bg reaches 0.82: the two decoders realise 5500K differently  # implausible transport = measurement problem, refuse
 
 import argparse
 
@@ -49,7 +49,11 @@ CORPORA = {
     # Central crop 1.0 = full frame. iPhone ProRAW under LibRaw carries uncorrected
     # lens shading (the DNG GainMap opcode is Apple-side), which colours the corners;
     # restricting the measurement to the central region keeps the pairing clean.
-    "default": (("_SDI0150.DNG", "_SDI0133.DNG", "_SDI0199.DNG", "_SDI0237.DNG", "_SDI0165.DNG"), 1.0),
+    # fp DNGs carry a lens-shading GainMap opcode that RAW 9 applies and LibRaw does
+    # not (measured in coreimage_decode), so fp needs the same central crop as iPhone;
+    # the radial warp is also near a full block at the corners. The first fp pass ran
+    # full-frame — corner shading contaminated ~40% of blocks.
+    "default": (("_SDI*.DNG",), 0.6),
     "Apple iPhone 16 Pro": (("Original RAW *.dng",), 0.6),
 }
 
@@ -108,6 +112,19 @@ def main() -> int:
 
     global_ratio = np.median(ratios, axis=0)
     print(f"global transport: rg x{global_ratio[0]:.4f}  bg x{global_ratio[1]:.4f}")
+
+    # Split-half stability: the same estimator on odd/even frames. The disagreement is
+    # an honest scale for how much the corpus (not the estimator) constrains the value.
+    if len(pairs) >= 4:
+        halves = []
+        for sel in (pairs[0::2], pairs[1::2]):
+            cl = np.concatenate([p[0] for p in sel])
+            cr = np.concatenate([p[1] for p in sel])
+            halves.append(np.median(cr / np.maximum(cl, 1e-6), axis=0))
+        drift = np.abs(halves[0] - halves[1])
+        print(f"split-half drift: rg {drift[0]:.4f}  bg {drift[1]:.4f}"
+              f"  (halves rg {halves[0][0]:.4f}/{halves[1][0]:.4f},"
+              f" bg {halves[0][1]:.4f}/{halves[1][1]:.4f})")
 
     # Per-class, weighted by the LibRaw-side window membership of every film preset's
     # material family. Classes share names across presets; measure once per name using

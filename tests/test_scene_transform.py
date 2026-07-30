@@ -189,3 +189,48 @@ class DecoderTransportTests(unittest.TestCase):
         self.assertEqual(tagged[2], "coreimage")
         legacy = wb_adaptation_ratios("camera", [2.0, 1.0, 1.8], [2.6, 1.3, 2.3])
         self.assertEqual(len(legacy), 2)
+
+
+class PerCameraTransportTests(unittest.TestCase):
+    """Composite decoder|model tokens resolve per-camera scopes with honest fallback."""
+
+    def test_transport_tag_composition(self) -> None:
+        from types import SimpleNamespace
+        from dngscan.scene_transform import window_transport_tag
+
+        self.assertEqual(
+            window_transport_tag(SimpleNamespace(scene_decoder="libraw", shot_model="fp")),
+            "libraw",
+        )
+        self.assertEqual(
+            window_transport_tag(
+                SimpleNamespace(scene_decoder="coreimage", shot_model="Apple iPhone 16 Pro")
+            ),
+            "coreimage|Apple iPhone 16 Pro",
+        )
+        self.assertEqual(
+            window_transport_tag(SimpleNamespace(scene_decoder="coreimage", shot_model="")),
+            "coreimage",
+        )
+
+    def test_per_camera_scope_wins_and_unknown_falls_back(self) -> None:
+        from dngscan.scene_transform import decoder_window_ratios
+
+        iphone = decoder_window_ratios("coreimage|Apple iPhone 16 Pro", "skin")
+        default = decoder_window_ratios("coreimage", "skin")
+        unknown = decoder_window_ratios("coreimage|Some Future Camera", "skin")
+        self.assertIsNotNone(iphone)
+        self.assertIsNotNone(default)
+        self.assertNotEqual(iphone, default)
+        self.assertEqual(unknown, default)
+
+    def test_measured_scopes_are_bounded_and_distinct(self) -> None:
+        from dngscan.scene_transform import decoder_window_ratios
+
+        for token in ("coreimage", "coreimage|Apple iPhone 16 Pro"):
+            for cls in ("skin", "foliage", "magenta", "unknown"):
+                ratios = decoder_window_ratios(token, cls)
+                self.assertIsNotNone(ratios)
+                for r in ratios:
+                    self.assertGreater(r, 0.6)
+                    self.assertLess(r, 1.35)

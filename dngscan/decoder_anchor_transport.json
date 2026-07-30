@@ -3,69 +3,72 @@
  "coreimage": {
   "default": {
    "global_ratio_rg_bg": [
-    1.04162,
-    0.82031
+    1.03756,
+    0.853
    ],
    "per_class": {
     "cool_balance": {
      "ratio_rg_bg": [
-      0.97414,
-      0.83542
+      0.96854,
+      0.84576
      ],
-     "effective_support": 2736.9,
+     "effective_support": 5636.3,
      "basis": "class-weighted"
     },
     "cyan": {
      "ratio_rg_bg": [
-      1.04162,
-      0.82031
+      0.93914,
+      0.83376
      ],
-     "effective_support": 32.1,
-     "basis": "global-fallback"
+     "effective_support": 50.2,
+     "basis": "class-weighted"
     },
     "foliage": {
      "ratio_rg_bg": [
-      0.98195,
-      0.84619
+      0.97725,
+      0.85219
      ],
-     "effective_support": 1693.5,
+     "effective_support": 3681.3,
      "basis": "class-weighted"
     },
     "magenta": {
      "ratio_rg_bg": [
-      1.04162,
-      0.82031
+      1.22768,
+      1.09241
      ],
-     "effective_support": 38.9,
-     "basis": "global-fallback"
+     "effective_support": 117.2,
+     "basis": "class-weighted"
     },
     "neutral": {
      "ratio_rg_bg": [
-      1.04162,
-      0.82031
+      1.03756,
+      0.853
      ],
-     "effective_support": 15.3,
+     "effective_support": 18.8,
      "basis": "global-fallback"
     },
     "skin": {
      "ratio_rg_bg": [
-      1.08009,
-      0.72
+      1.08977,
+      0.66266
      ],
-     "effective_support": 697.2,
-     "basis": "class-weighted+clamped"
+     "effective_support": 1138.0,
+     "basis": "class-weighted"
     }
    },
    "source": {
-    "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, weighted median per window class",
+    "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, central crop 0.6, weighted median per window class",
     "corpus": [
-     "_SDI0150.DNG",
      "_SDI0133.DNG",
+     "_SDI0150.DNG",
+     "_SDI0165.DNG",
      "_SDI0199.DNG",
+     "_SDI0200.DNG",
+     "_SDI0206.DNG",
+     "_SDI0222.DNG",
      "_SDI0237.DNG",
-     "_SDI0165.DNG"
-    ],
-    "camera_scope": "Sigma fp corpus; other bodies inherit the global ratio until measured"
+     "_SDI0238.DNG"
+    ]
    }
   },
   "Apple iPhone 16 Pro": {
