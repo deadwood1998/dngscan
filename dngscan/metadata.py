@@ -98,6 +98,8 @@ def _entry_values(fh, typ: int, num: int, raw: bytes, endian: str) -> list:
             return []
     if typ == 2:  # ASCII
         return [buf.split(b"\x00")[0].decode("ascii", errors="replace").strip()]
+    if typ == 7:  # UNDEFINED: opaque bytes (opcode lists live here)
+        return [buf]
     fmt = {1: "B", 3: "H", 4: "L", 8: "h", 9: "l", 11: "f", 12: "d"}.get(typ)
     if fmt:
         return list(struct.unpack(endian + fmt * num, buf))
@@ -300,3 +302,153 @@ def read_dng_color_calibration(path: Path) -> DngColorCalibration | None:
     if 2 in matrices and 2 in illuminants:
         return DngColorCalibration(matrix1=matrices[2], cct1=illuminants[2])
     return None
+
+
+TAG_OPCODE_LIST_2 = 51009  # applied to the mosaic before demosaic (GainMap lives here)
+
+
+@dataclass
+class DngGainMap:
+    """One GainMap opcode: per-CFA-site lens shading gains (DNG 1.4 spec ch.6).
+
+    Opcode lists are always big-endian regardless of the TIFF byte order. Coordinates
+    are active-area rows/cols with a pitch stride selecting the CFA site; the gain grid
+    samples at normalized positions origin + index * spacing.
+    """
+
+    top: int
+    left: int
+    bottom: int
+    right: int
+    row_pitch: int
+    col_pitch: int
+    points_v: int
+    points_h: int
+    spacing_v: float
+    spacing_h: float
+    origin_v: float
+    origin_h: float
+    map_planes: int
+    gains: object  # (points_v, points_h, map_planes) float32
+
+
+def _parse_gain_map_payload(data: bytes) -> DngGainMap | None:
+    import numpy as _np
+
+    if len(data) < 76:
+        return None
+    head = struct.unpack(">4L2L2L2L", data[:40])
+    top, left, bottom, right, _plane, _planes, row_pitch, col_pitch, pv, ph = head
+    sv, sh, ov, oh = struct.unpack(">4d", data[40:72])
+    (mp,) = struct.unpack(">L", data[72:76])
+    n = pv * ph * mp
+    if n <= 0 or len(data) < 76 + 4 * n or pv > 4096 or ph > 4096 or mp > 4:
+        return None
+    gains = _np.frombuffer(data, dtype=">f4", count=n, offset=76).astype(_np.float32)
+    return DngGainMap(
+        top=top, left=left, bottom=bottom, right=right,
+        row_pitch=max(1, row_pitch), col_pitch=max(1, col_pitch),
+        points_v=pv, points_h=ph,
+        spacing_v=sv, spacing_h=sh, origin_v=ov, origin_h=oh,
+        map_planes=mp, gains=gains.reshape(pv, ph, mp),
+    )
+
+
+def read_dng_gain_maps(path: Path) -> list[DngGainMap]:
+    """All GainMap opcodes from OpcodeList2, searched across IFD0 and SubIFDs."""
+    maps: list[DngGainMap] = []
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+            if len(head) < 8 or head[:2] not in (b"II", b"MM"):
+                return []
+            endian = "<" if head[:2] == b"II" else ">"
+            (magic,) = struct.unpack(endian + "H", head[2:4])
+            if magic != 42:
+                return []
+            (ifd0_off,) = struct.unpack(endian + "L", head[4:8])
+            offsets = [ifd0_off]
+            for tag, typ, num, raw in _read_ifd_entries(fh, ifd0_off, endian):
+                if tag == TAG_SUB_IFDS:
+                    offsets.extend(int(v) for v in _entry_values(fh, typ, num, raw, endian))
+            blobs: list[bytes] = []
+            for off in offsets:
+                for tag, typ, num, raw in _read_ifd_entries(fh, off, endian):
+                    if tag == TAG_OPCODE_LIST_2 and typ == 7:
+                        vals = _entry_values(fh, typ, num, raw, endian)
+                        if vals:
+                            blobs.append(vals[0])
+            for blob in blobs:
+                if len(blob) < 4:
+                    continue
+                (count,) = struct.unpack(">L", blob[:4])
+                pos = 4
+                for _ in range(min(count, 64)):
+                    if pos + 16 > len(blob):
+                        break
+                    opcode_id, _ver, _flags, size = struct.unpack(">4L", blob[pos:pos + 16])
+                    pos += 16
+                    payload = blob[pos:pos + size]
+                    pos += size
+                    if opcode_id == 9:  # GainMap
+                        parsed = _parse_gain_map_payload(payload)
+                        if parsed is not None:
+                            maps.append(parsed)
+    except (OSError, struct.error):
+        return []
+    return maps
+
+
+TAG_OPCODE_LIST_3 = 51022  # applied after demosaic (FixVignetteRadial, Warp...)
+
+
+@dataclass
+class DngVignetteRadial:
+    """FixVignetteRadial opcode: radial gain g = 1 + sum k_i * (r/m)^(2(i+1))."""
+
+    k: tuple[float, float, float, float, float]
+    cx_hat: float
+    cy_hat: float
+
+
+def read_dng_shading_ops(path: Path) -> dict:
+    """Pre-demosaic GainMaps (OpcodeList2) and post-demosaic radial vignette
+    (OpcodeList3 id 3). Warp opcodes are deliberately ignored on this path: geometry
+    changes would break CFA-mask alignment, the LibRaw path's defining property."""
+    gain_maps = read_dng_gain_maps(path)
+    vignette = None
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+            if len(head) < 8 or head[:2] not in (b"II", b"MM"):
+                return {"gain_maps": gain_maps, "vignette": None}
+            endian = "<" if head[:2] == b"II" else ">"
+            (ifd0_off,) = struct.unpack(endian + "L", head[4:8])
+            offsets = [ifd0_off]
+            for tag, typ, num, raw in _read_ifd_entries(fh, ifd0_off, endian):
+                if tag == TAG_SUB_IFDS:
+                    offsets.extend(int(v) for v in _entry_values(fh, typ, num, raw, endian))
+            for off in offsets:
+                for tag, typ, num, raw in _read_ifd_entries(fh, off, endian):
+                    if tag == TAG_OPCODE_LIST_3 and typ == 7:
+                        vals = _entry_values(fh, typ, num, raw, endian)
+                        if not vals or len(vals[0]) < 4:
+                            continue
+                        blob = vals[0]
+                        (count,) = struct.unpack(">L", blob[:4])
+                        pos = 4
+                        for _ in range(min(count, 64)):
+                            if pos + 16 > len(blob):
+                                break
+                            oid, _v, _f, size = struct.unpack(">4L", blob[pos:pos + 16])
+                            pos += 16
+                            payload = blob[pos:pos + size]
+                            pos += size
+                            if oid == 3 and size >= 56:
+                                vals7 = struct.unpack(">7d", payload[:56])
+                                vignette = DngVignetteRadial(
+                                    k=tuple(vals7[:5]), cx_hat=vals7[5], cy_hat=vals7[6]
+                                )
+    except (OSError, struct.error):
+        pass
+    return {"gain_maps": gain_maps, "vignette": vignette}

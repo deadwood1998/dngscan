@@ -75,8 +75,8 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v3"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v3"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v4"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v4"
 
 
 def _cache_identity(

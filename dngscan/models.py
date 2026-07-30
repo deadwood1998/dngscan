@@ -48,6 +48,8 @@ class RawBundle:
     # float conversion. Capture optics, not a look: the reliable tail, HDR budget and
     # every downstream stage see the world through the glass, exactly as film would.
     lens_filter: str = "none"
+    # Which DNG dark-field correction the LibRaw decode applied (gainmap/vignette/None).
+    lens_shading: str | None = None
     # The WB multipliers actually applied to this decode: camera metadata for as-shot,
     # daylight metadata for the daylight anchor, or the solved fixed-Kelvin multipliers.
     # Prefeed window transport reads this so calibrated chromaticity anchors follow the

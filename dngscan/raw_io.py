@@ -66,6 +66,72 @@ def wb_postprocess_kwargs(
     return {"use_camera_wb": True}
 
 
+
+
+def _apply_gain_maps_mosaic(raw: Any, maps: list, black_levels: list[float], white_level: int) -> None:
+    """Apply pre-demosaic GainMap opcodes to the live rawpy mosaic in place.
+
+    Runs AFTER the evidence copies (bundle.raw_image, clip masks) are taken: clip
+    evidence is sensor truth and must stay pre-correction. Values gain toward the
+    corners (fp measures up to x1.384); results clip at white_level — a corner pixel
+    pushed past white saturates exactly as the DNG rendering path intends.
+    """
+    img = raw.raw_image_visible
+    colors = raw.raw_colors_visible
+    h, w = img.shape
+    blacks = np.asarray(black_levels or [0.0], dtype=np.float32)
+    for m in maps:
+        rows = np.arange(m.top, min(m.bottom, h), m.row_pitch)
+        cols = np.arange(m.left, min(m.right, w), m.col_pitch)
+        if rows.size == 0 or cols.size == 0:
+            continue
+        gains_grid = np.mean(np.asarray(m.gains, dtype=np.float64), axis=2)
+        iv = np.clip(((rows + 0.5) / h - m.origin_v) / max(m.spacing_v, 1e-9), 0, m.points_v - 1)
+        ih = np.clip(((cols + 0.5) / w - m.origin_h) / max(m.spacing_h, 1e-9), 0, m.points_h - 1)
+        v0 = np.clip(np.floor(iv).astype(int), 0, m.points_v - 2) if m.points_v > 1 else np.zeros(rows.size, int)
+        h0 = np.clip(np.floor(ih).astype(int), 0, m.points_h - 2) if m.points_h > 1 else np.zeros(cols.size, int)
+        fv = (iv - v0)[:, None] if m.points_v > 1 else np.zeros((rows.size, 1))
+        fh = (ih - h0)[None, :] if m.points_h > 1 else np.zeros((1, cols.size))
+        g00 = gains_grid[v0][:, h0]
+        g01 = gains_grid[v0][:, np.minimum(h0 + 1, m.points_h - 1)]
+        g10 = gains_grid[np.minimum(v0 + 1, m.points_v - 1)][:, h0]
+        g11 = gains_grid[np.minimum(v0 + 1, m.points_v - 1)][:, np.minimum(h0 + 1, m.points_h - 1)]
+        gains = (g00 * (1 - fv) * (1 - fh) + g01 * (1 - fv) * fh
+                 + g10 * fv * (1 - fh) + g11 * fv * fh)
+        sub = img[np.ix_(rows, cols)].astype(np.float32)
+        cidx = colors[np.ix_(rows, cols)]
+        b = blacks[np.clip(cidx, 0, blacks.size - 1)] if blacks.size > 1 else np.float32(blacks[0])
+        corrected = np.clip(b + (sub - b) * gains, 0.0, float(white_level))
+        img[np.ix_(rows, cols)] = corrected.astype(img.dtype)
+
+
+def _apply_vignette_render(render: Any, vignette: Any) -> Any:
+    """Apply a post-demosaic FixVignetteRadial to the scene render, in row bands.
+
+    g(r) = 1 + sum k_i (r/m)^(2(i+1)) with the optical centre at (cx_hat, cy_hat) and
+    m the max centre-to-corner distance (DNG 1.4). A pure per-pixel scalar gain: it
+    commutes with WB and matrices, so applying it to the finished linear render is
+    exact. Output clips at the container maximum.
+    """
+    h, w = render.shape[:2]
+    cx, cy = float(vignette.cx_hat) * w, float(vignette.cy_hat) * h
+    m2 = max((cx) ** 2 + (cy) ** 2, (w - cx) ** 2 + (cy) ** 2,
+             (cx) ** 2 + (h - cy) ** 2, (w - cx) ** 2 + (h - cy) ** 2)
+    limit = float(np.iinfo(render.dtype).max) if np.issubdtype(render.dtype, np.integer) else None
+    xs = (np.arange(w, dtype=np.float64) + 0.5 - cx) ** 2
+    k = [float(v) for v in vignette.k]
+    out = render
+    for y0 in range(0, h, 512):
+        y1 = min(y0 + 512, h)
+        ys = (np.arange(y0, y1, dtype=np.float64) + 0.5 - cy) ** 2
+        r2 = (ys[:, None] + xs[None, :]) / m2
+        g = 1.0 + r2 * (k[0] + r2 * (k[1] + r2 * (k[2] + r2 * (k[3] + r2 * k[4]))))
+        band = out[y0:y1].astype(np.float32) * g[:, :, None].astype(np.float32)
+        if limit is not None:
+            band = np.clip(band, 0.0, limit)
+        out[y0:y1] = band.astype(render.dtype)
+    return out
+
 def _applied_wb_for_mode(
     wb_mode: str,
     camera_wb: list[float] | None,
@@ -609,6 +675,7 @@ def load_raw(
     scene_scale = 1.0
     render_scale = 1.0
     clip_masks: Any | None = None
+    lens_shading: str | None = None
     effective_baseline_exposure = shot.baseline_exposure
     baseline_exposure_baked_in = False
 
@@ -654,6 +721,17 @@ def load_raw(
                 wb_mode, path, getattr(raw, "rgb_xyz_matrix", None)
             )
             if decoder == "libraw":
+                # Dark-field correction the DNG asks for and LibRaw ignores: pre-demosaic
+                # GainMaps (fp) and post-demosaic radial vignette (iPhone ProRAW). Warp
+                # opcodes stay deliberately unapplied — geometry would break CFA-mask
+                # alignment. Evidence copies above are pre-correction sensor truth.
+                shading_ops = dng_metadata.read_dng_shading_ops(path)
+                if shading_ops["gain_maps"]:
+                    _apply_gain_maps_mosaic(
+                        raw, shading_ops["gain_maps"],
+                        [float(x) for x in black_levels], white_level,
+                    )
+                    lens_shading = "gainmap"
                 wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb, kelvin_wb)
                 demosaic_alg = resolve_demosaic_algorithm(raw, demosaic)
                 scene_rec2020_render = render_to_scene_rec2020(
@@ -672,6 +750,13 @@ def load_raw(
                         effective_highlight_mode,
                         applied_wb,
                         baseline_exposure=shot.baseline_exposure,
+                    )
+                if shading_ops["vignette"] is not None:
+                    scene_rec2020_render = _apply_vignette_render(
+                        scene_rec2020_render, shading_ops["vignette"]
+                    )
+                    lens_shading = (
+                        "vignette" if lens_shading is None else lens_shading + "+vignette"
                     )
                 xyz_render = scene_rec2020_to_xyz_render(scene_rec2020_render, scene_scale)
                 render_scale = scene_scale
@@ -844,6 +929,7 @@ def load_raw(
         baseline_exposure=effective_baseline_exposure,
         baseline_exposure_baked_in=baseline_exposure_baked_in,
         applied_wb=_applied_wb_for_mode(wb_mode, camera_wb, daylight_wb, kelvin_wb),
+        lens_shading=lens_shading,
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
