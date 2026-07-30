@@ -203,6 +203,10 @@ class ToneCompressionPlan:
     toe_start_ev: float = -4.0
     shoulder_start_ev: float = 1.0
     use_c1_endpoints: bool = True
+    # Named film curve coordinate this plan's curve fields were pinned to, or "none"
+    # for scene-adaptive compilation. Informational: consumers must read the curve
+    # fields themselves, never re-derive behaviour from the name.
+    curve_preset: str = "none"
     # Display-referred dark-scene lift, implemented like darktable's look brightness:
     # it leaves encoded black/white fixed and is never an exposure gain.
     view_brightness: float = 1.0

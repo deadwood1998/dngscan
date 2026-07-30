@@ -30,6 +30,7 @@ from .delivery import (
     resolve_delivery_profile,
 )
 from .export import chroma_to_subsampling, export_jpeg
+from .film_curve import FILM_CURVE_CHOICES
 from .grade import RENDER_MODE, grade_choices, resolve_grade
 from .plot import default_png_path, plot_dashboard
 from .raw_io import load_raw
@@ -214,6 +215,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "3400k=Type A 钨丝卷，3200k=Type B 钨丝卷（影棚钨丝灯），"
             "9300k=日本广播电视传统白点。固定色温经文件自身的颜色标定求解"
             "（DNG 双光源插值优先），两种解码器都支持"
+        ),
+    )
+    parser.add_argument(
+        "--film-curve",
+        choices=FILM_CURVE_CHOICES,
+        default="none",
+        help=(
+            "胶片曲线预设：整条 AgX 曲线锁定到具名胶片坐标（数据手册特性曲线最小二乘解），"
+            "场景自适应关闭、整卷一致；portra400=Kodak Portra 400 + Endura 相纸，"
+            "superia400=Fujifilm Superia X-TRA 400 + Crystal Archive 相纸。"
+            "相纸 Dmax 的阴影地板随预设声明；明暗微调仍可在预设坐标上叠加"
         ),
     )
     parser.add_argument(
@@ -473,6 +485,7 @@ def main(argv: list[str]) -> int:
                 args.tone_core,
                 args.lum_norm,
                 agx_primaries=args.agx_primaries,
+                film_curve=args.film_curve,
             )
             if jpeg_path is not None
             else None

@@ -529,6 +529,7 @@ def build_render_plan(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
+    film_curve: str = "none",
 ) -> RenderPlan:
     """Compile independent scene, tone and colour plans from an immutable capture."""
     tone_core = tone_core if tone_core in TONE_CORE_CHOICES else "agx"
@@ -566,6 +567,14 @@ def build_render_plan(
         plan_exposure_gain=plan_gain,
         scene_metrics=scene,
     )
+    if film_curve != "none":
+        from .film_curve import apply_film_curve_preset
+
+        # Film response is fixed: the named coordinate replaces the scene-adaptive
+        # curve wholesale (whole-roll consistency is the point of choosing it). Scene
+        # metrics stay untouched so HDR budgeting keeps reading the real capture, and
+        # user adjustments below still stack on top of the declared coordinate.
+        tone = apply_film_curve_preset(tone, film_curve)
     plan = RenderPlan(
         tone=tone,
         color=build_color_geometry_plan(analysis, output_gamut, tone_core),
