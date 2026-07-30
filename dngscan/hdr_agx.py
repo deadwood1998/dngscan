@@ -29,7 +29,7 @@ from . import retreat as retreat_engine
 from . import scene_transform as scene_transform_engine
 from .color import encode_display_linear, rec2020_to_output
 from .drt import curve_params_from_plan
-from .hdr_curve import apply_hdr_curve_pair
+from .hdr_curve import HdrCurveTable, compile_hdr_curve_table_pair
 from .hdr_color import (
     blend_native_hdr_paths,
     fit_hdr_color_volume,
@@ -49,6 +49,16 @@ from .render import (
 )
 
 
+def _hdr_render_workers() -> int:
+    """Render-pipeline width: NumPy releases the GIL on large array ops, so the chunk
+    pipeline scales past the historical 2 workers. Capped at 6 — beyond the performance
+    cores the marginal chunk mostly contends for memory bandwidth, and each in-flight
+    chunk holds its formation temporaries (~tens of MB) alive."""
+    import os
+
+    return min(6, max(2, (os.cpu_count() or 4) - 2))
+
+
 def _hdr_tone_plan(hdr_plan: HdrAgxPlan) -> ToneCompressionPlan:
     return replace(
         hdr_plan.formation,
@@ -62,6 +72,20 @@ def _pack_peak(hdr_plan: HdrAgxPlan) -> float:
     return peak * max(0.0, 1.0 - float(hdr_plan.color.gamut_fit_margin))
 
 
+def _hdr_reference_needed(hdr_plan: HdrAgxPlan) -> bool:
+    """Whether the reference-white chroma candidate can contribute at all.
+
+    Algebraic identity: blend with rho==0 returns the native path, so the reference
+    candidate (and its second curve) is pure waste when global permission is zero.
+    """
+    global_rho = float(hdr_plan.color.channel_separation) * float(hdr_plan.color.snr_gate)
+    return (
+        global_rho > 0.0
+        and float(hdr_plan.tone.rendered_headroom_ev) > 0.0
+        and abs(float(hdr_plan.tone.peak_linear) - 1.0) > 1e-12
+    )
+
+
 def _form_hdr_chunk(
     intent_rec: Any,
     hdr_plan: HdrAgxPlan,
@@ -69,32 +93,27 @@ def _form_hdr_chunk(
     inset_matrix: Any,
     outset_matrix: Any,
     formation_y: Any,
-    body_params: dict[str, float | bool],
+    curve_tables: tuple[HdrCurveTable, HdrCurveTable],
     clip_masks_chunk: Any | None,
     peak: float,
     output_gamut: str,
 ) -> Any:
-    """One HDR display-linear chunk from shared scene-intent Rec.2020."""
+    """One HDR display-linear chunk from shared scene-intent Rec.2020.
+
+    The per-plan curve tables carry the compiled body+shoulder curve (§P3); the
+    analytic evaluator in hdr_curve remains the oracle they are tested against.
+    A pair of aliased tables encodes "no reference candidate needed".
+    """
     inset, pre_hue = agx_engine.prepare_formation(intent_rec, hdr_tone_plan, inset_matrix)
-    global_rho = float(hdr_plan.color.channel_separation) * float(hdr_plan.color.snr_gate)
-    # Algebraic identity: blend with rho==0 returns the native path, so the reference
-    # candidate (and its second Hermite) is pure waste when global permission is zero.
-    need_reference = (
-        global_rho > 0.0
-        and float(hdr_plan.tone.rendered_headroom_ev) > 0.0
-        and abs(float(hdr_plan.tone.peak_linear) - 1.0) > 1e-12
-    )
-    native_formation, reference_formation = apply_hdr_curve_pair(
-        inset,
-        hdr_plan.tone,
-        hdr_tone_plan,
-        need_reference=need_reference,
-        body_params=body_params,
-    )
-    if need_reference:
+    native_table, reference_table = curve_tables
+    native_formation = native_table.apply(inset)
+    if reference_table is not native_table:
+        global_rho = float(hdr_plan.color.channel_separation) * float(
+            hdr_plan.color.snr_gate
+        )
         rho = raw_gated_channel_separation(global_rho, clip_masks_chunk)
         formation = blend_native_hdr_paths(
-            reference_formation,
+            reference_table.apply(inset),
             native_formation,
             rho,
             formation_y,
@@ -137,6 +156,12 @@ def scene_render_to_hdr_display_linear(
     inset_matrix, outset_matrix = agx_engine.formation_matrices(hdr_tone_plan)
     formation_y = formation_luma_weights(outset_matrix)
     body_params = curve_params_from_plan(hdr_tone_plan)
+    curve_tables = compile_hdr_curve_table_pair(
+        hdr_plan.tone,
+        hdr_tone_plan,
+        need_reference=_hdr_reference_needed(hdr_plan),
+        body_params=body_params,
+    )
 
     scene = bundle.scene_rec2020_render
     h, w = scene.shape[:2]
@@ -155,8 +180,8 @@ def scene_render_to_hdr_display_linear(
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
     )
-    for start in range(0, flat_scene.shape[0], chunk):
-        end = min(start + chunk, flat_scene.shape[0])
+
+    def render_hdr_chunk(start: int, end: int) -> None:
         rec = scene_rec2020_to_float(
             flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain
         )
@@ -175,11 +200,27 @@ def scene_render_to_hdr_display_linear(
             inset_matrix,
             outset_matrix,
             formation_y,
-            body_params,
+            curve_tables,
             clip_masks[start:end] if clip_masks is not None else None,
             peak,
             output_gamut,
         )
+
+    ranges = [
+        (start, min(start + chunk, flat_scene.shape[0]))
+        for start in range(0, flat_scene.shape[0], chunk)
+    ]
+    if flat_scene.shape[0] < STREAM_THREAD_MIN_PIXELS or len(ranges) < 2:
+        for start, end in ranges:
+            render_hdr_chunk(start, end)
+    else:
+        # Chunks write disjoint slices of one preallocated buffer, so completion
+        # order is irrelevant here (unlike the dithered pair path).
+        workers = min(_hdr_render_workers(), len(ranges))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="dngscan-hdr"
+        ) as pool:
+            list(pool.map(lambda r: render_hdr_chunk(*r), ranges))
     return out.reshape(h, w, 3)
 
 
@@ -210,6 +251,12 @@ def render_ultrahdr_agx_pair(
     inset_matrix, outset_matrix = agx_engine.formation_matrices(hdr_tone_plan)
     formation_y = formation_luma_weights(outset_matrix)
     body_params = curve_params_from_plan(hdr_tone_plan)
+    curve_tables = compile_hdr_curve_table_pair(
+        hdr_plan.tone,
+        hdr_tone_plan,
+        need_reference=_hdr_reference_needed(hdr_plan),
+        body_params=body_params,
+    )
     peak = _pack_peak(hdr_plan)
 
     scene = bundle.scene_rec2020_render
@@ -287,7 +334,7 @@ def render_ultrahdr_agx_pair(
             inset_matrix,
             outset_matrix,
             formation_y,
-            body_params,
+            curve_tables,
             sample_masks,
             peak,
             output_gamut,
@@ -326,10 +373,13 @@ def render_ultrahdr_agx_pair(
             (start, end, *render_pair_chunk(start, end)) for start, end in ranges
         )
     else:
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dngscan-ultrahdr") as pool:
+        workers = min(_hdr_render_workers(), len(ranges))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="dngscan-ultrahdr"
+        ) as pool:
             pending: dict[int, Any] = {}
             submit_idx = 0
-            while submit_idx < min(2, len(ranges)):
+            while submit_idx < min(workers, len(ranges)):
                 start, end = ranges[submit_idx]
                 pending[submit_idx] = pool.submit(render_pair_chunk, start, end)
                 submit_idx += 1

@@ -102,5 +102,101 @@ class HdrCurvePairTests(unittest.TestCase):
         self.assertIs(a, b)
 
 
+class HdrCurveTableTests(unittest.TestCase):
+    """§12.3 gates: the runtime table against the analytic evaluator it replaces.
+
+    max absolute linear error <= 2e-5, max output-stop error <= 1e-3 EV outside the
+    near-zero region, and the pivot/endpoints must be exact to well below the image
+    contracts that consume them (EV0 == 0.18 within 1e-5).
+    """
+
+    def _dense_ev_probe(self, tone: HdrToneCurve) -> np.ndarray:
+        # Off-grid probe: dense uniform sweep plus jitter so samples fall between
+        # table nodes, covering toe, body, knee neighbourhood and shoulder-to-peak.
+        rng = np.random.default_rng(7)
+        ev = np.linspace(tone.black_ev, tone.white_ev + 1.0, 200_001)
+        ev = ev + rng.uniform(-4e-4, 4e-4, ev.shape)
+        return ev.astype(np.float32)
+
+    def _assert_table_matches_oracle(self, peak_linear: float) -> None:
+        from dngscan.hdr_curve import compile_hdr_curve_table
+
+        formation = _formation()
+        tone = _tone(peak_linear)
+        params = curve_params_from_plan(formation)
+        table = compile_hdr_curve_table(tone, formation, body_params=params)
+        ev = self._dense_ev_probe(tone)
+        rgb = (SCENE_MIDGRAY * np.exp2(ev, dtype=np.float64)).astype(np.float32)
+        oracle = apply_hdr_curve(
+            rgb.reshape(-1, 1), tone, formation, body_params=params
+        ).reshape(-1)
+        approx = table.apply(rgb.reshape(-1, 1)).reshape(-1)
+
+        linear_error = float(np.max(np.abs(approx - oracle)))
+        self.assertLessEqual(linear_error, 2e-5)
+
+        meaningful = oracle > 1e-4
+        stop_error = float(
+            np.max(
+                np.abs(
+                    np.log2(np.maximum(approx[meaningful], 1e-12))
+                    - np.log2(np.maximum(oracle[meaningful], 1e-12))
+                )
+            )
+        )
+        self.assertLessEqual(stop_error, 1e-3)
+
+    def test_native_table_matches_analytic_oracle(self) -> None:
+        self._assert_table_matches_oracle(4.0)
+
+    def test_reference_table_matches_analytic_oracle(self) -> None:
+        from dngscan.hdr_curve import compile_hdr_curve_table
+
+        formation = _formation()
+        tone = _tone(4.0)
+        params = curve_params_from_plan(formation)
+        table = compile_hdr_curve_table(
+            tone, formation, peak_linear=1.0, body_params=params
+        )
+        ev = self._dense_ev_probe(tone)
+        rgb = (SCENE_MIDGRAY * np.exp2(ev, dtype=np.float64)).astype(np.float32)
+        oracle = apply_hdr_curve(
+            rgb.reshape(-1, 1), tone, formation, peak_linear=1.0, body_params=params
+        ).reshape(-1)
+        approx = table.apply(rgb.reshape(-1, 1)).reshape(-1)
+        self.assertLessEqual(float(np.max(np.abs(approx - oracle))), 2e-5)
+
+    def test_pivot_and_endpoints_are_exact_enough(self) -> None:
+        from dngscan.hdr_curve import compile_hdr_curve_table
+
+        formation = _formation()
+        tone = _tone(4.0)
+        params = curve_params_from_plan(formation)
+        table = compile_hdr_curve_table(tone, formation, body_params=params)
+        probe = np.array(
+            [[SCENE_MIDGRAY] * 3, [tone.peak_linear * 4.0] * 3], dtype=np.float32
+        )
+        out = table.apply(probe)
+        oracle = apply_hdr_curve(probe, tone, formation, body_params=params)
+        self.assertLess(abs(float(out[0, 0]) - float(oracle[0, 0])), 1e-5)
+        # Above W the curve clamps at the content peak; edge clamping must be exact.
+        self.assertEqual(float(out[1, 0]), float(oracle[1, 0]))
+
+    def test_pair_tables_alias_when_reference_cannot_contribute(self) -> None:
+        from dngscan.hdr_curve import compile_hdr_curve_table_pair
+
+        formation = _formation()
+        tone = _tone(4.0)
+        params = curve_params_from_plan(formation)
+        native, reference = compile_hdr_curve_table_pair(
+            tone, formation, need_reference=False, body_params=params
+        )
+        self.assertIs(native, reference)
+        native2, reference2 = compile_hdr_curve_table_pair(
+            tone, formation, need_reference=True, body_params=params
+        )
+        self.assertIsNot(native2, reference2)
+
+
 if __name__ == "__main__":
     unittest.main()

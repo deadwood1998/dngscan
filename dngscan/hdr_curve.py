@@ -141,6 +141,108 @@ def apply_hdr_curve_pair(
     return native, reference
 
 
+class HdrCurveTable:
+    """One compiled scene-EV -> display-linear curve as a uniform 1D table.
+
+    The design contract (§P3/§12.3) allows the runtime to evaluate the HDR curve
+    through a per-plan table instead of per-pixel piecewise math, with the analytic
+    evaluator kept as the oracle the table is checked against. The grid spans
+    [black_ev, white_ev]; outside it the analytic curve is constant (the body clips
+    its normalized input to [0, 1] and the shoulder clamps at the content peak), so
+    edge clamping is exact rather than an approximation.
+    """
+
+    __slots__ = ("ev_start", "inv_step", "values")
+
+    def __init__(self, ev_start: float, inv_step: float, values: Any) -> None:
+        self.ev_start = np.float32(ev_start)
+        self.inv_step = np.float32(inv_step)
+        self.values = values
+
+    def apply_to_ev(self, ev: Any) -> Any:
+        """Linear interpolation on the uniform grid, clamped at both ends."""
+        v = self.values
+        u = (np.asarray(ev, dtype=np.float32) - self.ev_start) * self.inv_step
+        u = np.clip(u, np.float32(0.0), np.float32(v.size - 1))
+        idx = u.astype(np.int32)
+        np.minimum(idx, np.int32(v.size - 2), out=idx)
+        frac = u - idx.astype(np.float32)
+        lo = v[idx]
+        hi = v[idx + 1]
+        return lo + (hi - lo) * frac
+
+    def apply(self, scene_rgb: Any) -> Any:
+        rgb = np.asarray(scene_rgb, dtype=np.float32)
+        ev = np.log2(np.maximum(rgb, _EPS) / np.float32(SCENE_MIDGRAY))
+        return self.apply_to_ev(ev).astype(np.float32, copy=False)
+
+
+HDR_CURVE_TABLE_POINTS = 8192
+
+
+def compile_hdr_curve_table(
+    tone: HdrToneCurve,
+    formation: Any,
+    *,
+    peak_linear: float | None = None,
+    body_params: dict[str, float | bool] | None = None,
+    points: int = HDR_CURVE_TABLE_POINTS,
+) -> HdrCurveTable:
+    """Bake the analytic curve (body below K, shoulder above) onto a uniform EV grid.
+
+    Sampling goes through the very functions the table replaces, so the table cannot
+    encode a different curve family than the oracle; only interpolation error remains,
+    and the §12.3 gates pin that below 2e-5 linear / 1e-3 output stops.
+    """
+    e0 = float(tone.black_ev)
+    e1 = float(tone.white_ev)
+    if not (e1 > e0):
+        raise ValueError(f"HDR curve table needs white_ev > black_ev, got {e0}..{e1}")
+    n = max(16, int(points))
+    grid_ev = np.linspace(e0, e1, n, dtype=np.float64).astype(np.float32)
+    grid_rgb = np.float32(SCENE_MIDGRAY) * np.exp2(grid_ev)
+    values = apply_hdr_curve(
+        grid_rgb.reshape(-1, 1),
+        tone,
+        formation,
+        peak_linear,
+        body_params=body_params,
+    ).reshape(-1)
+    step = (e1 - e0) / (n - 1)
+    return HdrCurveTable(e0, 1.0 / step, values.astype(np.float32, copy=False))
+
+
+def compile_hdr_curve_table_pair(
+    tone: HdrToneCurve,
+    formation: Any,
+    *,
+    need_reference: bool,
+    body_params: dict[str, float | bool] | None = None,
+    points: int = HDR_CURVE_TABLE_POINTS,
+) -> tuple[HdrCurveTable, HdrCurveTable]:
+    """Native table plus the reference-white chroma candidate's table.
+
+    Mirrors ``apply_hdr_curve_pair``: when the reference is not needed (or would be
+    identical) the native table is aliased, so downstream identity checks keep working.
+    """
+    native = compile_hdr_curve_table(
+        tone, formation, body_params=body_params, points=points
+    )
+    if (
+        not need_reference
+        or not tone.shoulder_segments
+        or abs(float(tone.peak_linear) - 1.0) <= 1e-12
+        or not _rescaled_segments(tone, 1.0)
+    ):
+        # Same fallbacks as apply_hdr_curve_pair: whenever the analytic pair would
+        # return the native curve twice, the tables alias too.
+        return native, native
+    reference = compile_hdr_curve_table(
+        tone, formation, peak_linear=1.0, body_params=body_params, points=points
+    )
+    return native, reference
+
+
 def _rescaled_segments(
     tone: HdrToneCurve, peak_linear: float
 ) -> tuple[HdrShoulderSegment, ...]:

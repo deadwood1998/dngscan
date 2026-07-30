@@ -181,15 +181,58 @@ def _apple_rgb_gainmap_roundtrip_status() -> tuple[bool, str]:
     return True, "Apple Core Image ISO gain-map RGB round-trip verified"
 
 
+_ROUNDTRIP_BAND_ROWS = 512  # multiple of 8 so block means never straddle bands
+
+
+def _exact_upper_percentile(top_values: Any, total_count: int, q: float) -> float:
+    """np.percentile('linear') for an upper quantile from the retained top-K order stats.
+
+    Position (n-1)*q/100 interpolates two order statistics; for q near 100 both live in
+    the global top ~1%, which per-band partial selection retains exactly. This is exact
+    selection, not an approximation — only the values that can never be touched by the
+    interpolation are discarded.
+    """
+    n = int(total_count)
+    if n <= 0:
+        return 0.0
+    pos = (n - 1) * (float(q) / 100.0)
+    lo = int(np.floor(pos))
+    hi = int(np.ceil(pos))
+    frac = pos - lo
+    # Ascending rank r maps to descending rank n-1-r; top_sorted[j] is the j-th largest.
+    top_sorted = np.sort(np.asarray(top_values, dtype=np.float32))[::-1]
+    need = n - lo  # how many largest values must have been retained
+    if need > top_sorted.size:
+        raise ValueError(
+            f"top-K selection kept {top_sorted.size} values but rank needs {need}"
+        )
+    v_lo = top_sorted[n - 1 - lo]
+    v_hi = top_sorted[n - 1 - hi]
+    # Replicate np.percentile's _lerp exactly (difference taken in the input dtype,
+    # reversed form for frac >= 0.5), so the result is bit-identical to the historical
+    # whole-array computation, not merely close.
+    diff = v_hi - v_lo  # float32 subtraction, as numpy does it
+    if frac >= 0.5:
+        return float(v_hi - diff * (1.0 - frac))
+    return float(v_lo + diff * frac)
+
+
 def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
     """How far the file's expanded HDR rendition sits from the one that was written.
 
     The whole rendition is measured. RGB gain maps can carry chromatic corrections below
     reference white when the completed SDR and HDR gamut projectors differ; excluding that
     region would let a file pass without proving that its shadows and midtones survive.
+
+    Processing is banded over rows with both sources kept float16: the statistics are
+    identical to the historical whole-frame float32 computation (elementwise math per
+    band, exact percentiles), but the function no longer materializes two full-frame
+    float32 copies plus a full-frame chroma-difference array. The per-pixel chroma p99
+    uses exact partial selection (_exact_upper_percentile) instead of storing every
+    masked chroma difference.
     """
-    expanded = _read_expanded_hdr_rgba_half(path)[..., :3].astype(np.float32)
-    intended = np.asarray(intended_hdr_half)[..., :3].astype(np.float32)
+    expanded = _read_expanded_hdr_rgba_half(path)[..., :3]
+    intended = np.asarray(intended_hdr_half)[..., :3]
     if expanded.shape != intended.shape:
         return {
             "chroma_error": float("inf"),
@@ -203,41 +246,84 @@ def _roundtrip_error(path: Path, intended_hdr_half: Any) -> dict[str, float]:
             "block_p99_relative_error": float("inf"),
             "block_chroma_error": float("inf"),
         }
-    a = expanded.reshape(-1, 3)
-    e = intended.reshape(-1, 3)
-    # Normalize one RGB-vector error by that pixel's strongest intended component. A tiny
-    # secondary channel must not turn a sub-code-value JPEG error into a huge percentage.
-    relative = np.max(np.abs(a - e), axis=1) / np.maximum(np.max(np.abs(e), axis=1), 0.05)
-    chroma_mask = np.max(np.abs(e), axis=1) > 0.05
-    if bool(np.any(chroma_mask)):
-        ac = a[chroma_mask]
-        ec = e[chroma_mask]
-        chroma = np.abs(
-            ac / np.maximum(ac.sum(axis=1, keepdims=True), 1e-6)
-            - ec / np.maximum(ec.sum(axis=1, keepdims=True), 1e-6)
+
+    height, width = expanded.shape[:2]
+    total_px = height * width
+    relative = np.empty(total_px, dtype=np.float32)
+
+    # Exact top-K retention for the masked per-pixel chroma p99: both order statistics
+    # interpolated by p99 sit inside the top 1% (+2 slack) even if every sample is masked.
+    top_k = int(np.ceil(0.01 * total_px * 3)) + 8
+    chroma_top = np.empty(0, dtype=np.float32)
+    chroma_count = 0
+
+    h8 = height - height % 8
+    w8 = width - width % 8
+    blocks_a = (
+        np.empty((h8 // 8, w8 // 8, 3), dtype=np.float32) if h8 > 0 and w8 > 0 else None
+    )
+    blocks_e = (
+        np.empty((h8 // 8, w8 // 8, 3), dtype=np.float32) if h8 > 0 and w8 > 0 else None
+    )
+
+    for row0 in range(0, height, _ROUNDTRIP_BAND_ROWS):
+        row1 = min(row0 + _ROUNDTRIP_BAND_ROWS, height)
+        a = expanded[row0:row1].astype(np.float32).reshape(-1, 3)
+        e = intended[row0:row1].astype(np.float32).reshape(-1, 3)
+        # Normalize one RGB-vector error by that pixel's strongest intended component. A
+        # tiny secondary channel must not turn a sub-code JPEG error into a huge percent.
+        e_peak = np.max(np.abs(e), axis=1)
+        relative[row0 * width : row1 * width] = np.max(np.abs(a - e), axis=1) / np.maximum(
+            e_peak, 0.05
         )
-        chroma_p99 = float(np.percentile(chroma, 99.0))
-    else:
-        chroma_p99 = 0.0
+        chroma_mask = e_peak > 0.05
+        if bool(np.any(chroma_mask)):
+            ac = a[chroma_mask]
+            ec = e[chroma_mask]
+            chroma = np.abs(
+                ac / np.maximum(ac.sum(axis=1, keepdims=True), 1e-6)
+                - ec / np.maximum(ec.sum(axis=1, keepdims=True), 1e-6)
+            ).reshape(-1)
+            chroma_count += chroma.size
+            merged = np.concatenate((chroma_top, chroma))
+            if merged.size > top_k:
+                merged = np.partition(merged, merged.size - top_k)[-top_k:]
+            chroma_top = merged
+        if blocks_a is not None and row0 < h8:
+            band_h8 = min(row1, h8) - row0
+            band_h8 -= band_h8 % 8
+            if band_h8 > 0:
+                ab = expanded[row0 : row0 + band_h8, :w8].astype(np.float32)
+                eb = intended[row0 : row0 + band_h8, :w8].astype(np.float32)
+                b0 = row0 // 8
+                blocks_a[b0 : b0 + band_h8 // 8] = ab.reshape(
+                    band_h8 // 8, 8, w8 // 8, 8, 3
+                ).mean(axis=(1, 3))
+                blocks_e[b0 : b0 + band_h8 // 8] = eb.reshape(
+                    band_h8 // 8, 8, w8 // 8, 8, 3
+                ).mean(axis=(1, 3))
+
+    chroma_p99 = (
+        _exact_upper_percentile(chroma_top, chroma_count, 99.0)
+        if chroma_count > 0
+        else 0.0
+    )
     median_relative = float(np.median(relative))
     p95_relative = float(np.percentile(relative, 95.0))
     p99_relative = float(np.percentile(relative, 99.0))
     p999_relative = float(np.percentile(relative, 99.9))
-    h8 = expanded.shape[0] - expanded.shape[0] % 8
-    w8 = expanded.shape[1] - expanded.shape[1] % 8
-    if h8 > 0 and w8 > 0:
-        ab = expanded[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3).mean(axis=(1, 3))
-        eb = intended[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3).mean(axis=(1, 3))
-        block_relative = np.max(np.abs(ab - eb), axis=2) / np.maximum(
-            np.max(np.abs(eb), axis=2), 0.05
+
+    if blocks_a is not None:
+        block_relative = np.max(np.abs(blocks_a - blocks_e), axis=2) / np.maximum(
+            np.max(np.abs(blocks_e), axis=2), 0.05
         )
         block_median = float(np.median(block_relative))
         block_p95 = float(np.percentile(block_relative, 95.0))
         block_p99 = float(np.percentile(block_relative, 99.0))
-        block_mask = np.max(np.abs(eb), axis=2) > 0.05
+        block_mask = np.max(np.abs(blocks_e), axis=2) > 0.05
         if bool(np.any(block_mask)):
-            abc = ab[block_mask]
-            ebc = eb[block_mask]
+            abc = blocks_a[block_mask]
+            ebc = blocks_e[block_mask]
             block_chroma = np.abs(
                 abc / np.maximum(abc.sum(axis=1, keepdims=True), 1e-6)
                 - ebc / np.maximum(ebc.sum(axis=1, keepdims=True), 1e-6)

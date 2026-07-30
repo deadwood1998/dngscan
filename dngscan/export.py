@@ -150,6 +150,9 @@ def export_ultrahdr_jpeg(
             display_headroom_ev=float(hdr_plan.tone.display_headroom_ev),
             output_gamut=output_gamut,
         )
+        # The float32 rendition (a full-frame buffer) has served its purpose; the pair
+        # carries the float16 alternate from here on.
+        del hdr_linear
         info = encode_finished_pair(pair, out_path, profile)
         info["output_path"] = str(out_path)
         info["hdr_plan"] = describe_hdr_plan(hdr_plan)

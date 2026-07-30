@@ -79,6 +79,78 @@ class RoundtripErrorTests(unittest.TestCase):
                 return  # An exception is an acceptable failure mode here.
             self.assertEqual(out["chroma_error"], float("inf"))
 
+    def test_banded_metrics_match_the_whole_frame_reference(self) -> None:
+        """The banded/top-K implementation is a memory shape, not a metric change.
+
+        Reference below is the historical whole-frame float32 computation; the banded
+        version must reproduce it bit-for-bit on frames that exercise band boundaries,
+        non-multiple-of-8 edges, and partially masked chroma.
+        """
+        from dngscan.gainmap import _ROUNDTRIP_BAND_ROWS
+
+        rng = np.random.default_rng(11)
+        height = _ROUNDTRIP_BAND_ROWS + 37  # crosses one band, ragged 8x8 edge
+        width = 93
+        intended = np.zeros((height, width, 4), dtype=np.float16)
+        intended[..., :3] = rng.uniform(0.0, 2.5, (height, width, 3)).astype(np.float16)
+        intended[height // 3 :: 7, ::5, :3] = np.float16(0.01)  # below chroma mask
+        intended[..., 3] = np.float16(1.0)
+        expanded = intended.copy()
+        expanded[..., :3] += rng.normal(0.0, 0.02, (height, width, 3)).astype(np.float16)
+
+        with mock.patch(
+            "dngscan.gainmap._read_expanded_hdr_rgba_half", return_value=expanded
+        ):
+            banded = _roundtrip_error(Path("unused.jpg"), intended)
+
+        a = expanded[..., :3].astype(np.float32).reshape(-1, 3)
+        e = intended[..., :3].astype(np.float32).reshape(-1, 3)
+        relative = np.max(np.abs(a - e), axis=1) / np.maximum(
+            np.max(np.abs(e), axis=1), 0.05
+        )
+        mask = np.max(np.abs(e), axis=1) > 0.05
+        chroma = np.abs(
+            a[mask] / np.maximum(a[mask].sum(axis=1, keepdims=True), 1e-6)
+            - e[mask] / np.maximum(e[mask].sum(axis=1, keepdims=True), 1e-6)
+        )
+        self.assertEqual(banded["chroma_error"], float(np.percentile(chroma, 99.0)))
+        self.assertEqual(
+            banded["median_relative_error"], float(np.median(relative))
+        )
+        self.assertEqual(
+            banded["p99_relative_error"], float(np.percentile(relative, 99.0))
+        )
+        h8, w8 = height - height % 8, width - width % 8
+        ab = expanded[:h8, :w8, :3].astype(np.float32).reshape(
+            h8 // 8, 8, w8 // 8, 8, 3
+        ).mean(axis=(1, 3))
+        eb = intended[:h8, :w8, :3].astype(np.float32).reshape(
+            h8 // 8, 8, w8 // 8, 8, 3
+        ).mean(axis=(1, 3))
+        block_relative = np.max(np.abs(ab - eb), axis=2) / np.maximum(
+            np.max(np.abs(eb), axis=2), 0.05
+        )
+        self.assertEqual(
+            banded["block_p99_relative_error"],
+            float(np.percentile(block_relative, 99.0)),
+        )
+
+    def test_exact_upper_percentile_matches_numpy(self) -> None:
+        from dngscan.gainmap import _exact_upper_percentile
+
+        rng = np.random.default_rng(3)
+        for n in (1, 2, 7, 1000, 12345):
+            values = rng.exponential(0.05, n).astype(np.float32)
+            k = int(np.ceil(0.01 * n)) + 8
+            top = np.partition(values, max(0, n - k))[-min(k, n):]
+            for q in (99.0, 99.9):
+                with self.subTest(n=n, q=q):
+                    self.assertAlmostEqual(
+                        _exact_upper_percentile(top, n, q),
+                        float(np.percentile(values, q)),
+                        places=6,
+                    )
+
     def test_reference_white_and_below_are_part_of_the_gate(self) -> None:
         intended = np.full((4, 4, 4), 0.25, dtype=np.float16)
         intended[..., 3] = np.float16(1.0)
