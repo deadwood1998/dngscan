@@ -103,6 +103,30 @@ no eye in the loop.
 Fixed Kelvin works on both decoders. A visible color cast after choosing one is
 **expected behavior** — it is precisely how film sees the world, not a malfunction.
 
+## 3.7 Film observation positions (Portra 400 / Superia X-TRA 400)
+
+The **film observation position** selector (imaging card) sets three independent
+declarations at once: white balance locked to 5500K (film's calibration temperature),
+the spectral prefeed (how that stock's layers separated colour, from manufacturer
+datasheets), and the curve preset (that stock plus its paired paper, as a fitted
+coordinate). The three underlying controls visibly update when you pick one — **nothing
+is baked**; adjust any layer individually at any time.
+
+- **Kodak Portra 400** — the Western memory portrait negative, famous for its skin
+  separation;
+- **Fujifilm Superia X-TRA 400** — the Eastern memory everyday negative (the classic
+  recipe discontinued in 2024).
+
+It adds no grain and no vignette — it changes *how the camera saw the world*: how
+colours separate, how highlights roll off, where shadows rest against the paper's
+deepest black. **HDR keeps working**: a film body plus genuinely measured highlight
+headroom, a combination no other film tool offers.
+
+**Lens filters** (RAW decode card) are the companion control: Wratten conversion
+glass simulated from Kodak's published parameters (85B daylight-to-tungsten, 80A the
+reverse, and others), for recreating historical workflows like "tungsten film + 85B in
+daylight". There is no strength slider — glass has no half-installed state.
+
 ## 4. The other EVs in the interface
 
 - **Exposure EV** (the slider): brightens/darkens everything, +1 = one stop up. 0 keeps

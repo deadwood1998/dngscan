@@ -146,6 +146,17 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="reconstruct">邻域重建 · 完整</option>
       </select>
     </div>
+    <div style="flex:1;min-width:170px">
+      <label>镜前滤镜</label>
+      <select id="lensFilter" title="Wratten 转换滤镜，按柯达出版的 mired 位移推导；作用于前馈之前，可靠尾部与 HDR 预算都透过滤镜测量。">
+        <option value="none">无</option>
+        <option value="85b">85B · 日光转钨丝</option>
+        <option value="85">85 · 日光转 Type A</option>
+        <option value="80a">80A · 钨丝转日光</option>
+        <option value="81a">81A · 轻度暖化</option>
+        <option value="82a">82A · 轻度冷化</option>
+      </select>
+    </div>
   </div>
 </div>
 
@@ -199,6 +210,24 @@ button.preview:disabled{opacity:.5;cursor:default}
 <div class="card">
   <div class="secTitle">成像</div>
   <div class="row">
+    <div style="flex:1;min-width:190px">
+      <label>胶片观察位置</label>
+      <select id="film" title="一次设置三层独立声明：白平衡 5500K + 对应光谱前馈 + 对应曲线预设。选中后下方与上方控件同步更新，随时可单独调整——没有任何一层被烘焙。">
+        <option value="none">无 · 场景自适应</option>
+        <option value="portra400">Kodak Portra 400</option>
+        <option value="superia400">Fujifilm Superia X-TRA 400</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:190px">
+      <label>曲线预设</label>
+      <select id="filmCurve" title="AgX 参数空间里的具名胶片坐标（数据手册特性曲线最小二乘解）；选中后整卷一致、场景自适应关闭。">
+        <option value="none">场景自适应 · 默认</option>
+        <option value="portra400">Portra 400 + Endura</option>
+        <option value="superia400">Superia 400 + Crystal Archive</option>
+      </select>
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px">
     <div style="flex:2;min-width:210px">
       <label>压缩核心</label>
       <select id="toneCore" title="选择亮度压缩与高光色彩路径。">
@@ -528,8 +557,10 @@ function updateDecoderUi(){
 function saveSettings(){
   try{localStorage.setItem(STORE_KEY,JSON.stringify({
     input:$("#input").value,ev:$("#ev").value,quality:$("#quality").value,
+    lensFilter:$("#lensFilter").value,filmCurve:$("#filmCurve").value,film:$("#film").value,
     highlight:$("#highlight").dataset.librawValue||$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").dataset.librawValue||$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
+    lensFilter:$("#lensFilter").value,filmCurve:$("#filmCurve").value,
     chroma:$("#chroma").value,format:$("#format").value,
     deliveryProfile:$("#deliveryProfile").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,
@@ -567,6 +598,9 @@ function restoreSettings(){
   if(s.decoder&&[...$("#decoder").options].some(o=>o.value===s.decoder))$("#decoder").value=s.decoder;
   if(s.coreimageVersion&&[...$("#coreimageVersion").options].some(o=>o.value===s.coreimageVersion))$("#coreimageVersion").value=s.coreimageVersion;
   if(s.chroma)$("#chroma").value=s.chroma;
+  if(s.lensFilter&&[...$("#lensFilter").options].some(o=>o.value===s.lensFilter))$("#lensFilter").value=s.lensFilter;
+  if(s.filmCurve&&[...$("#filmCurve").options].some(o=>o.value===s.filmCurve))$("#filmCurve").value=s.filmCurve;
+  if(s.film&&[...$("#film").options].some(o=>o.value===s.film))$("#film").value=s.film;
   if(s.deliveryProfile&&[...$("#deliveryProfile").options].some(o=>o.value===s.deliveryProfile))$("#deliveryProfile").value=s.deliveryProfile;
   if(s.toneCore&&[...$("#toneCore").options].some(o=>o.value===s.toneCore))$("#toneCore").value=s.toneCore;
   if(s.lumNorm&&[...$("#lumNorm").options].some(o=>o.value===s.lumNorm))$("#lumNorm").value=s.lumNorm;
@@ -603,6 +637,20 @@ $("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();sav
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
 $("#coreimageVersion").addEventListener("change",()=>{RAW9_APPROVALS.delete($("#input").value.trim());saveSettings();preparePreview();});
 $("#wb").addEventListener("change",()=>{updateDecoderUi();updateGradeUi();saveSettings();preparePreview();});
+const FILM_COMBOS={portra400:{wb:"5500k",st:"portra400_d55",fc:"portra400"},superia400:{wb:"5500k",st:"superia400_d55",fc:"superia400"}};
+$("#film").addEventListener("change",()=>{
+  const combo=FILM_COMBOS[$("#film").value];
+  if(combo){
+    $("#wb").value=combo.wb;
+    if([...$("#sceneTransform").options].some(o=>o.value===combo.st))$("#sceneTransform").value=combo.st;
+    $("#filmCurve").value=combo.fc;
+  }else{
+    $("#wb").value="camera";$("#sceneTransform").value="none";$("#filmCurve").value="none";
+  }
+  updateDecoderUi();updateSceneTransformUi();saveSettings();preparePreview();
+});
+$("#lensFilter").addEventListener("change",()=>{saveSettings();});
+$("#filmCurve").addEventListener("change",()=>{saveSettings();});
 $("#toneCore").addEventListener("change",()=>{updateToneCoreUi();saveSettings();preparePreview();});
 $("#lumNorm").addEventListener("change",saveSettings);
 $("#agxPrimaries").addEventListener("change",saveSettings);
@@ -658,6 +706,7 @@ function payload(){
   return {
     input,highlight:$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
+    lensFilter:$("#lensFilter").value,filmCurve:$("#filmCurve").value,
     chroma:$("#chroma").value,format:$("#format").value,
     deliveryProfile:$("#deliveryProfile").value,
     toneCore:$("#toneCore").value,lumNorm:$("#lumNorm").value,agxPrimaries:$("#agxPrimaries").value,

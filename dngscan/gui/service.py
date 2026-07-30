@@ -444,6 +444,8 @@ def export_preview_jpeg(
     adjustments: dg.RenderAdjustments | None = None,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
+    lens_filter: str = "none",
+    film_curve: str = "none",
 ) -> dict:
     dg.require_dependencies()
     if decoder == "coreimage":
@@ -456,6 +458,12 @@ def export_preview_jpeg(
     proxy_bundle = dg.with_intent_exposure(
         cached.bundle, user_ev=ev, tone_core=tone_core
     )
+    if lens_filter != "none":
+        # Shallow copy: cached proxy bundles are shared across requests and must not
+        # inherit one request's declared glass.
+        import dataclasses as _dc
+
+        proxy_bundle = _dc.replace(proxy_bundle, lens_filter=lens_filter)
     with RENDER_LOCK:
         render_plan = dg.build_render_plan(
             proxy_bundle,
@@ -468,6 +476,7 @@ def export_preview_jpeg(
             tone_core,
             lum_norm,
             agx_primaries=agx_primaries,
+            film_curve=film_curve,
             adjustments=adjustments,
         )
         icc_profile = dg.output_icc_profile_bytes(gamut)
@@ -505,6 +514,14 @@ def parse_grade(params: dict) -> tuple[str, float, str, float]:
     return resolve_grade_params(params)
 
 
+def parse_film_params(params: dict) -> tuple[str, str]:
+    lens_filter = dg.validate_lens_filter(str(params.get("lensFilter", params.get("lens_filter", "none"))))
+    film_curve = str(params.get("filmCurve", params.get("film_curve", "none")))
+    if film_curve not in dg.FILM_CURVE_CHOICES:
+        raise ValueError(f"未知曲线预设：{film_curve}")
+    return lens_filter, film_curve
+
+
 def run_preview(params: dict) -> dict:
     inp, highlight, gamut, output_format, ev, _, quality, _, _, ev_auto = parse_job_params(params)
     wb = str(params.get("wb", "camera"))
@@ -523,6 +540,7 @@ def run_preview(params: dict) -> dict:
     if dg.is_hdr_output_format(output_format) and tone_core != "agx":
         raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
+    lens_filter, film_curve = parse_film_params(params)
     cached = PREVIEW_STORE.get(
         inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
     )
@@ -567,6 +585,8 @@ def run_preview(params: dict) -> dict:
         adjustments=adjustments,
         decoder=decoder,
         coreimage_version=coreimage_version,
+        lens_filter=lens_filter,
+        film_curve=film_curve,
     )
 
 
@@ -739,6 +759,7 @@ def run_export(params: dict) -> dict:
     if dg.is_hdr_output_format(output_format) and tone_core != "agx":
         raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
+    lens_filter, film_curve = parse_film_params(params)
     bundle = dg.load_raw(
         inp,
         highlight,
@@ -747,6 +768,7 @@ def run_export(params: dict) -> dict:
         decoder=decoder,
         coreimage_version=coreimage_version,
     )
+    bundle.lens_filter = lens_filter
 
     analysis, y, ev_img = dg.analyze(
         bundle,
@@ -786,6 +808,7 @@ def run_export(params: dict) -> dict:
         lum_norm,
         agx_primaries=agx_primaries,
         adjustments=adjustments,
+        film_curve=film_curve,
     )
 
     grade_id = str(params.get("grade", "none"))

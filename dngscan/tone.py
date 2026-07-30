@@ -110,6 +110,28 @@ def scene_rec2020_to_float(
     return np.nan_to_num(rgb, nan=0.0, posinf=1e6, neginf=0.0)
 
 
+def scene_intent_rec2020(values: Any, bundle: Any, gain: float | None = None) -> Any:
+    """Storage RGB -> intent-scene float, viewed through any declared lens filter.
+
+    The filter multiplies here — before tone metrics, HDR budgeting and both display
+    formations — because glass in front of the lens is capture, not a look: film would
+    have metered, exposed and clipped through it too. The mired shift acts on the
+    rendered balance and is position-invariant, so no illuminant parameter is needed;
+    see lens_filter.lens_filter_matrix for the coordinate semantics.
+    """
+    rec = scene_rec2020_to_float(
+        values,
+        bundle.scene_scale,
+        bundle.exposure_gain if gain is None else gain,
+    )
+    name = getattr(bundle, "lens_filter", "none") or "none"
+    if name != "none":
+        from .lens_filter import apply_lens_filter_rec2020
+
+        rec = apply_lens_filter_rec2020(rec, name)
+    return rec
+
+
 def subsample_step(pixel_count: int, max_samples: int = 800_000) -> int:
     return max(1, int(math.ceil(pixel_count / max_samples)))
 
@@ -151,7 +173,7 @@ def tone_plan_sample_scene_rec2020(
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = subsample_step(flat.shape[0], max_samples)
     gain = bundle.exposure_gain if exposure_gain is None else exposure_gain
-    rec2020 = scene_rec2020_to_float(flat[::step, :3], bundle.scene_scale, gain)
+    rec2020 = scene_intent_rec2020(flat[::step, :3], bundle, gain)
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
@@ -179,7 +201,7 @@ def scene_tone_metrics(
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = subsample_step(flat.shape[0], max_samples)
     gain = bundle.exposure_gain if plan_exposure_gain is None else plan_exposure_gain
-    rec = scene_rec2020_to_float(flat[::step, :3], bundle.scene_scale, gain)
+    rec = scene_intent_rec2020(flat[::step, :3], bundle, gain)
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )

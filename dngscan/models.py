@@ -44,6 +44,10 @@ class RawBundle:
     # handoffs clear it inside CIRAWFilter and restore it through scene_scale, so this is
     # normally False for both decoders. Kept explicit to detect fallback API behaviour.
     baseline_exposure_baked_in: bool = False
+    # Declared lens conversion filter (Wratten), applied to the scene-linear render at
+    # float conversion. Capture optics, not a look: the reliable tail, HDR budget and
+    # every downstream stage see the world through the glass, exactly as film would.
+    lens_filter: str = "none"
     # The WB multipliers actually applied to this decode: camera metadata for as-shot,
     # daylight metadata for the daylight anchor, or the solved fixed-Kelvin multipliers.
     # Prefeed window transport reads this so calibrated chromaticity anchors follow the

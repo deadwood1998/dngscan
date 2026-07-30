@@ -17,7 +17,7 @@ from .models import (
     ToneCompressionPlan,
 )
 from .render import apply_tone_core, finalize_output_linear, plan_with_look_overrides
-from .tone import build_render_plan, compute_exposure_gain, exposure_mode_for_tone_core, scene_rec2020_to_float
+from .tone import build_render_plan, compute_exposure_gain, exposure_mode_for_tone_core, scene_intent_rec2020, scene_rec2020_to_float
 
 EV_AUTO_TOKEN = "auto"
 
@@ -117,7 +117,7 @@ def render_sample_linear_output(
 
     exposure_gain = compute_exposure_gain(exposure_mode_for_tone_core(tone_core), ev)
     ev_bundle = replace(bundle, exposure_gain=exposure_gain)
-    rec = scene_rec2020_to_float(sample_rec2020, bundle.scene_scale, exposure_gain)
+    rec = scene_intent_rec2020(sample_rec2020, bundle, exposure_gain)
     plan = tone_plan if tone_plan is not None else (
         build_render_plan(
             ev_bundle,

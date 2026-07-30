@@ -31,6 +31,7 @@ from .delivery import (
 )
 from .export import chroma_to_subsampling, export_jpeg
 from .film_curve import FILM_CURVE_CHOICES
+from .lens_filter import LENS_FILTER_CHOICES, validate_lens_filter
 from .grade import RENDER_MODE, grade_choices, resolve_grade
 from .plot import default_png_path, plot_dashboard
 from .raw_io import load_raw
@@ -229,6 +230,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--lens-filter",
+        choices=LENS_FILTER_CHOICES,
+        default="none",
+        help=(
+            "镜前转换滤镜（Wratten，按柯达出版的 mired 位移推导）："
+            "85b=日光转钨丝(+131)，85=日光转TypeA(+112)，80a=钨丝转日光(-131)，"
+            "81a=轻度暖化(+18)，82a=轻度冷化(-21)。作用于 scene-linear、前馈之前；"
+            "可靠尾部与 HDR 预算都透过滤镜测量——胶片也是这样看世界的"
+        ),
+    )
+    parser.add_argument(
+        "--film",
+        choices=("none", "portra400", "superia400"),
+        default="none",
+        help=(
+            "胶片观察位置组合预设：一次展开三层独立声明（WB 5500k + 对应光谱前馈 + "
+            "对应曲线预设）。任何显式给出的单层参数优先于组合展开；没有烘焙，"
+            "三层随时可单独调整"
+        ),
+    )
+    parser.add_argument(
         "--demosaic",
         choices=DEMOSAIC_CHOICES,
         default="auto",
@@ -274,6 +296,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
     if args.margin < 0:
         parser.error("--margin must be >= 0")
+    # A film combo expands to three independent declarations; a non-default value on
+    # any single layer wins over the expansion. Nothing is baked: the expanded values
+    # are ordinary per-layer settings the user could have typed.
+    if args.film != "none":
+        combo = {
+            "portra400": ("5500k", "portra400_d55", "portra400"),
+            "superia400": ("5500k", "superia400_d55", "superia400"),
+        }[args.film]
+        if args.wb == "camera":
+            args.wb = combo[0]
+        if args.scene_transform == "none":
+            args.scene_transform = combo[1]
+        if args.film_curve == "none":
+            args.film_curve = combo[2]
     if args.jpeg_quality is not None and not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
     if not 0 <= args.hdr_headroom <= MAX_HDR_HEADROOM_EV + 1e-9:
@@ -424,6 +460,9 @@ def main(argv: list[str]) -> int:
             coreimage_version=args.coreimage_version,
             coreimage_scale=args.coreimage_scale,
         )
+        # Render intent, not capture data: the declared filter rides the bundle so the
+        # tail, HDR budget and every formation see the scene through the glass.
+        bundle.lens_filter = validate_lens_filter(args.lens_filter)
         diagnostics_requested = bool(scan_requested or args.csv is not None)
         analysis, y, ev = analyze(
             bundle,

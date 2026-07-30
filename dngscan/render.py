@@ -23,7 +23,7 @@ from .color import (
     rec2020_to_output, rgb_to_oklab, smoothstep,
 )
 from .models import Analysis, ColorGeometryPlan, RawBundle, RenderPlan, ToneCompressionPlan
-from .tone import build_render_plan, scene_rec2020_to_float
+from .tone import build_render_plan, scene_intent_rec2020, scene_rec2020_to_float
 
 # Streamed-export chunking. The dither RNG consumes noise in quantize-group order, so
 # render chunks must tile each quantize group exactly (quantize % render == 0) for the
@@ -229,7 +229,7 @@ def scene_render_to_display_linear(
     )
     for start in range(0, flat_scene.shape[0], chunk):
         end = min(start + chunk, flat_scene.shape[0])
-        rec = scene_rec2020_to_float(flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain)
+        rec = scene_intent_rec2020(flat_scene[start:end, :3], bundle)
         rec = scene_transform_engine.apply_scene_transform_rec2020(
             rec, scene_transform, scene_transform_strength, wb_adapt
         )
@@ -398,9 +398,7 @@ def render_output_u8(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
     def render_finalized_chunk(start: int, end: int) -> Any:
-        rec = scene_rec2020_to_float(
-            flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain
-        )
+        rec = scene_intent_rec2020(flat_scene[start:end, :3], bundle)
         rec = scene_transform_engine.apply_scene_transform_rec2020(
             rec, scene_transform, scene_transform_strength, wb_adapt
         )

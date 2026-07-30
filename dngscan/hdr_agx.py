@@ -45,7 +45,7 @@ from .render import (
     dither_quantize_u8,
     finalize_output_linear,
     plan_with_look_overrides,
-    scene_rec2020_to_float,
+    scene_intent_rec2020,
 )
 
 
@@ -182,9 +182,7 @@ def scene_render_to_hdr_display_linear(
     )
 
     def render_hdr_chunk(start: int, end: int) -> None:
-        rec = scene_rec2020_to_float(
-            flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain
-        )
+        rec = scene_intent_rec2020(flat_scene[start:end, :3], bundle)
         rec = scene_transform_engine.apply_scene_transform_rec2020(
             rec, scene_transform, scene_transform_strength, wb_adapt
         )
@@ -294,9 +292,7 @@ def render_ultrahdr_agx_pair(
     )
 
     def render_pair_chunk(start: int, end: int) -> tuple[Any, Any]:
-        rec = scene_rec2020_to_float(
-            flat_scene[start:end, :3], bundle.scene_scale, bundle.exposure_gain
-        )
+        rec = scene_intent_rec2020(flat_scene[start:end, :3], bundle)
         rec = scene_transform_engine.apply_scene_transform_rec2020(
             rec, scene_transform, scene_transform_strength, wb_adapt
         )
