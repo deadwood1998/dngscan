@@ -30,7 +30,8 @@ from .delivery import (
     resolve_delivery_profile,
 )
 from .export import chroma_to_subsampling, export_jpeg
-from .film_curve import FILM_CURVE_CHOICES
+from .film_curve import FILM_CURVE_CHOICES, FILM_CURVE_PRESETS
+from .scene_transform import SCENE_TRANSFORMS
 from .lens_filter import LENS_FILTER_CHOICES, validate_lens_filter
 from .grade import RENDER_MODE, grade_choices, resolve_grade
 from .plot import default_png_path, plot_dashboard
@@ -242,7 +243,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--film",
-        choices=("none", "portra400", "superia400"),
+        choices=FILM_CURVE_CHOICES,
         default="none",
         help=(
             "胶片观察位置组合预设：一次展开三层独立声明（WB 5500k + 对应光谱前馈 + "
@@ -300,16 +301,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # any single layer wins over the expansion. Nothing is baked: the expanded values
     # are ordinary per-layer settings the user could have typed.
     if args.film != "none":
-        combo = {
-            "portra400": ("5500k", "portra400_d55", "portra400"),
-            "superia400": ("5500k", "superia400_d55", "superia400"),
-        }[args.film]
+        combo = FILM_CURVE_PRESETS.get(args.film, {}).get("combo", {})
         if args.wb == "camera":
-            args.wb = combo[0]
-        if args.scene_transform == "none":
-            args.scene_transform = combo[1]
+            args.wb = str(combo.get("wb", "5500k"))
+        combo_st = str(combo.get("scene_transform", "none"))
+        if args.scene_transform == "none" and combo_st in SCENE_TRANSFORMS:
+            args.scene_transform = combo_st
         if args.film_curve == "none":
-            args.film_curve = combo[2]
+            args.film_curve = args.film
     if args.jpeg_quality is not None and not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
     if not 0 <= args.hdr_headroom <= MAX_HDR_HEADROOM_EV + 1e-9:

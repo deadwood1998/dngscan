@@ -325,10 +325,10 @@
     },
     "portra400_d55": {
       "name": "portra400_d55",
-      "label": "胶片分离 · Portra 400",
+      "label": "胶片分离 · Kodak Portra 400",
       "illuminant": "D55",
       "working_space": "Rec2020",
-      "note": "Material-aware Sigma->Portra 400 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "note": "Material-aware Sigma->Kodak Portra 400 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
       "sources": {
         "alev3_ssf": "dngscan_assets/spectral/film_ssf_portra400.csv",
         "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
@@ -533,9 +533,9 @@
       "label": "胶片分离 · Superia X-TRA 400",
       "illuminant": "D55",
       "working_space": "Rec2020",
-      "note": "Material-aware Sigma->Superia X-TRA 400 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "note": "Material-aware Sigma->Fujifilm X-Tra 400 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
       "sources": {
-        "alev3_ssf": "dngscan_assets/spectral/film_ssf_superia400.csv",
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_xtra400.csv",
         "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
         "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
         "cmf": "CIE 1931 2° via auto",
@@ -730,6 +730,3286 @@
           "scale": 2.0,
           "strength": 0.85,
           "confidence": 0.7172
+        }
+      ]
+    },
+    "c200_d55": {
+      "name": "c200_d55",
+      "label": "胶片分离 · Fujifilm C200",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Fujifilm C200 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_c200.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.6241246,
+              0.73819727,
+              -0.36232187
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26869096,
+              0.44431184,
+              0.82437912
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.607
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.48091754,
+              0.30629962,
+              0.21278284
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.07781591,
+              -0.01613021,
+              0.9383143
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3088
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.6204909,
+              -0.22691596,
+              -0.39357495
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.75679358,
+              1.58785225,
+              2.16894133
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.627
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              1.99662436,
+              -0.57064718,
+              -0.42597718
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.63189823,
+              0.27985591,
+              1.35204231
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7603
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.05680419,
+              -0.99196617,
+              -0.06483802
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.38135439,
+              1.24275407,
+              3.13860033
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7286
+        }
+      ]
+    },
+    "pro400h_d55": {
+      "name": "pro400h_d55",
+      "label": "胶片分离 · Fujifilm Pro 400H",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Fujifilm Pro 400H separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_pro400h.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.67169393,
+              0.63599193,
+              -0.30768586
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.27028753,
+              0.44627229,
+              0.82401524
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5805
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.43354274,
+              0.35026874,
+              0.21618852
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.16931352,
+              0.14634819,
+              1.02296534
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3343
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.47640702,
+              -0.14330867,
+              -0.33309835
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.96581549,
+              1.18844199,
+              1.77737351
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.634
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              1.71888752,
+              -0.34984002,
+              -0.3690475
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.53685439,
+              0.23220707,
+              1.30464732
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7371
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              1.93160058,
+              -0.91000192,
+              -0.02159866
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.40849768,
+              1.19812275,
+              3.21037493
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7208
+        }
+      ]
+    },
+    "provia100f_d55": {
+      "name": "provia100f_d55",
+      "label": "胶片分离 · Fujifilm Provia 100F",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Fujifilm Provia 100F separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_provia100f.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.53676905,
+              0.85205864,
+              -0.38882769
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.25026092,
+              0.45007161,
+              0.80018931
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5781
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.58915911,
+              0.24821611,
+              0.16262478
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.17577384,
+              0.15288071,
+              1.02289313
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3101
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.76908735,
+              -0.28579521,
+              -0.48329214
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.86768603,
+              1.67549767,
+              2.19218836
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6306
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.33438976,
+              -0.84518124,
+              -0.48920852
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.72276737,
+              0.37606926,
+              1.34669811
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7736
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.00028914,
+              -0.98652307,
+              -0.01376606
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.76815111,
+              1.58993609,
+              3.17821502
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.6985
+        }
+      ]
+    },
+    "velvia100_d55": {
+      "name": "velvia100_d55",
+      "label": "胶片分离 · Fujifilm Velvia 100",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Fujifilm Velvia 100 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_velvia100.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.55173301,
+              0.82333042,
+              -0.37506343
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.255314,
+              0.46792342,
+              0.78739058
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5618
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.54821837,
+              0.29736481,
+              0.15441682
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.30407415,
+              0.2346609,
+              1.06941325
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3361
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.69250923,
+              -0.23227451,
+              -0.46023472
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.71512166,
+              1.65482211,
+              2.06029955
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6521
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.2755709,
+              -0.7993053,
+              -0.4762656
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.71008728,
+              0.41610748,
+              1.2939798
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7779
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.02834436,
+              -1.03087575,
+              0.00253139
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.76813981,
+              1.58816629,
+              3.17997352
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.6992
+        }
+      ]
+    },
+    "ektachrome100_d55": {
+      "name": "ektachrome100_d55",
+      "label": "胶片分离 · Kodak Ektachrome 100",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Ektachrome 100 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_ektachrome100.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.55782569,
+              0.79839098,
+              -0.35621668
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.25312601,
+              0.44807472,
+              0.80505128
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5697
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.48919475,
+              0.32442927,
+              0.18637598
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.35431589,
+              0.26581965,
+              1.08849624
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.339
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.55699521,
+              -0.16055048,
+              -0.39644473
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.97072138,
+              1.17753252,
+              1.79318886
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6188
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.12512676,
+              -0.68311008,
+              -0.44201668
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.56784339,
+              0.15701943,
+              1.41082397
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7486
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.00103549,
+              -0.99492797,
+              -0.00610752
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.76207422,
+              1.53962388,
+              3.22245034
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.6992
+        }
+      ]
+    },
+    "ektar100_d55": {
+      "name": "ektar100_d55",
+      "label": "胶片分离 · Kodak Ektar 100",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Ektar 100 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_ektar100.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.67466374,
+              0.65131874,
+              -0.32598248
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.25670762,
+              0.40606243,
+              0.85064519
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5808
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.4435425,
+              0.35204984,
+              0.20440766
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.06217345,
+              -0.02201972,
+              0.95984627
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3708
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.35094746,
+              -0.07551494,
+              -0.27543252
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.87468589,
+              0.9879144,
+              1.88677149
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.5343
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.0376493,
+              -0.65216699,
+              -0.38548231
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.47102736,
+              0.0490165,
+              1.42201085
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.8143
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.05202811,
+              -0.94048361,
+              -0.1115445
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -2.5897079,
+              0.79926812,
+              2.79043978
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7796
+        }
+      ]
+    },
+    "gold200_d55": {
+      "name": "gold200_d55",
+      "label": "胶片分离 · Kodak Gold 200",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Gold 200 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_gold200.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.67040497,
+              0.64251453,
+              -0.31291949
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26143081,
+              0.41754989,
+              0.84388091
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5772
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.41476785,
+              0.39766234,
+              0.18756981
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.07219998,
+              -0.02379906,
+              0.95159909
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.5272
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.26274022,
+              0.0025679,
+              -0.26530812
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.05975369,
+              1.14460555,
+              1.91514814
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.5908
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.01543776,
+              -0.63047014,
+              -0.38496763
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.52503221,
+              0.17160387,
+              1.35342833
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.8078
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.07617837,
+              -0.95247455,
+              -0.12370382
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -2.61625077,
+              0.79793753,
+              2.81831324
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7743
+        }
+      ]
+    },
+    "kodachrome64_d55": {
+      "name": "kodachrome64_d55",
+      "label": "胶片分离 · Kodak Kodachrome 64",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Kodachrome 64 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_kodachrome64.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.59772568,
+              0.73504222,
+              -0.3327679
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26452671,
+              0.43974977,
+              0.82477694
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5942
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.42636598,
+              0.39056411,
+              0.18306991
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.21095155,
+              0.17264867,
+              1.03830288
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3518
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.40127559,
+              -0.06155633,
+              -0.33971926
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.79463163,
+              1.04541158,
+              1.74922004
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6028
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.07323991,
+              -0.65566606,
+              -0.41757384
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.48249291,
+              0.03198529,
+              1.45050762
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7395
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.06099907,
+              -1.01146179,
+              -0.04953728
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.58755231,
+              1.36608415,
+              3.22146816
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.715
+        }
+      ]
+    },
+    "portra160_d55": {
+      "name": "portra160_d55",
+      "label": "胶片分离 · Kodak Portra 160",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Portra 160 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_portra160.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.68545941,
+              0.65348806,
+              -0.33894747
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.24734553,
+              0.38812933,
+              0.8592162
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5854
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.47703134,
+              0.25049716,
+              0.27247149
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0127876,
+              -0.00454881,
+              0.99176122
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.4738
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.49387141,
+              -0.20972762,
+              -0.28414379
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.99339193,
+              1.01444365,
+              1.97894828
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.5029
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              1.82407584,
+              -0.46638498,
+              -0.35769087
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.48922174,
+              0.0673905,
+              1.42183124
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.8329
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              1.98108103,
+              -0.8703483,
+              -0.11073273
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -2.20902589,
+              0.63820127,
+              2.57082463
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.8013
+        }
+      ]
+    },
+    "portra800_d55": {
+      "name": "portra800_d55",
+      "label": "胶片分离 · Kodak Portra 800",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Portra 800 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_portra800.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.64184052,
+              0.69586503,
+              -0.33770555
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26388425,
+              0.42370383,
+              0.84018043
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5935
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.45944761,
+              0.36612217,
+              0.17443021
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.08297611,
+              -0.0241876,
+              0.94121149
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.4255
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.4129074,
+              -0.08832798,
+              -0.32457943
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.00545592,
+              1.08537859,
+              1.92007733
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.5647
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.14791143,
+              -0.73316739,
+              -0.41474404
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.44426141,
+              -0.03051754,
+              1.47477895
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7667
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.07227522,
+              -0.98930131,
+              -0.08297391
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.16949536,
+              1.11708594,
+              3.05240941
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.741
+        }
+      ]
+    },
+    "ultramax400_d55": {
+      "name": "ultramax400_d55",
+      "label": "胶片分离 · Kodak Ultramax 400",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Ultramax 400 separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_ultramax400.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.63238606,
+              0.70100107,
+              -0.33338713
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26613447,
+              0.43142141,
+              0.83471306
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5954
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.45082522,
+              0.38313618,
+              0.1660386
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.02538532,
+              0.02164834,
+              0.95296635
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3832
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.39677988,
+              -0.06791064,
+              -0.32886924
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.9944107,
+              1.12018499,
+              1.87422572
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.591
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.12657507,
+              -0.70917322,
+              -0.41740185
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.49063707,
+              0.05617111,
+              1.43446596
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7597
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.07435722,
+              -1.00153033,
+              -0.07282688
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.33100453,
+              1.19909721,
+              3.13190732
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7325
+        }
+      ]
+    },
+    "verita200d_d55": {
+      "name": "verita200d_d55",
+      "label": "胶片分离 · Kodak Verita 200D",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Verita 200D separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_verita200d.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.64838418,
+              0.69286643,
+              -0.34125061
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26202029,
+              0.41887825,
+              0.84314203
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5937
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.45483298,
+              0.32888,
+              0.21628702
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.08355416,
+              -0.02595693,
+              0.94240277
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3397
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.46963479,
+              -0.14120002,
+              -0.32843478
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -1.99324924,
+              1.065443,
+              1.92780624
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.5488
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.0112798,
+              -0.61042749,
+              -0.40085231
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.46128956,
+              -0.0060641,
+              1.46735367
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7694
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.04029617,
+              -0.95758908,
+              -0.0827071
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.07928582,
+              1.06448712,
+              3.0147987
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.749
+        }
+      ]
+    },
+    "vision3200t_d55": {
+      "name": "vision3200t_d55",
+      "label": "胶片分离 · Kodak Vision3 200T",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Vision3 200T separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_vision3200t.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.62227798,
+              0.71598128,
+              -0.33825926
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26461675,
+              0.43924068,
+              0.82537607
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5944
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.46214927,
+              0.34930908,
+              0.18854165
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.16227242,
+              0.14229864,
+              1.01997377
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.338
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.48621583,
+              -0.12624517,
+              -0.35997066
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.00451727,
+              1.18150384,
+              1.82301343
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6221
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.03838925,
+              -0.62197049,
+              -0.41641876
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.54981521,
+              0.17168139,
+              1.37813382
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7519
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.02635232,
+              -0.99207884,
+              -0.03427348
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.5571318,
+              1.34123658,
+              3.21589522
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7148
+        }
+      ]
+    },
+    "vision3250d_d55": {
+      "name": "vision3250d_d55",
+      "label": "胶片分离 · Kodak Vision3 250D",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Vision3 250D separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_vision3250d.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.63199869,
+              0.70578668,
+              -0.33778537
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26568672,
+              0.43421213,
+              0.83147459
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5955
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.4759406,
+              0.36751755,
+              0.15654184
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.04410988,
+              0.06648804,
+              0.97762185
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3448
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.43508805,
+              -0.08930972,
+              -0.34577833
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.02851548,
+              1.16277567,
+              1.86573981
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6074
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.15986166,
+              -0.73478685,
+              -0.42507482
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.52369085,
+              0.11647416,
+              1.40721669
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7609
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.07007087,
+              -1.01323849,
+              -0.05683237
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.44715253,
+              1.27149305,
+              3.17565948
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7261
+        }
+      ]
+    },
+    "vision3500t_d55": {
+      "name": "vision3500t_d55",
+      "label": "胶片分离 · Kodak Vision3 500T",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Vision3 500T separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_vision3500t.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.63891156,
+              0.70749245,
+              -0.34640401
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.2648629,
+              0.42870329,
+              0.8361596
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5973
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.48356079,
+              0.34527289,
+              0.17116632
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.08030754,
+              -0.01855959,
+              0.93825206
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3439
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.49304427,
+              -0.14206485,
+              -0.35097942
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.04561632,
+              1.12081197,
+              1.92480434
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.571
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.17808488,
+              -0.75400386,
+              -0.42408102
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.43775419,
+              -0.04800925,
+              1.48576344
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7556
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.06763177,
+              -1.01011682,
+              -0.05751495
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.35855108,
+              1.23537337,
+              3.12317771
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7289
+        }
+      ]
+    },
+    "vision350d_d55": {
+      "name": "vision350d_d55",
+      "label": "胶片分离 · Kodak Vision3 50D",
+      "illuminant": "D55",
+      "working_space": "Rec2020",
+      "note": "Material-aware Sigma->Kodak Vision3 50D separation: per-material constrained fits on D55+A samples, windows in the D55 calibration frame (runtime von Kries transport applies), look_gain=1. Confidence folds fit quality into the effective weight. Data quality per dngscan_assets/spectral/README.md; regenerate after replacing CSVs.",
+      "sources": {
+        "alev3_ssf": "dngscan_assets/spectral/film_ssf_vision350d.csv",
+        "imx410_qe": "dngscan_assets/spectral/sony_imx410_qe_zwo_asi2400mc_digitized.csv",
+        "sigma_fp_hot_mirror": "dngscan_assets/spectral/sigma_fp_hot_mirror_model_420_660.csv",
+        "cmf": "CIE 1931 2° via auto",
+        "skin_spectra": "dngscan_assets/spectral/demo_skin_reflectance.csv",
+        "foliage_spectra": "analytic foliage demo (red-edge family)",
+        "cyan_spectra": "dngscan_assets/spectral/demo_cyan_reflectance.csv",
+        "neutral_spectra": "analytic neutral ramps",
+        "magenta_spectra": "analytic magenta dye demo"
+      },
+      "regions": [
+        {
+          "name": "skin",
+          "matrix": [
+            [
+              0.63011315,
+              0.69971981,
+              -0.32983296
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.26702504,
+              0.44299196,
+              0.82403308
+            ]
+          ],
+          "mu_rg_bg": [
+            1.85578356,
+            0.15098357
+          ],
+          "cov_rg_bg": [
+            [
+              0.561724118,
+              0.1897138066
+            ],
+            [
+              0.1897138066,
+              0.0954617458
+            ]
+          ],
+          "scale": 1.6,
+          "strength": 1.0,
+          "confidence": 0.5913
+        },
+        {
+          "name": "foliage",
+          "matrix": [
+            [
+              0.44596729,
+              0.37249561,
+              0.1815371
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -0.15454764,
+              0.1371339,
+              1.01741374
+            ]
+          ],
+          "mu_rg_bg": [
+            0.54392513,
+            1.1e-07
+          ],
+          "cov_rg_bg": [
+            [
+              0.0052235918,
+              1.5e-09
+            ],
+            [
+              1.5e-09,
+              1e-05
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.9,
+          "confidence": 0.3466
+        },
+        {
+          "name": "cyan",
+          "matrix": [
+            [
+              1.43472759,
+              -0.08632793,
+              -0.34839966
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -2.1087573,
+              1.25792033,
+              1.85083696
+            ]
+          ],
+          "mu_rg_bg": [
+            0.57051588,
+            0.36219445
+          ],
+          "cov_rg_bg": [
+            [
+              0.014277381,
+              0.033818248
+            ],
+            [
+              0.033818248,
+              0.0950075288
+            ]
+          ],
+          "scale": 2.2,
+          "strength": 0.9,
+          "confidence": 0.6346
+        },
+        {
+          "name": "neutral",
+          "matrix": [
+            [
+              2.02822217,
+              -0.61557083,
+              -0.41265134
+            ],
+            [
+              0.0,
+              1.0,
+              -0.0
+            ],
+            [
+              -0.57976445,
+              0.24305507,
+              1.33670938
+            ]
+          ],
+          "mu_rg_bg": [
+            1.00006369,
+            0.99891101
+          ],
+          "cov_rg_bg": [
+            [
+              4.43768e-05,
+              3.95942e-05
+            ],
+            [
+              3.95942e-05,
+              0.0022501377
+            ]
+          ],
+          "scale": 1.2,
+          "strength": 0.5,
+          "confidence": 0.7553
+        },
+        {
+          "name": "magenta",
+          "matrix": [
+            [
+              2.03526086,
+              -0.99234046,
+              -0.0429204
+            ],
+            [
+              -0.0,
+              1.0,
+              0.0
+            ],
+            [
+              -3.51152697,
+              1.29985769,
+              3.21166928
+            ]
+          ],
+          "mu_rg_bg": [
+            1.50446772,
+            2.39467729
+          ],
+          "cov_rg_bg": [
+            [
+              0.0081876687,
+              -0.0059490875
+            ],
+            [
+              -0.0059490875,
+              0.0254604759
+            ]
+          ],
+          "scale": 2.0,
+          "strength": 0.85,
+          "confidence": 0.7176
         }
       ]
     }

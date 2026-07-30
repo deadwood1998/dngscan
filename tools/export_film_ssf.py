@@ -23,10 +23,27 @@ PROFILE_DIR = PROJECT_ROOT / "dngscan_assets" / "spectral" / "spektrafilm"
 OUT_DIR = PROJECT_ROOT / "dngscan_assets" / "spectral"
 GRID = np.arange(400.0, 701.0, 10.0)
 
-FILMS = {
-    "portra400": "kodak_portra_400",
-    "superia400": "fujifilm_xtra_400",
-}
+def _discover() -> dict[str, str]:
+    import json as _json
+
+    films: dict[str, str] = {}
+    for path in sorted(PROFILE_DIR.glob("*.json")):
+        info = _json.loads(path.read_text(encoding="utf-8")).get("info", {})
+        if str(info.get("stage")) != "filming" or "push" in path.stem:
+            continue
+        key = path.stem
+        if key == "fujifilm_xtra_400":
+            films["superia400"] = key
+            continue
+        for prefix in ("kodak_", "fujifilm_"):
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+        films[key.replace("_", "")] = path.stem
+    return films
+
+
+FILMS = _discover()
 
 
 def export(key: str, profile_name: str) -> Path:

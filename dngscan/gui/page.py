@@ -212,18 +212,16 @@ button.preview:disabled{opacity:.5;cursor:default}
   <div class="row">
     <div style="flex:1;min-width:190px">
       <label>胶片观察位置</label>
-      <select id="film" title="一次设置三层独立声明：白平衡 5500K + 对应光谱前馈 + 对应曲线预设。选中后下方与上方控件同步更新，随时可单独调整——没有任何一层被烘焙。">
+      <select id="film" title="一次设置三层独立声明：白平衡（日光卷 5500K / 钨丝电影卷 3200K）+ 对应光谱前馈 + 对应曲线预设。选中后相关控件同步更新，随时可单独调整——没有任何一层被烘焙。">
         <option value="none">无 · 场景自适应</option>
-        <option value="portra400">Kodak Portra 400</option>
-        <option value="superia400">Fujifilm Superia X-TRA 400</option>
+FILM_OPTIONS
       </select>
     </div>
     <div style="flex:1;min-width:190px">
       <label>曲线预设</label>
       <select id="filmCurve" title="AgX 参数空间里的具名胶片坐标（数据手册特性曲线最小二乘解）；选中后整卷一致、场景自适应关闭。">
         <option value="none">场景自适应 · 默认</option>
-        <option value="portra400">Portra 400 + Endura</option>
-        <option value="superia400">Superia 400 + Crystal Archive</option>
+FILM_CURVE_OPTIONS
       </select>
     </div>
   </div>
@@ -637,7 +635,7 @@ $("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();sav
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
 $("#coreimageVersion").addEventListener("change",()=>{RAW9_APPROVALS.delete($("#input").value.trim());saveSettings();preparePreview();});
 $("#wb").addEventListener("change",()=>{updateDecoderUi();updateGradeUi();saveSettings();preparePreview();});
-const FILM_COMBOS={portra400:{wb:"5500k",st:"portra400_d55",fc:"portra400"},superia400:{wb:"5500k",st:"superia400_d55",fc:"superia400"}};
+const FILM_COMBOS=FILM_COMBOS_JSON;
 $("#film").addEventListener("change",()=>{
   const combo=FILM_COMBOS[$("#film").value];
   if(combo){
@@ -936,9 +934,33 @@ def _scene_transform_options_html() -> str:
     return "\n".join(lines)
 
 
+def _film_options_html() -> tuple[str, str, str]:
+    from ..film_curve import FILM_CURVE_PRESETS
+    from ..scene_transform import SCENE_TRANSFORMS
+
+    film_opts, curve_opts, combos = [], [], {}
+    for key, preset in FILM_CURVE_PRESETS.items():
+        label = str(preset.get("label", key))
+        fit = preset.get("fit", {})
+        rms = fit.get("rms_stop")
+        note = f"（拟合残差 {rms:.3f} stop）" if isinstance(rms, (int, float)) else ""
+        film_opts.append(f'        <option value="{key}">{label}</option>')
+        curve_opts.append(f'        <option value="{key}" title="{note}">{label}</option>')
+        combo = preset.get("combo", {})
+        st = str(combo.get("scene_transform", "none"))
+        combos[key] = {
+            "wb": str(combo.get("wb", "5500k")),
+            "st": st if st in SCENE_TRANSFORMS else "none",
+            "fc": key,
+        }
+    return "\n".join(film_opts), "\n".join(curve_opts), json.dumps(combos, ensure_ascii=False)
+
+
 def render_page(init_dir: str) -> bytes:
     from dngscan import coreimage_decode
     from dngscan.constants import MAX_HDR_HEADROOM_EV
+
+    film_opts, curve_opts, combos_json = _film_options_html()
 
     html = (
         PAGE.replace("INIT_DIR", json.dumps(init_dir))
@@ -948,5 +970,8 @@ def render_page(init_dir: str) -> bytes:
         # Keep the slider ceiling on the same source of truth as the CLI's
         # --hdr-headroom bound (log2(4000/100) = 5.32); step 0.02 lands on it exactly.
         .replace("MAX_HDR_HEADROOM_ATTR", f"{MAX_HDR_HEADROOM_EV:.2f}")
+        .replace("FILM_OPTIONS", film_opts)
+        .replace("FILM_CURVE_OPTIONS", curve_opts)
+        .replace("FILM_COMBOS_JSON", combos_json)
     )
     return html.encode("utf-8")

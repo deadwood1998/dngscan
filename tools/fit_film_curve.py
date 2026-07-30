@@ -41,23 +41,66 @@ PROFILE_DIR = PROJECT_ROOT / "dngscan_assets" / "spectral" / "spektrafilm"
 PRESET_PATH = PROJECT_ROOT / "dngscan" / "film_curve_presets.json"
 LOG10_2 = np.log10(2.0)
 
-STOCKS = {
-    "portra400": {
-        "label": "Kodak Portra 400",
-        "negative": "kodak_portra_400",
-        "print": "kodak_portra_endura",
-    },
-    "superia400": {
-        "label": "Fujifilm Superia X-TRA 400",
-        "negative": "fujifilm_xtra_400",
-        "print": "fujifilm_crystal_archive_typeii",
-    },
-}
+_KEY_OVERRIDES = {"fujifilm_xtra_400": "superia400"}  # the name people remember
+_LABEL_OVERRIDES = {"fujifilm_xtra_400": "Fujifilm Superia X-TRA 400"}
+
+
+def _short_key(profile_key: str) -> str:
+    """Stable preset key from a profile name: vendor prefix dropped, joined."""
+    if profile_key in _KEY_OVERRIDES:
+        return _KEY_OVERRIDES[profile_key]
+    trimmed = profile_key
+    for prefix in ("kodak_", "fujifilm_"):
+        if trimmed.startswith(prefix):
+            trimmed = trimmed[len(prefix):]
+            break
+    return trimmed.replace("_", "")
+
+
+def _default_wb(profile_key: str, info: dict) -> str:
+    """Combo WB declaration from the stock's balance: tungsten cine stocks are
+    calibrated at 3200K (that is what the T suffix means), everything else here is
+    daylight film at 5500K."""
+    if profile_key.endswith("t") and profile_key.split("_")[-1][:-1].isdigit():
+        return "3200k"
+    return "5500k"
+
+
+def discover_stocks() -> dict[str, dict]:
+    """Every filming-stage profile in the data directory, negatives and reversals.
+
+    Data-driven on purpose: adding a stock is dropping its (CC BY-SA) profile into
+    dngscan_assets/spectral/spektrafilm/ and re-running this tool. Negatives carry
+    their declared target print; positives (slides) are their own display medium.
+    """
+    stocks: dict[str, dict] = {}
+    for path in sorted(PROFILE_DIR.glob("*.json")):
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        info = profile.get("info", {})
+        if str(info.get("stage")) != "filming":
+            continue
+        profile_key = path.stem
+        positive = str(info.get("type")) == "positive"
+        target_print = info.get("target_print")
+        if not positive and not target_print:
+            continue
+        name = _LABEL_OVERRIDES.get(profile_key, str(info.get("name", profile_key)))
+        stocks[_short_key(profile_key)] = {
+            "label": name if positive else f"{name}（负片+相纸）",
+            "negative": profile_key,
+            "print": None if positive else str(target_print),
+            "positive": positive,
+            "wb": _default_wb(profile_key, info),
+        }
+    return stocks
+
+
+STOCKS = discover_stocks()
 
 # Fit domain in scene EV. Below -6.5 both film and AgX sit in their deep toes where
 # Status-M densitometry and the display floor both stop being meaningful.
 FIT_EV_LO, FIT_EV_HI = -6.5, 6.0
-TARGET_POINTS_STORED = 64
+TARGET_POINTS_STORED = 192
 
 
 def _load_curves(name: str) -> tuple[np.ndarray, np.ndarray]:
@@ -66,6 +109,32 @@ def _load_curves(name: str) -> tuple[np.ndarray, np.ndarray]:
     density = np.asarray(data["density_curves"], dtype=np.float64)
     keep = np.all(np.isfinite(density), axis=1)
     return log_e[keep], density[keep]
+
+
+def _build_reversal_target(
+    le: np.ndarray, dens: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Slide film is its own display medium: no print stage, densities read directly.
+
+    Per-channel balance is a logE shift placing mid-scale at exactly 18% transmittance
+    (the projection/viewing analogue of print filtration), then the scalar tone target
+    is the luminance of the neutral ramp, same definition as the print path. The shadow
+    floor is the slide's own Dmax relative to its base."""
+    d_min = np.nanmin(dens, axis=0)
+    floor = float(np.mean(np.power(10.0, -(np.nanmax(dens, axis=0) - d_min))))
+    channels = []
+    for c in range(3):
+        t = np.power(10.0, -(dens[:, c] - d_min[c]))
+        order = np.argsort(t)
+        le_mid = np.interp(0.18, t[order], le[order])
+        channels.append(np.interp(le + le_mid, le, t))
+    luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
+    t_neutral = np.stack(channels, axis=1) @ luma
+    ev = le / LOG10_2
+    t0 = float(np.interp(0.0, ev, t_neutral))
+    if abs(t0 - 0.18) > 5e-4:
+        raise RuntimeError(f"reversal mid-gray anchor drifted: T(0)={t0:.5f}")
+    return ev, t_neutral, floor
 
 
 def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
@@ -77,6 +146,8 @@ def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
     the look AgX must reproduce through target_black_linear.
     """
     le_n, d_neg = _load_curves(stock["negative"])
+    if stock.get("positive"):
+        return _build_reversal_target(le_n, d_neg)
     le_p, d_prt = _load_curves(stock["print"])
     d_min = d_prt.min(axis=0)
     target_mid_density = d_min + (-np.log10(0.18))
@@ -244,12 +315,30 @@ def fit_stock(key: str, stock: dict) -> dict:
             "ev": [round(float(v), 5) for v in ev[idx]],
             "display_linear": [round(float(v), 7) for v in target[idx]],
         },
+        "combo": {
+            # The film-observation expansion: declared WB (tungsten cine stocks are
+            # 3200K by name), and the stock's spectral separation preset when the
+            # prefeed calibrator has produced one.
+            "wb": stock.get("wb", "5500k"),
+            # Push processing changes development, not the emulsion: push variants
+            # share the base stock's spectral separation preset.
+            "scene_transform": f"{key.split('push')[0]}_d55",
+        },
         "source": {
-            "negative": f"spektrafilm/{stock['negative']}.json",
-            "print": f"spektrafilm/{stock['print']}.json",
+            "film": f"spektrafilm/{stock['negative']}.json",
+            "print": (
+                f"spektrafilm/{stock['print']}.json"
+                if stock.get("print")
+                else "none (reversal: the slide is its own display medium)"
+            ),
             "license": "CC BY-SA 4.0 (spektrafilm profiles, Andrea Volpato)",
-            "model": "contact print, per-channel neutral balance at mid-scale, "
-                     "Status M densities, mean-of-channels neutral",
+            "model": (
+                "reversal direct transmittance, per-channel mid-scale balance, "
+                "printed-luminance neutral"
+                if stock.get("positive")
+                else "contact print, per-channel neutral balance at mid-scale, "
+                "Status M densities, printed-luminance neutral"
+            ),
         },
     }
 
