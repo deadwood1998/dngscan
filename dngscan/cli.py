@@ -255,7 +255,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--demosaic",
         choices=DEMOSAIC_CHOICES,
         default="auto",
-        help="仅 LibRaw：去马赛克插值算法。RAW 9 使用 Apple 的 CoreML 去马赛克+降噪模型",
+        help="仅 LibRaw：解拜耳插值算法。RAW 9 使用 Apple 的 CoreML 解拜耳+降噪模型",
     )
     parser.add_argument(
         "--decoder",

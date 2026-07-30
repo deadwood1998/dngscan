@@ -214,7 +214,7 @@ flowchart TB
         EV["Intent exposure<br/>fixed EV0 mid-gray anchor x 2^EV<br/>manual EV or explicit brightness-reference search"]
         SAMPLE["Planning sample<br/>scene scale + intent exposure<br/>optional WB-aware scene prefeed"]
         METRICS["SceneToneMetrics<br/>reliable body vs complete tail<br/>spatial mask exclusion on LibRaw<br/>aggregate rank trim on Core Image<br/>sparse-emitter classification"]
-        CONTROLS["Render intent<br/>output gamut, tone core, AgX primaries<br/>prefeed, punch and bounded tone biases"]
+        CONTROLS["Render intent<br/>output gamut, tone core, AgX primaries<br/>film observation position (WB + filter + separation + curve)<br/>prefeed, punch and bounded tone biases"]
         COMPILE["Compile independent plans<br/>SceneToneMetrics<br/>ToneCompressionPlan<br/>ColorGeometryPlan"]
         PLAN["Immutable RenderPlan"]
         REPORTS["Optional dashboard / CSV / text report"]
@@ -932,6 +932,45 @@ Final gamut fitting occurs after tone and looks. It pushes colors that do not fi
 target sRGB/P3 gamut back along Oklab chroma rather than clipping each RGB channel. This
 keeps highlight colors retained by AgX or P3 from collapsing into hard primaries at the
 last step.
+
+## Film observation positions — a declared feature group across the four layers
+
+Film simulation here is not a LUT but **four independent declarations**, each placed at
+its physically correct layer:
+
+```mermaid
+flowchart LR
+    D1["WB declaration<br/>daylight film 5500K / tungsten cine 3200K<br/>(Layer 1 Capture)"]
+    D2["Lens filter (optional)<br/>Wratten mired shift<br/>(Layer 1 optics)"]
+    D3["Spectral separation<br/>the film's layers as the observer<br/>(prefeed)"]
+    D4["Development curve<br/>a named coordinate in AgX parameter space<br/>with the paper/slide floor (Layer 2 Tone)"]
+    D1 --> D2 --> D3 --> D4
+    D4 --> OUT["Layers 3 and 4 work unchanged<br/>including Ultra HDR gain-map delivery"]
+```
+
+- **WB**: fixed Kelvin as a standard reference, solved through the file's own DNG
+  dual-illuminant calibration (LibRaw) or CIRAWFilter's native neutralTemperature (RAW 9);
+- **Lens filters**: derived from Kodak's published mired shifts, applied in scene-linear
+  before the prefeed — the reliable tail and HDR budget meter through the glass, exactly
+  as film would. No strength slider: glass has no half-installed state;
+- **Spectral separation**: the film stock is fed to the existing prefeed calibrator as
+  "another camera" — datasheet layer sensitivities are its SSF; material windows,
+  neutral-axis preservation and confidence weighting all carry over;
+- **Development curve**: the datasheet characteristic curve (negative + paired paper end
+  to end, or reversal through a declared dark-surround transform T^(1/1.5)) solved by
+  least squares into AgX's parameter space. Whole-roll consistency: scene adaptation is
+  off while a preset is active, and the EV0 -> 0.18 anchor holds by construction.
+
+**Twenty stocks** (the Portra family with pushes, Ektar, Gold, Ultramax, Superia X-TRA,
+C200, Pro 400H, four slide stocks, the Vision3 cine family and Verita) expand from
+`--film <name>` or one GUI select into those declarations; any layer can be overridden
+individually — **nothing is baked**. Every preset records `source` and `fit.rms_stop`;
+profile data is spektrafilm's under CC BY-SA 4.0 (provenance chain in NOTICE.md and
+`dngscan_assets/spectral/spektrafilm/README.md`). Because every declaration lives on the
+scene-referred side, film character survives into Ultra HDR delivery — a film body with
+genuinely measured highlight headroom. The fitter's three defects and their diagnosis are
+recorded in the [engineering notes](docs/ENGINEERING_NOTES.zh-CN.md); the design contract
+is [docs/FILM_OBSERVATION_PLAN.zh-CN.md](docs/FILM_OBSERVATION_PLAN.zh-CN.md).
 
 ## Layer 4 — Delivery: SDR and HDR output
 

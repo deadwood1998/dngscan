@@ -37,7 +37,8 @@ headroom。它不是把 JPEG 内部的 RGB 辅助 gain map 原样抽出来，而
 每个数字什么意思、导出该选什么。想 review 架构决策与推理过程（遇到过什么问题、
 证据是什么、为什么这样解），看[工程决策记录](docs/ENGINEERING_NOTES.zh-CN.md)。
 
-想知道某个环节为什么这样做，按管线的四层往下读：
+想知道某个环节为什么这样做，按管线的四层往下读（胶片观察位置作为跨层功能群，
+单独成节排在三层之后）：
 
 | 层 | 负责什么 | 不负责什么 |
 |---|---|---|
@@ -190,7 +191,7 @@ flowchart TB
         EV["Intent exposure<br/>固定 EV0 中灰锚点 x 2^EV<br/>手动 EV 或显式亮度参考搜索"]
         SAMPLE["Plan 采样<br/>scene scale + intent exposure<br/>可选且随 WB 适配的 scene 前馈"]
         METRICS["SceneToneMetrics<br/>可靠主体与完整尾部分离<br/>LibRaw 按空间 mask 排除<br/>Core Image 按聚合比例 rank trim<br/>点状发光体分类"]
-        CONTROLS["渲染意图<br/>输出色域、tone core、AgX primaries<br/>前馈、punch 与有界明暗微调"]
+        CONTROLS["渲染意图<br/>输出色域、tone core、AgX primaries<br/>胶片观察位置（WB 声明+滤镜+分离+曲线预设）<br/>前馈、punch 与有界明暗微调"]
         COMPILE["分别编译<br/>SceneToneMetrics<br/>ToneCompressionPlan<br/>ColorGeometryPlan"]
         PLAN["不可变 RenderPlan"]
         REPORTS["可选六面板 / CSV / 文本报告"]
@@ -774,6 +775,43 @@ RAW headroom retreat 只在解拜耳前 CFA 表明通道接近或到达 full-wel
 方向压回边界，而不是简单逐通道 clip。这样 AgX 或 P3 保下来的高光颜色不会在最后一步突然
 崩成硬原色。
 
+## 胶片观察位置 — 跨四层的声明功能群
+
+胶片模拟在这条管线里不是一张 LUT，而是**四个独立声明**，各自落在它物理上正确的层：
+
+```mermaid
+flowchart LR
+    D1["WB 声明<br/>日光卷 5500K / 钨丝卷 3200K<br/>（一层 Capture）"]
+    D2["镜前滤镜（可选）<br/>Wratten mired 位移<br/>（一层 Capture 光学）"]
+    D3["光谱分离<br/>胶片感色层作为观察者<br/>（前馈层）"]
+    D4["显影曲线<br/>AgX 参数空间具名坐标<br/>含相纸/正片地板（二层 Tone）"]
+    D1 --> D2 --> D3 --> D4
+    D4 --> OUT["三层色彩几何与四层交付原样工作<br/>含 Ultra HDR gain map"]
+```
+
+- **WB 声明**：固定色温不是肉眼调整而是标准引用，配平系数经文件自身的 DNG 双光源
+  标定插值求解（LibRaw），或走 CIRAWFilter 原生 neutralTemperature（RAW 9）；
+- **镜前滤镜**：按柯达出版的 mired 位移推导（85B/85/80A/81A/82A），作用于
+  scene-linear、前馈之前；可靠尾部与 HDR 预算都透过滤镜测量——胶片也是这样测光的。
+  滤镜没有强度滑杆：玻璃没有半片；
+- **光谱分离**：把胶片当作"另一台相机"喂给现有前馈标定器——数据手册的感色层曲线
+  就是它的 SSF，分材料窗口矩阵、中性轴保持、置信度加权全部沿用；
+- **显影曲线**：数据手册特性曲线（负片+配对相纸端到端，或反转片经暗环境外观变换
+  `T^(1/1.5)` 直读）最小二乘解到 AgX 参数空间的一个具名坐标；预设激活时整卷一致、
+  场景自适应关闭，EV0→0.18 锚定不破。
+
+**二十款胶卷**（Portra 全家含迫冲、Ektar、Gold、Ultramax、Superia X-TRA、C200、
+Pro 400H、四款反转片、Vision3 电影卷全系与 Verita）以 `--film <名字>` 或 GUI 一键
+展开为上述三/四层组合；任何一层都可单独覆盖——**没有烘焙**。每个预设携带
+`source`（具体数据文件 + 模型描述）与 `fit.rms_stop`（拟合残差），数据来自
+spektrafilm 的 CC BY-SA 4.0 profile（出处链见 NOTICE.md 与
+`dngscan_assets/spectral/spektrafilm/README.md`）。
+
+与市面胶片工具的根本差异：全部声明发生在 scene-referred 侧，因此**胶片性格能进
+Ultra HDR 交付**——"Portra 的身体 + 真实测量的高光余量"。曲线拟合的方法论与三次
+拟合器缺陷的排查过程见[工程决策记录](docs/ENGINEERING_NOTES.zh-CN.md)，
+设计合同见 [docs/FILM_OBSERVATION_PLAN.zh-CN.md](docs/FILM_OBSERVATION_PLAN.zh-CN.md)。
+
 ## 四层：Delivery — SDR 与 HDR 交付
 
 SDR 输出是带确定性 TPDF 抖动的 8-bit JPEG，默认 quality 100、4:4:4。抖动发生在量化前，
@@ -889,6 +927,11 @@ macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩
 compression 说明。它们定义职责边界和参照方法，不会把 dngscan 自己的阈值变成上游常数。
 
 ## 附：保留的前馈实验
+
+> 注：这套前馈机制现已承载胶片光谱分离预设（见"胶片观察位置"一节）——同一标定器、
+> 同一窗口/置信度合同，拟合目标从数字化的 ALEV 猜测换成了数据手册里的胶片感色层曲线。
+> 以下记述保留原 ALEV 实验的动机与边界。
+
 
 这个实验始于“在进入 AgX 之前，先用测量数据补偿相机某些可重复缺陷”的想法。更进一步，
 如果两套传感器与滤镜栈的光谱响应都测得足够清楚，也可以在原相机真正记录到的信息范围内，

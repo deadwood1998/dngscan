@@ -115,8 +115,8 @@ button.preview:disabled{opacity:.5;cursor:default}
       </select>
     </div>
     <div style="flex:1;min-width:170px">
-      <label>去马赛克</label>
-      <select id="demosaic" title="仅 LibRaw；RAW 9 使用 Apple 的 CoreML 去马赛克与降噪模型。">
+      <label>解拜耳</label>
+      <select id="demosaic" title="仅 LibRaw；RAW 9 使用 Apple 的 CoreML 解拜耳与降噪模型。">
         <option value="auto">自动 · DHT</option>
         <option value="dht">DHT</option>
         <option value="dcb">DCB</option>
