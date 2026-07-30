@@ -14,7 +14,10 @@ End-to-end target construction (contact-print model, per channel c):
     D_neg_c(logE)            negative Status-M density from the profile
     logEp_c = k_c - D_neg_c  print exposure through the negative
     D_p_c   = print_curve_c(logEp_c)
-    T_c     = 10^-(D_p_c - Dmin_c)   reflectance relative to paper white
+    T_c     = (10^-(D_p_c - Dmin_c))^s   reflectance relative to paper white, viewed
+                                         through the surround term s (see
+                                         SURROUND_GAMMA: identity for reflection
+                                         paper, 1/1.5 for dark-surround projection)
 The per-channel balance k_c is solved so the mid-scale neutral exposure (logE = 0 in
 spektrafilm's normalization) prints to exactly 18% reflectance — which anchors the
 target at dngscan's EV0 -> 0.18 contract by construction. Scene EV = logE / log10(2).
@@ -97,15 +100,39 @@ def discover_stocks() -> dict[str, dict]:
 
 STOCKS = discover_stocks()
 
-# Fit domain in scene EV. Below -6.5 both film and AgX sit in their deep toes where
-# Status-M densitometry and the display floor both stop being meaningful.
-# Dark-surround appearance compensation for projection media (reversal film). The
-# classic photographic imaging-science value: slides are built ~1.5x contrastier than
-# a bright-surround rendering of the same scene because dark-surround viewing lowers
-# perceived contrast by roughly that factor (Hunt/Giorgianni-Madden tradition;
-# broadcast's dim-surround convention uses 1.2 for the milder case). A declared
-# constant, recorded in each reversal preset's source.model.
-DARK_SURROUND_GAMMA = 1.5
+# Viewing-condition-complete translation (docs/FILM_OBSERVATION_PLAN §4): a medium's
+# response is a report read in its native surround, and carrying the report to the
+# delivery condition applies the classic surround term between the two conditions —
+# and only that term. Perceived contrast drops as the surround darkens
+# (Bartleson-Breneman equations; Fairchild 2013, Colour Appearance Models 3rd ed.),
+# so media built for dark-surround viewing are ~1.5x contrastier than an
+# average-surround rendering of the same scene (projected slides, theatrical prints)
+# and dim-surround media ~1.2x (broadcast television convention;
+# Giorgianni-Madden tradition). Delivery is declared average surround — the typical
+# reading condition of a photograph; sRGB's stricter dim reference (IEC 61966-2-1,
+# 64 lux) would add a <=1.2x term that is recorded as a known approximation, not
+# modelled. All other colour-appearance phenomena (Hunt, Stevens, ...) need absolute
+# luminance, which neither the print nor sRGB pins down: declared out of scope.
+SURROUND_GAMMA = {"dark": 1.5, "dim": 1.2, "average": 1.0}
+TARGET_SURROUND = "average"
+
+# Native viewing surround of each *display medium* in the chain. Positives project in
+# a dark room. These print stocks are theatrical projection films — the cine chain's
+# display medium shares the slide's surround, which is why both take the same term.
+# Reflection papers are read in bright/average light: their identity term is a
+# coincidence of conditions, derived, not assumed.
+PRINT_SURROUND = {"kodak_2383": "dark", "kodak_2393": "dark"}
+
+
+def surround_exponent(native_surround: str) -> float:
+    """Exponent translating a medium's transmittance to the delivery surround.
+
+    T_delivery = T_native ** (gamma_target / gamma_native): a dark-surround medium
+    (gamma 1.5) flattens by T^(1/1.5) on the average-surround delivery; a medium whose
+    native condition matches the delivery passes through exactly.
+    """
+    return SURROUND_GAMMA[TARGET_SURROUND] / SURROUND_GAMMA[native_surround]
+
 
 FIT_EV_LO, FIT_EV_HI = -6.5, 6.0
 TARGET_POINTS_STORED = 192
@@ -121,62 +148,77 @@ def _load_curves(name: str) -> tuple[np.ndarray, np.ndarray]:
 
 def _build_reversal_target(
     le: np.ndarray, dens: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     """Slide film is its own display medium: no print stage, densities read directly.
 
     Reversal film is designed for dark-surround projection: the medium's high gamma
     (~1.6-1.8) is the classic surround compensation — in a dark surround perceived
     contrast drops and the medium must overshoot physically to look right. Mapping raw
-    transmittance straight onto a bright-surround display would apply that compensation
-    twice (the fits confirmed it: black_ev and toe_power pinned at their bounds with
-    the residual concentrated in the shadows). The declared appearance transform
-    T^(1/DARK_SURROUND_GAMMA) removes the projection-side compensation once, with the
-    exponent from the imaging-science dark-surround convention, and brings the curve
-    into the AgX family's expressible range. Per-channel balance then places mid-scale
-    at exactly 18% post-transform; the scalar tone target is the luminance of the
-    neutral ramp, same definition as the print path. The shadow floor is the slide's
-    own Dmax relative to its base, viewed through the same transform."""
+    transmittance straight onto an average-surround display would apply that
+    compensation twice (the fits confirmed it: black_ev and toe_power pinned at their
+    bounds with the residual concentrated in the shadows). The surround term
+    T^surround_exponent("dark") translates the report to the delivery condition once,
+    and brings the curve into the AgX family's expressible range. Per-channel balance
+    then places mid-scale at exactly 18% post-transform; the scalar tone target is the
+    luminance of the neutral ramp, same definition as the print path. The shadow floor
+    is the slide's own Dmax relative to its base, viewed through the same transform."""
+    exp = surround_exponent("dark")
     d_min = np.nanmin(dens, axis=0)
+    # The floor must be composed exactly like the target: LUMINANCE of the per-channel
+    # floors, not their arithmetic mean. Slide dyes carry very different Dmax per layer
+    # (Velvia most of all); the mean floor sat 0.57 stop above the luminance target's
+    # own asymptote and the fitted toe was pinned to that wrong shelf — the same
+    # mean-vs-luminance defect as the scalar tone target, one constant further down.
+    luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
     floor = float(
-        np.mean(
-            np.power(
-                np.power(10.0, -(np.nanmax(dens, axis=0) - d_min)),
-                1.0 / DARK_SURROUND_GAMMA,
-            )
-        )
+        np.power(np.power(10.0, -(np.nanmax(dens, axis=0) - d_min)), exp) @ luma
     )
     channels = []
     for c in range(3):
-        t = np.power(
-            np.power(10.0, -(dens[:, c] - d_min[c])), 1.0 / DARK_SURROUND_GAMMA
-        )
+        t = np.power(np.power(10.0, -(dens[:, c] - d_min[c])), exp)
         order = np.argsort(t)
         le_mid = np.interp(0.18, t[order], le[order])
         channels.append(np.interp(le + le_mid, le, t))
-    luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
-    t_neutral = np.stack(channels, axis=1) @ luma
+    t_channels = np.stack(channels, axis=1)
+    t_neutral = t_channels @ luma
     ev = le / LOG10_2
     t0 = float(np.interp(0.0, ev, t_neutral))
     if abs(t0 - 0.18) > 5e-4:
         raise RuntimeError(f"reversal mid-gray anchor drifted: T(0)={t0:.5f}")
-    return ev, t_neutral, floor
+    return ev, t_channels, t_neutral, floor
 
 
-def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
-    """Neutral end-to-end response: scene EV grid, display-linear reflectance, floor.
+def build_endtoend_target(
+    stock: dict, surround_override: str | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Neutral end-to-end response: EV grid, per-channel display linear, luma, floor.
 
     The floor is the paper's Dmax expressed as reflectance relative to paper white —
     the print medium's own display black. It is declared from data, not fitted: a
     print never reaches zero, and that lifted shadow floor is a structural part of
     the look AgX must reproduce through target_black_linear.
+
+    surround_override="native" quotes the report verbatim (no surround term) — the
+    theatrical variants, per the contract's quotation-vs-translation distinction.
     """
     le_n, d_neg = _load_curves(stock["negative"])
     if stock.get("positive"):
         return _build_reversal_target(le_n, d_neg)
     le_p, d_prt = _load_curves(stock["print"])
+    # Surround term for the chain's display medium: theatrical projection prints share
+    # the slide's dark surround; reflection papers already match the delivery
+    # condition (exponent 1, exactly).
+    if surround_override == "native":
+        exp = 1.0
+    else:
+        exp = surround_exponent(PRINT_SURROUND.get(stock["print"], "average"))
     d_min = d_prt.min(axis=0)
-    target_mid_density = d_min + (-np.log10(0.18))
-    floor = float(np.mean(np.power(10.0, -(d_prt.max(axis=0) - d_min))))
+    # Mid-scale must read 18% *after* the surround term: T_raw = 0.18^(1/exp).
+    target_mid_density = d_min + (-np.log10(0.18)) / exp
+    # Luminance-composed floor, same definition as the scalar target (see the
+    # reversal path for the mean-vs-luminance defect this avoids).
+    luma_w = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
+    floor = float(np.power(np.power(10.0, -(d_prt.max(axis=0) - d_min)), exp) @ luma_w)
 
     channels = []
     for c in range(3):
@@ -189,7 +231,7 @@ def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
 
         log_ep = k_c - d_neg[:, c]
         d_p = np.interp(log_ep, le_p, d_prt[:, c])
-        channels.append(np.power(10.0, -(d_p - d_min[c])))
+        channels.append(np.power(np.power(10.0, -(d_p - d_min[c])), exp))
 
     # The scalar tone target is the LUMINANCE of the printed neutral ramp, by
     # definition of what the scalar curve carries in this architecture: tone is the Y
@@ -202,14 +244,15 @@ def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
     # fits a believable one. Portra's matched layers render both definitions nearly
     # identical, which is exactly why the bug stayed invisible on the baseline stock.
     luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
-    t_neutral = np.stack(channels, axis=1) @ luma
+    t_channels = np.stack(channels, axis=1)
+    t_neutral = t_channels @ luma
     ev = le_n / LOG10_2
     # Re-anchor exactly: per-channel balance pins each channel at 0.18, the weighted
     # sum can drift by float epsilon only; assert instead of silently re-normalizing.
     t0 = float(np.interp(0.0, ev, t_neutral))
     if abs(t0 - 0.18) > 5e-4:
         raise RuntimeError(f"target mid-gray anchor drifted: T(0)={t0:.5f}")
-    return ev, t_neutral, floor
+    return ev, t_channels, t_neutral, floor
 
 
 def _agx_curve(ev: np.ndarray, params_vec: np.ndarray, target_black: float = 0.0) -> np.ndarray:
@@ -233,6 +276,11 @@ def _agx_curve(ev: np.ndarray, params_vec: np.ndarray, target_black: float = 0.0
     )
 
 
+PARAM_NAMES = (
+    "black_ev", "white_ev", "contrast", "toe_power",
+    "shoulder_power", "latitude_lo_ev", "latitude_hi_ev",
+)
+
 BOUNDS = np.array(
     [
         (-14.0, -2.5),   # black_ev (reversal media die shallow; -4 pinned pre-surround)
@@ -240,10 +288,30 @@ BOUNDS = np.array(
         (1.2, 5.5),      # contrast
         (0.8, 3.5),      # toe_power
         (1.2, 10.0),     # shoulder_power (slides clip highlights harder than any paper)
-        (0.0, 1.5),      # latitude_lo_ev
-        (0.0, 1.5),      # latitude_hi_ev
+        (0.0, 2.5),      # latitude_lo_ev (cine negatives carry straight-line > 1.5 EV)
+        (0.0, 2.5),      # latitude_hi_ev
     ]
 )
+
+
+def _pinned_params(vec: np.ndarray) -> list[str]:
+    """Parameters sitting on a fit bound — the declared-extrapolation report.
+
+    An endpoint pinned at a bound *outside the fit domain* (black_ev at -14 when the
+    domain stops at -6.5, white_ev at 8.5 against +6.0) is not measured by the data:
+    the toe/shoulder it describes lies beyond every sample, and the recorded value is
+    an extrapolation the optimizer parked at the fence. Publishing the list keeps that
+    honest instead of letting the JSON read as if every parameter were determined.
+    Zero latitude is a legitimate interior solution (no linear mid-segment), not a pin.
+    """
+    pins = []
+    for i, name in enumerate(PARAM_NAMES):
+        lo, hi = BOUNDS[i]
+        if abs(vec[i] - hi) < 5e-3:
+            pins.append(f"{name}@{hi:g}")
+        elif abs(vec[i] - lo) < 5e-3 and not (name.startswith("latitude") and lo == 0.0):
+            pins.append(f"{name}@{lo:g}")
+    return pins
 
 
 def _clip_bounds(vec: np.ndarray) -> np.ndarray:
@@ -301,10 +369,43 @@ def nelder_mead(fn, x0: np.ndarray, steps: np.ndarray, iters: int = 900) -> np.n
     return simplex[order[0]]
 
 
-def fit_stock(key: str, stock: dict) -> dict:
-    ev_full, target_full, floor_black = build_endtoend_target(stock)
+def _model_note(stock: dict, theatrical: bool = False) -> str:
+    """Provenance string: the chain model plus its viewing-condition translation."""
+    if stock.get("positive"):
+        g = SURROUND_GAMMA["dark"]
+        return (
+            f"reversal transmittance, dark-surround report to {TARGET_SURROUND} "
+            f"surround via T^(1/{g:g}), per-channel mid-scale balance, "
+            "printed-luminance neutral"
+        )
+    surround = PRINT_SURROUND.get(str(stock.get("print")), "average")
+    base = (
+        "contact print, per-channel neutral balance at mid-scale, "
+        "Status M densities, printed-luminance neutral"
+    )
+    if theatrical:
+        return (
+            base
+            + ", theatrical quotation: dark-surround report carried verbatim "
+            "(no surround term — a quotation, not a translation; see contract §8.1)"
+        )
+    if surround == TARGET_SURROUND:
+        return base + ", surround term identity (reflection paper matches delivery)"
+    g = SURROUND_GAMMA[surround]
+    return (
+        base
+        + f", {surround}-surround projection print to {TARGET_SURROUND} "
+        f"surround via T^(1/{g:g})"
+    )
+
+
+def fit_stock(key: str, stock: dict, theatrical: bool = False) -> dict:
+    ev_full, channels_full, target_full, floor_black = build_endtoend_target(
+        stock, surround_override="native" if theatrical else None
+    )
     mask = (ev_full >= FIT_EV_LO) & (ev_full <= FIT_EV_HI)
     ev, target = ev_full[mask], target_full[mask]
+    channels = channels_full[mask]
 
     x0 = np.array([-8.0, 4.0, 3.0, 1.5, 2.9, 0.1, 0.2])
     steps = np.array([1.0, 0.6, 0.4, 0.25, 0.5, 0.15, 0.15])
@@ -319,8 +420,22 @@ def fit_stock(key: str, stock: dict) -> dict:
     rms, worst = float(np.sqrt(np.mean(r * r))), float(np.max(np.abs(r)))
 
     idx = np.linspace(0, ev.size - 1, TARGET_POINTS_STORED).round().astype(int)
+
+    # Exposure-dependent colour, phase 1 (contract boundary #1 work package): the
+    # per-channel ratio field r_c(EV) = T_c / T_neutral along the balanced neutral
+    # ramp. This is the stock's own measured layer-saturation differential — the
+    # first-order source of "highlights warm as the blue layer saturates" — with
+    # provenance identical to the tone target (same channels, same balance, same
+    # surround term). r_c(0) = 1 exactly by the per-channel mid-scale balance.
+    # Runtime semantics (phase 2): out_c = C(EV_c) * r_c(EV_c) / r_c(EV_Y), which is
+    # exactly 1 on the neutral axis (EV_c = EV_Y) — boundary #2 held by construction.
+    ratio = channels / np.maximum(target[:, None], 1e-6)
+    r0 = np.array([float(np.interp(0.0, ev, ratio[:, c])) for c in range(3)])
+    if np.max(np.abs(r0 - 1.0)) > 5e-3:
+        raise RuntimeError(f"channel ratio mid-gray anchor drifted: r(0)={r0}")
+
     return {
-        "label": stock["label"],
+        "label": stock["label"] + ("（影院放映外观）" if theatrical else ""),
         "params": {
             "black_ev": round(float(best[0]), 4),
             "white_ev": round(float(best[1]), 4),
@@ -335,19 +450,29 @@ def fit_stock(key: str, stock: dict) -> dict:
             "rms_stop": round(rms, 5),
             "max_stop": round(worst, 5),
             "domain_ev": [FIT_EV_LO, FIT_EV_HI],
+            "pinned": _pinned_params(best),
         },
         "target_curve": {
             "ev": [round(float(v), 5) for v in ev[idx]],
             "display_linear": [round(float(v), 7) for v in target[idx]],
+        },
+        "channel_ratio_curve": {
+            "ev": [round(float(v), 5) for v in ev[idx]],
+            "ratio_rgb": [
+                [round(float(ratio[i, c]), 5) for c in range(3)] for i in idx
+            ],
         },
         "combo": {
             # The film-observation expansion: declared WB (tungsten cine stocks are
             # 3200K by name), and the stock's spectral separation preset when the
             # prefeed calibrator has produced one.
             "wb": stock.get("wb", "5500k"),
-            # Push processing changes development, not the emulsion: push variants
-            # share the base stock's spectral separation preset.
-            "scene_transform": f"{key.split('push')[0]}_d55",
+            # Push processing changes development, not the emulsion, and the
+            # theatrical quotation changes only the viewing translation: both share
+            # the base stock's spectral separation preset.
+            "scene_transform": (
+                f"{key.removesuffix('_theatrical').split('push')[0]}_d55"
+            ),
         },
         "source": {
             "film": f"spektrafilm/{stock['negative']}.json",
@@ -357,14 +482,7 @@ def fit_stock(key: str, stock: dict) -> dict:
                 else "none (reversal: the slide is its own display medium)"
             ),
             "license": "CC BY-SA 4.0 (spektrafilm profiles, Andrea Volpato)",
-            "model": (
-                "reversal transmittance through dark-surround appearance "
-                f"T^(1/{DARK_SURROUND_GAMMA:g}), per-channel mid-scale balance, "
-                "printed-luminance neutral"
-                if stock.get("positive")
-                else "contact print, per-channel neutral balance at mid-scale, "
-                "Status M densities, printed-luminance neutral"
-            ),
+            "model": _model_note(stock, theatrical=theatrical),
         },
     }
 
@@ -415,10 +533,19 @@ def main() -> int:
     if PRESET_PATH.is_file():
         presets = json.load(open(PRESET_PATH)).get("presets", {})
     for key in args.stocks:
-        preset = fit_stock(key, STOCKS[key])
+        stock = STOCKS[key]
+        preset = fit_stock(key, stock)
         presets[key] = preset
         print(f"{key}: rms {preset['fit']['rms_stop']:.4f} stop, "
               f"max {preset['fit']['max_stop']:.4f} stop, params {preset['params']}")
+        # Theatrical quotation variants for dark-surround projection chains: the
+        # report carried verbatim (contract §8.1 — a quotation, not a translation).
+        if PRINT_SURROUND.get(str(stock.get("print"))) == "dark":
+            tkey = f"{key}_theatrical"
+            tpreset = fit_stock(tkey, stock, theatrical=True)
+            presets[tkey] = tpreset
+            print(f"{tkey}: rms {tpreset['fit']['rms_stop']:.4f} stop, "
+                  f"max {tpreset['fit']['max_stop']:.4f} stop")
     PRESET_PATH.write_text(
         json.dumps({"version": 1, "presets": presets}, indent=1, ensure_ascii=False)
         + "\n",
