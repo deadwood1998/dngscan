@@ -21,6 +21,9 @@ h1{font-size:17px;font-weight:600;margin:0 0 16px}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 label{display:block;font-size:12px;color:#9aa1b0;margin:0 0 6px}
 input[type=text],input[type=number],select{width:100%;background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#e7e9ee;padding:8px 10px;font:inherit}
+input[type=file]{width:100%;background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#cdd2dd;padding:5px;font:inherit;cursor:pointer}
+input[type=file]::file-selector-button{background:#2c3444;border:1px solid #46536b;border-radius:6px;color:#eef2ff;padding:7px 12px;margin-right:10px;font:inherit;font-weight:600;cursor:pointer}
+input[type=file]:disabled{opacity:.5;cursor:default}
 .row{display:flex;gap:12px;flex-wrap:wrap}
 .row>div{flex:1;min-width:150px}
 .row>.evMain{flex:1 1 100%;min-width:0}
@@ -85,11 +88,8 @@ button.preview:disabled{opacity:.5;cursor:default}
 
 <div class="card">
   <label>RAW 文件</label>
-  <div class="row" style="align-items:flex-end">
-    <div style="flex:4"><input type="text" id="input" placeholder="/path/to/photo.dng"></div>
-    <div style="flex:0"><button class="ghost" id="browseBtn">选择</button></div>
-  </div>
-  <div id="browser" class="browserList"></div>
+  <input type="file" id="filePicker" accept="RAW_ACCEPT">
+  <input type="hidden" id="input">
 </div>
 
 <div class="workspace">
@@ -323,7 +323,7 @@ FILM_CURVE_OPTIONS
   <div style="margin-top:12px">
     <label>文件夹</label>
     <div class="outdirRow">
-      <input type="text" id="outdir" placeholder="默认与原图相同">
+      <input type="text" id="outdir" placeholder="默认保存到照片文件夹">
       <button class="ghost" id="outdirBtn">选择</button>
     </div>
     <div id="outdirBrowser" class="browserList"></div>
@@ -384,7 +384,8 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
-const STORE_KEY="dngscan.settings.v8";
+const STORE_KEY="dngscan.settings.v9";
+const V8_STORE_KEY="dngscan.settings.v8";
 const V7_STORE_KEY="dngscan.settings.v7";
 const V6_STORE_KEY="dngscan.settings.v6";
 const V5_STORE_KEY="dngscan.settings.v5";
@@ -554,7 +555,7 @@ function updateDecoderUi(){
 }
 function saveSettings(){
   try{localStorage.setItem(STORE_KEY,JSON.stringify({
-    input:$("#input").value,ev:$("#ev").value,quality:$("#quality").value,
+    ev:$("#ev").value,quality:$("#quality").value,
     lensFilter:$("#lensFilter").value,filmCurve:$("#filmCurve").value,film:$("#film").value,
     highlight:$("#highlight").dataset.librawValue||$("#highlight").value,gamut:$("#gamut").value,wb:$("#wb").value,demosaic:$("#demosaic").dataset.librawValue||$("#demosaic").value,
     decoder:$("#decoder").value,coreimageVersion:$("#coreimageVersion").value,
@@ -573,10 +574,11 @@ function restoreSettings(){
   let s={};let migrated=false;
   try{
     const current=localStorage.getItem(STORE_KEY);
+    const v8=localStorage.getItem(V8_STORE_KEY);
     const v7=localStorage.getItem(V7_STORE_KEY);
     const v6=localStorage.getItem(V6_STORE_KEY);
     const v5=localStorage.getItem(V5_STORE_KEY);
-    s=JSON.parse(current||v7||v6||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
+    s=JSON.parse(current||v8||v7||v6||v5||localStorage.getItem(LEGACY_STORE_KEY)||"{}")||{};
     // v7 and earlier labelled smooth as the default. The pinned darktable scene
     // default is base, so move stored old defaults to the corrected baseline.
     if(!current&&s.agxPrimaries==="smooth"){
@@ -586,7 +588,6 @@ function restoreSettings(){
       s.toneCore="agx";migrated=true;
     }
   }catch(e){}
-  if(s.input)$("#input").value=s.input;
   if(s.ev!==undefined)$("#ev").value=s.ev;
   if(s.quality)$("#quality").value=s.quality;
   if(s.highlight)$("#highlight").value=s.highlight;
@@ -629,7 +630,7 @@ function restoreSettings(){
   if(migrated)saveSettings();
 }
 ["quality","gamut","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
-["input","highlight"].forEach(id=>$("#"+id).addEventListener("change",()=>{saveSettings();preparePreview();}));
+$("#highlight").addEventListener("change",()=>{saveSettings();preparePreview();});
 ["demosaic","chroma","grade"].forEach(id=>$("#"+id).addEventListener("change",()=>{updateGradeUi();saveSettings();}));
 $("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();saveSettings();});
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
@@ -664,27 +665,41 @@ $("#punch").oninput=()=>{setPunchLabel();saveSettings();};
 $("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();};
 restoreSettings();
 checkHdrBackend();
-if($("#input").value.trim())preparePreview();
 document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();});
 let lastSavedPath="";
 
 let curDir=INIT_DIR;
-async function listDir(d){
-  const r=await fetch("/list?dir="+encodeURIComponent(d));const j=await r.json();
-  curDir=j.cwd;const b=$("#browser");b.innerHTML="";
-  const mk=(t,fn)=>{const e=document.createElement("div");e.textContent=t;e.onclick=fn;b.appendChild(e);};
-  mk("⬆︎ "+j.parent,()=>listDir(j.parent));
-  j.dirs.forEach(d=>mk("📁 "+d,()=>listDir(j.cwd+"/"+d)));
-  j.files.forEach(f=>mk("🖼 "+f,()=>{$("#input").value=j.cwd+"/"+f;b.style.display="none";saveSettings();preparePreview();}));
-}
-$("#browseBtn").onclick=()=>{const b=$("#browser");if(b.style.display==="block"){b.style.display="none";}else{b.style.display="block";listDir(curDir);}};
+$("#filePicker").addEventListener("change",async()=>{
+  const picker=$("#filePicker");const file=picker.files&&picker.files[0];
+  if(!file)return;
+  picker.disabled=true;$("#input").value="";lastSavedPath="";$("#revealBtn").style.display="none";
+  setStatus("正在读取 "+file.name+"…","");
+  try{
+    const response=await fetch("/upload?name="+encodeURIComponent(file.name),{
+      method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file
+    });
+    const result=await response.json();
+    if(!result.ok){picker.value="";setStatus("文件选择失败："+result.error,"err");return;}
+    $("#input").value=result.path;
+    RAW9_PROBES.clear();RAW9_APPROVALS.clear();
+    if(!$("#outdir").value.trim())$("#outdir").value=INIT_DIR;
+    saveSettings();
+    setStatus("已选择："+file.name,"ok");
+    await preparePreview();
+  }catch(error){
+    picker.value="";
+    setStatus("文件选择失败："+error,"err");
+  }finally{
+    picker.disabled=false;
+  }
+});
 
 async function listOutDir(d){
   const r=await fetch("/list?dir="+encodeURIComponent(d));const j=await r.json();
   const b=$("#outdirBrowser");b.innerHTML="";
   const mk=(t,fn,cls)=>{const e=document.createElement("div");e.textContent=t;e.onclick=fn;if(cls)e.className=cls;b.appendChild(e);};
   mk("✓ 就用这里："+j.cwd,()=>{$("#outdir").value=j.cwd;b.style.display="none";saveSettings();},"pick");
-  mk("✕ 清空（与源文件同目录）",()=>{$("#outdir").value="";b.style.display="none";saveSettings();});
+  mk("↺ 使用默认目录："+INIT_DIR,()=>{$("#outdir").value=INIT_DIR;b.style.display="none";saveSettings();});
   mk("⬆︎ "+j.parent,()=>listOutDir(j.parent));
   j.dirs.forEach(d2=>mk("📁 "+d2,()=>listOutDir(j.cwd+"/"+d2)));
 }
@@ -693,7 +708,6 @@ $("#outdirBtn").onclick=()=>{
   if(b.style.display==="block"){b.style.display="none";return;}
   b.style.display="block";
   const seed=$("#outdir").value.trim()
-    ||($("#input").value.trim()?$("#input").value.trim().replace(/\\/[^\\/]*$/,""):"")
     ||curDir;
   listOutDir(seed);
 };
@@ -959,11 +973,13 @@ def _film_options_html() -> tuple[str, str, str]:
 def render_page(init_dir: str) -> bytes:
     from dngscan import coreimage_decode
     from dngscan.constants import MAX_HDR_HEADROOM_EV
+    from dngscan.gui.constants import RAW_EXTS
 
     film_opts, curve_opts, combos_json = _film_options_html()
 
     html = (
         PAGE.replace("INIT_DIR", json.dumps(init_dir))
+        .replace("RAW_ACCEPT", ",".join(sorted(RAW_EXTS)))
         .replace("GRADE_OPTIONS", _grade_options_html())
         .replace("SCENE_TRANSFORM_OPTIONS", _scene_transform_options_html())
         .replace("COREIMAGE_AVAILABLE_FLAG", "true" if coreimage_decode.available() else "false")

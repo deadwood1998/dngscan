@@ -70,6 +70,10 @@ Open the localhost address printed in the terminal. A practical starting point i
 `base` primaries, camera WB, and highlight reconstruction; adjust from there according to the
 photograph.
 
+The RAW field uses the browser's native file picker. The selected file is sent only to the localhost
+dngscan service on the same computer and kept in a process-scoped temporary directory; the temporary
+copy is removed when dngscan exits and is never sent to an external service.
+
 ### CLI
 
 ```bash
