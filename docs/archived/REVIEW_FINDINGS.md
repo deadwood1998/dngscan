@@ -1,5 +1,14 @@
 # Review findings - HDR AgX pipeline
 
+> **ARCHIVED 2026-07-29.** This document describes the pipeline *before* the v2
+> log-stop shoulder landed and before the delivery gates were recalibrated on the
+> real-frame corpus: §2's "the white clamp is not a zero-derivative endpoint" is the
+> exact property v2's pinned-tangent Hermite now provides, and §1's whole-frame
+> pixel gates (median 1.5% / p95 8% / p99 12%) were replaced by per-profile,
+> per-container block + pixel-chroma tolerances in `dngscan/delivery.py`. Kept for
+> history only; the current contract is
+> [`../HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md`](../HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md).
+
 Reviewed after the native extended-white curve migration on 2026-07-29. No item below
 invalidates the mathematical tone path; these are the remaining calibration and delivery
 boundaries.

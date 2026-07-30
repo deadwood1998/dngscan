@@ -24,35 +24,35 @@ formation 的影响。
 
 ## RAW9 / LibRaw
 
-![iPhone Standard RAW frame 1, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/Original_RAW_26-07-05_115326540_comparison_2x2.jpg)
+![iPhone Standard RAW frame 1, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/Original_RAW_26-07-05_115326540_comparison_2x2.jpg)
 
-![iPhone Standard RAW frame 2, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg)
+![iPhone Standard RAW frame 2, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/Original_RAW_26-07-12_182506394_comparison_2x2.jpg)
 
-![iPhone Standard RAW frame 3, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/Original_RAW_26-07-24_194203657_comparison_2x2.jpg)
+![iPhone Standard RAW frame 3, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/Original_RAW_26-07-24_194203657_comparison_2x2.jpg)
 
-![Sigma fp frame 0025, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/_SDI0025_comparison_2x2.jpg)
+![Sigma fp frame 0025, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/_SDI0025_comparison_2x2.jpg)
 
-![Sigma fp frame 0152, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/_SDI0152_comparison_2x2.jpg)
+![Sigma fp frame 0152, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/_SDI0152_comparison_2x2.jpg)
 
-![Sigma fp frame 0231, RAW9 and LibRaw SDR/HDR AgX](assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg)
+![Sigma fp frame 0231, RAW9 and LibRaw SDR/HDR AgX](../assets/hdr-comparisons/_SDI0231_comparison_2x2.jpg)
 
-[Captured metrics](assets/hdr-comparisons/raw9-libraw-metrics.json)
+[Captured metrics](../assets/hdr-comparisons/raw9-libraw-metrics.json)
 
 ## RAW9 AgX / neutral
 
-![iPhone Standard RAW frame 1, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/Original_RAW_26-07-05_115326540_raw9_hdr_agx_neutral_2x2.jpg)
+![iPhone Standard RAW frame 1, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/Original_RAW_26-07-05_115326540_raw9_hdr_agx_neutral_2x2.jpg)
 
-![iPhone Standard RAW frame 2, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg)
+![iPhone Standard RAW frame 2, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/Original_RAW_26-07-12_182506394_raw9_hdr_agx_neutral_2x2.jpg)
 
-![iPhone Standard RAW frame 3, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/Original_RAW_26-07-24_194203657_raw9_hdr_agx_neutral_2x2.jpg)
+![iPhone Standard RAW frame 3, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/Original_RAW_26-07-24_194203657_raw9_hdr_agx_neutral_2x2.jpg)
 
-![Sigma fp frame 0025, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/_SDI0025_raw9_hdr_agx_neutral_2x2.jpg)
+![Sigma fp frame 0025, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/_SDI0025_raw9_hdr_agx_neutral_2x2.jpg)
 
-![Sigma fp frame 0152, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/_SDI0152_raw9_hdr_agx_neutral_2x2.jpg)
+![Sigma fp frame 0152, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/_SDI0152_raw9_hdr_agx_neutral_2x2.jpg)
 
-![Sigma fp frame 0231, RAW9 AgX and neutral SDR/HDR](assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg)
+![Sigma fp frame 0231, RAW9 AgX and neutral SDR/HDR](../assets/hdr-comparisons/_SDI0231_raw9_hdr_agx_neutral_2x2.jpg)
 
-[Captured metrics](assets/hdr-comparisons/raw9-agx-neutral-metrics.json)
+[Captured metrics](../assets/hdr-comparisons/raw9-agx-neutral-metrics.json)
 
 The files written by the HDR exporter are Display P3, 4:4:4 ISO 21496-1 gain-map JPEGs.
 Each export is expanded through Core Image and checked against the intended full-frame

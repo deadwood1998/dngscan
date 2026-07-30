@@ -158,7 +158,9 @@ v2 不做以下事情：
 - 不复制 Blender 的 3D LUT；
 - 不在 tone core 中编码 HLG/PQ；
 - 不使用 ACES 2 JMh DRT 替换现有 AgX 色彩几何；
-- 不重新设计 Core Image gain-map 容器和 round-trip 验证。
+- 不改变 Core Image gain-map 打包机制本身。（历史注：v2 初版曾把"不动 round-trip 验证"
+  也列为非目标；delivery profile / HEIC 容器落地后，验收门禁已按 §9 重新按档位与容器
+  标定，此项非目标随之废除。formation 与 delivery 的边界不变。）
 
 ## 3. 坐标、符号与单位
 
@@ -530,10 +532,10 @@ alpha^2 + beta^2 <= 9
 
 这取代 v1 的 `shoulder_slope_reserve >= 1.01`。它是明确的单调插值条件，不是观感常数。
 
-### 7.4 单段可行域与越界行为
+### 7.4 单段可行域、低 headroom 细分与越界行为
 
-权威 HDR tone plan 只允许一段 Hermite。W 与 `H_content` 都由同一个 `E_tail` 编译，不能独立
-取极值；扫描可靠尾部完整策略域得到：
+单段 Hermite 是首选形态，`alpha <= 3` 时必须且只会得到一段。在显示容量固定为 3.0 EV 的
+条件下扫描可靠尾部完整策略域得到：
 
 ```text
 默认 contrast=3:
@@ -547,15 +549,29 @@ alpha^2 + beta^2 <= 9
 单段边界 alpha = 3
 ```
 
-四个上界由同一独立 property test 分别固定。§4.5 的 margin/floor/cap 或用户 contrast 范围若
-被重调，测试必须重新证明两套策略仍在单段域内。若权威编译出现 `alpha>3`、`DeltaZ<=0` 或 `W<=K`，结果严格为空，
-调用端将 `H_rendered` 归零并拒绝 HDR；不得提高全局 gamma、修改 toe、移动 K 或静默进入另一种
-tone shape。
+**但这个扫描少了一根轴。** 本文早期版本断言"W 与 `H_content` 都由同一个 `E_tail` 编译，
+不能独立取极值"——这是错的：`H_content = min(H_display, H_signal)`，`H_display` 是用户
+可调的独立变量。低 headroom 显示把 `Z_peak`（分母）压低，而 W（分子）继续随 `E_tail`
+增长，`alpha` 因此无界。例如 contrast=4.5、`--hdr-headroom 1.5`、尾部 8 EV 时
+`alpha ≈ 3.78`。
 
-代码仍保留 adaptive piecewise Hermite，但它不是 tone fallback。固定为 1.0 的 reference-white
-色度候选不具备 W/H 耦合，高 W 时可能超过单段边界，所以该辅助路径必须用显式
-`allow_subdivision=True` 调用。它只提供 path-to-white 色度，随后被归一到原生 HDR 曲线的 Y；
-不会写入 `HdrToneCurve`，也没有亮度决定权。通用 PCHIP limiter 仍不允许改写 K 点 `M_K`。
+这样的请求不是畸形请求——它只是一个压缩很强的 shoulder，与 SDR AgX 自己的肩部同类；
+Blender 的 HDR AgX 在同一处境下的做法也是连续地加大肩部弯折，而不是关闭 HDR。因此权威
+编译在 `alpha > 3` 时**细分**为多段单调 Hermite 链（Fritsch-Carlson 内点切线），保持与
+单段完全相同的结构合同：K 点锚定值与切线不动、白端导数为零、段间 C1、逐段单调，由同一个
+`validate_hdr_shoulder` 验收。`describe_hdr_plan` 如实报告"单段 / 细分 n 段"，
+`shoulder_alpha` 记录细分前请求本身的归一化起始切线作为诊断。property test 同时固定
+上表四个单段域上界，并扫描 headroom 轴证明：每个良态请求都编译出通过验收的曲线，
+`alpha <= 3` 时恰好一段（细分不得无故发生）。
+
+严格 fail-closed 只保留给真正的退化输入：`DeltaZ<=0`、`W<=K`、锚点非有限。这时结果为空，
+调用端将 `H_rendered` 归零并拒绝 HDR；不得提高全局 gamma、修改 toe、移动 K 或静默进入
+另一种未验证的 tone shape。
+
+固定为 1.0 的 reference-white 色度候选同样经由显式 `allow_subdivision=True` 使用细分：
+它不具备 W/H 耦合，高 W 时经常超过单段边界。它只提供 path-to-white 色度，随后被归一到
+原生 HDR 曲线的 Y；不会写入 `HdrToneCurve`，也没有亮度决定权。通用 PCHIP limiter 仍不
+允许改写 K 点 `M_K`。
 
 ### 7.5 `_SDI0150` 的已知实例
 
@@ -662,11 +678,17 @@ content peak <= 2 ** H_content
 之后：
 
 ```text
-SDR P3 JPEG base + HDR linear alternate
--> Core Image ISO 21496-1 RGB gain map
+SDR P3 base + HDR linear alternate
+-> Core Image ISO 21496-1 RGB gain map（JPEG 或 HEIC 容器）
 -> 写入 ICC/profile/headroom metadata
 -> 回读展开并验证
 ```
+
+回读门禁按 (delivery profile, container) 分别标定（`dngscan/delivery.py`，2026-07-29
+三帧真实样张语料）：archive=q100/4:4:4 严格档；share=q90/4:2:0 宽档；share HEVC 在同样
+名义参数下损失明显大于 share JPEG，因此单独一套容差。块级门禁承载色调合同；像素级色品
+p99 门禁与之并列，因为 8x8 块均值恰好在 4:2:0 的平均网格上取平均，对该损伤几乎不敏感。
+encode 边界的 alternate 裁剪峰值是内容峰值 `2^H_content`，不是显示容量。
 
 禁止：
 
@@ -697,8 +719,8 @@ class HdrToneCurve:
     reliable_tail_ev: float
     white_margin_ev: float
 
-    shoulder_segments: tuple[HdrShoulderSegment, ...]  # 权威 plan 长度只能为 0 或 1
-    # 诊断值，不参与二次决策
+    shoulder_segments: tuple[HdrShoulderSegment, ...]  # alpha<=3 时单段；低 headroom 细分链；0 段=无 HDR
+    # 诊断值（细分前请求的归一化起始切线），不参与二次决策
     shoulder_alpha: float
 ```
 
@@ -965,8 +987,10 @@ v1 及临时版本开关均未保留。历史 A/B 使用固定 commit 或已保�
 - [ ] K 和 W 连接是否为 C1？
 - [ ] white clamp 的内外导数是否都为 0？
 - [ ] 单调性是否由数学条件验证，而不是只看样张？
-- [ ] normal 与 sparse 两套生产策略是否都证明 `alpha<3`？
-- [ ] 自适应细分是否只由 reference-white 辅助色度路径显式启用？
+- [ ] 单段域证明是否覆盖 contrast、tail **和 display headroom** 三根轴？
+- [ ] `alpha>3` 的良态请求是否细分为通过同一结构验收的单调链，而不是关闭 HDR？
+- [ ] 细分是否从不无故发生（`alpha<=3` 恰好一段）？
+- [ ] 自适应细分是否都经由显式 `allow_subdivision=True`（权威编译与辅助色度路径各自声明）？
 - [ ] rho 是否仍然只能改变色度？
 - [ ] RAW clip 是否没有反向重写 tone endpoint？
 - [ ] HLG/PQ 是否仍然只存在于 delivery/test reference？
