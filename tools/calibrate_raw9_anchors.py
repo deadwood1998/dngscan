@@ -42,17 +42,27 @@ GRID = (64, 96)  # coarse block grid: warp-immune, still ~6k samples per frame
 MIN_EFFECTIVE_SUPPORT = 40.0  # weighted sample mass below which a class uses global
 RATIO_BOUNDS = (0.72, 1.25)  # measured global bg reaches 0.82: the two decoders realise 5500K differently  # implausible transport = measurement problem, refuse
 
-CORPUS = [
-    Path.home() / "Pictures" / n
-    for n in ("_SDI0150.DNG", "_SDI0133.DNG", "_SDI0199.DNG", "_SDI0237.DNG", "_SDI0165.DNG")
-]
+import argparse
+
+CORPORA = {
+    # camera scope key -> (glob patterns under ~/Pictures, central-crop fraction)
+    # Central crop 1.0 = full frame. iPhone ProRAW under LibRaw carries uncorrected
+    # lens shading (the DNG GainMap opcode is Apple-side), which colours the corners;
+    # restricting the measurement to the central region keeps the pairing clean.
+    "default": (("_SDI0150.DNG", "_SDI0133.DNG", "_SDI0199.DNG", "_SDI0237.DNG", "_SDI0165.DNG"), 1.0),
+    "Apple iPhone 16 Pro": (("Original RAW *.dng",), 0.6),
+}
 
 
-def _block_chroma(bundle) -> np.ndarray:
+def _block_chroma(bundle, crop: float = 1.0) -> np.ndarray:
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     rec = scene_intent_rec2020(flat[:, :3], bundle, 1.0)
     h, w = bundle.scene_rec2020_render.shape[:2]
     rec = rec.reshape(h, w, 3)
+    if crop < 1.0:
+        dh, dw = int(h * (1 - crop) / 2), int(w * (1 - crop) / 2)
+        rec = rec[dh:h - dh, dw:w - dw]
+        h, w = rec.shape[:2]
     gh, gw = GRID
     ys = (np.linspace(0, h, gh + 1)).astype(int)
     xs = (np.linspace(0, w, gw + 1)).astype(int)
@@ -64,7 +74,11 @@ def _block_chroma(bundle) -> np.ndarray:
 
 
 def main() -> int:
-    frames = [p for p in CORPUS if p.is_file()]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--camera", default="default", choices=tuple(CORPORA))
+    args = ap.parse_args()
+    patterns, crop = CORPORA[args.camera]
+    frames = sorted({f for pat in patterns for f in Path.home().glob(f"Pictures/{pat}") if f.is_file()})
     if not frames:
         raise SystemExit("corpus unavailable")
 
@@ -74,7 +88,7 @@ def main() -> int:
         for decoder in ("libraw", "coreimage"):
             bundle = load_raw(frame, scene_half_size=True, wb_mode="5500k", decoder=decoder)
             analyze(bundle, margin=4, diagnostics=False)
-            row[decoder] = _block_chroma(bundle)
+            row[decoder] = _block_chroma(bundle, crop)
         a, b = row["libraw"], row["coreimage"]
         g_a = np.maximum(a[:, 1], 1e-6)
         g_b = np.maximum(b[:, 1], 1e-6)
@@ -151,20 +165,29 @@ def main() -> int:
         ratio = clamped
         print(f"  {name:10s} rg x{ratio[0]:.4f} bg x{ratio[1]:.4f}  support {support:8.1f}  ({source})")
 
-    OUT_PATH.write_text(json.dumps({
-        "version": 1,
-        "coreimage": {
-            "global_ratio_rg_bg": [round(float(global_ratio[0]), 5), round(float(global_ratio[1]), 5)],
-            "per_class": per_class,
-            "source": {
-                "method": "dual-decode block-paired chroma transport, 5500K declared WB, "
-                          f"grid {GRID[0]}x{GRID[1]}, weighted median per window class",
-                "corpus": [p.name for p in frames],
-                "camera_scope": "Sigma fp corpus; other bodies inherit the global ratio "
-                                "until measured",
-            },
+    existing = {}
+    if OUT_PATH.is_file():
+        try:
+            existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            existing = {}
+    existing.setdefault("version", 2)
+    scopes = existing.setdefault("coreimage", {})
+    # migrate v1 flat layout into the "default" scope
+    if "global_ratio_rg_bg" in scopes:
+        scopes = {"default": scopes}
+        existing["coreimage"] = scopes
+    scopes[args.camera] = {
+        "global_ratio_rg_bg": [round(float(global_ratio[0]), 5), round(float(global_ratio[1]), 5)],
+        "per_class": per_class,
+        "source": {
+            "method": "dual-decode block-paired chroma transport, 5500K declared WB, "
+                      f"grid {GRID[0]}x{GRID[1]}, central crop {crop:g}, "
+                      "weighted median per window class",
+            "corpus": [p.name for p in frames],
         },
-    }, indent=1, ensure_ascii=False) + "\n")
+    }
+    OUT_PATH.write_text(json.dumps(existing, indent=1, ensure_ascii=False) + "\n")
     print(f"wrote {OUT_PATH}")
     return 0
 

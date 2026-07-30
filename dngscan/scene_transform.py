@@ -138,6 +138,15 @@ def _load_decoder_transport() -> dict:
 _DECODER_TRANSPORT = _load_decoder_transport()
 
 
+def window_transport_tag(bundle: Any) -> str:
+    """Opaque decoder+camera token for the window transport ('libraw' = identity)."""
+    decoder = str(getattr(bundle, "scene_decoder", "libraw") or "libraw")
+    if decoder == "libraw":
+        return "libraw"
+    model = str(getattr(bundle, "shot_model", "") or "").strip()
+    return f"{decoder}|{model}" if model else decoder
+
+
 def decoder_window_ratios(scene_decoder: str, region_name: str) -> tuple[float, float] | None:
     """Measured chromaticity transport moving a calibration window into the given
     decoder's reference frame (see tools/calibrate_raw9_anchors.py). None = identity.
@@ -147,7 +156,18 @@ def decoder_window_ratios(scene_decoder: str, region_name: str) -> tuple[float, 
     hue regions differently (measured global B/G x0.82 on the fp corpus, skin
     shifting hardest). Windows follow the pixels; matrices and pixels are untouched.
     """
-    entry = _DECODER_TRANSPORT.get(str(scene_decoder))
+    token = str(scene_decoder)
+    decoder, _, model = token.partition("|")
+    scopes = _DECODER_TRANSPORT.get(decoder)
+    if not isinstance(scopes, dict):
+        return None
+    # v2 layout: decoder -> camera scope -> transport; per-camera wins, else default.
+    if "global_ratio_rg_bg" in scopes:
+        entry = scopes  # v1 flat layout
+    else:
+        entry = scopes.get(model) if model else None
+        if not isinstance(entry, dict):
+            entry = scopes.get("default")
     if not isinstance(entry, dict):
         return None
     per_class = entry.get("per_class", {})

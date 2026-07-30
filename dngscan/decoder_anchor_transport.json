@@ -1,70 +1,145 @@
 {
  "version": 1,
  "coreimage": {
-  "global_ratio_rg_bg": [
-   1.04162,
-   0.82031
-  ],
-  "per_class": {
-   "cool_balance": {
-    "ratio_rg_bg": [
-     0.97414,
-     0.83542
-    ],
-    "effective_support": 2736.9,
-    "basis": "class-weighted"
+  "default": {
+   "global_ratio_rg_bg": [
+    1.04162,
+    0.82031
+   ],
+   "per_class": {
+    "cool_balance": {
+     "ratio_rg_bg": [
+      0.97414,
+      0.83542
+     ],
+     "effective_support": 2736.9,
+     "basis": "class-weighted"
+    },
+    "cyan": {
+     "ratio_rg_bg": [
+      1.04162,
+      0.82031
+     ],
+     "effective_support": 32.1,
+     "basis": "global-fallback"
+    },
+    "foliage": {
+     "ratio_rg_bg": [
+      0.98195,
+      0.84619
+     ],
+     "effective_support": 1693.5,
+     "basis": "class-weighted"
+    },
+    "magenta": {
+     "ratio_rg_bg": [
+      1.04162,
+      0.82031
+     ],
+     "effective_support": 38.9,
+     "basis": "global-fallback"
+    },
+    "neutral": {
+     "ratio_rg_bg": [
+      1.04162,
+      0.82031
+     ],
+     "effective_support": 15.3,
+     "basis": "global-fallback"
+    },
+    "skin": {
+     "ratio_rg_bg": [
+      1.08009,
+      0.72
+     ],
+     "effective_support": 697.2,
+     "basis": "class-weighted+clamped"
+    }
    },
-   "cyan": {
-    "ratio_rg_bg": [
-     1.04162,
-     0.82031
+   "source": {
+    "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, weighted median per window class",
+    "corpus": [
+     "_SDI0150.DNG",
+     "_SDI0133.DNG",
+     "_SDI0199.DNG",
+     "_SDI0237.DNG",
+     "_SDI0165.DNG"
     ],
-    "effective_support": 32.1,
-    "basis": "global-fallback"
-   },
-   "foliage": {
-    "ratio_rg_bg": [
-     0.98195,
-     0.84619
-    ],
-    "effective_support": 1693.5,
-    "basis": "class-weighted"
-   },
-   "magenta": {
-    "ratio_rg_bg": [
-     1.04162,
-     0.82031
-    ],
-    "effective_support": 38.9,
-    "basis": "global-fallback"
-   },
-   "neutral": {
-    "ratio_rg_bg": [
-     1.04162,
-     0.82031
-    ],
-    "effective_support": 15.3,
-    "basis": "global-fallback"
-   },
-   "skin": {
-    "ratio_rg_bg": [
-     1.08009,
-     0.72
-    ],
-    "effective_support": 697.2,
-    "basis": "class-weighted+clamped"
+    "camera_scope": "Sigma fp corpus; other bodies inherit the global ratio until measured"
    }
   },
-  "source": {
-   "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, weighted median per window class",
-   "corpus": [
-    "_SDI0150.DNG",
-    "_SDI0133.DNG",
-    "_SDI0199.DNG",
-    "_SDI0237.DNG",
-    "_SDI0165.DNG"
+  "Apple iPhone 16 Pro": {
+   "global_ratio_rg_bg": [
+    0.96779,
+    0.90577
    ],
-   "camera_scope": "Sigma fp corpus; other bodies inherit the global ratio until measured"
+   "per_class": {
+    "cool_balance": {
+     "ratio_rg_bg": [
+      0.95947,
+      0.93656
+     ],
+     "effective_support": 6173.8,
+     "basis": "class-weighted"
+    },
+    "cyan": {
+     "ratio_rg_bg": [
+      0.95556,
+      0.94419
+     ],
+     "effective_support": 87.0,
+     "basis": "class-weighted"
+    },
+    "foliage": {
+     "ratio_rg_bg": [
+      0.95894,
+      0.9385
+     ],
+     "effective_support": 3226.0,
+     "basis": "class-weighted"
+    },
+    "magenta": {
+     "ratio_rg_bg": [
+      0.96779,
+      0.90577
+     ],
+     "effective_support": 0.9,
+     "basis": "global-fallback"
+    },
+    "neutral": {
+     "ratio_rg_bg": [
+      0.95853,
+      0.93754
+     ],
+     "effective_support": 252.2,
+     "basis": "class-weighted"
+    },
+    "skin": {
+     "ratio_rg_bg": [
+      0.97379,
+      0.8953
+     ],
+     "effective_support": 3252.4,
+     "basis": "class-weighted"
+    }
+   },
+   "source": {
+    "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, central crop 0.6, weighted median per window class",
+    "corpus": [
+     "Original RAW 26-05-10 173311434.dng",
+     "Original RAW 26-05-11 193721820.dng",
+     "Original RAW 26-05-11 193727279.dng",
+     "Original RAW 26-05-11 193738485.dng",
+     "Original RAW 26-05-12 210128342.dng",
+     "Original RAW 26-06-17 222639798.dng",
+     "Original RAW 26-06-26 131513584.dng",
+     "Original RAW 26-06-28 133947250.dng",
+     "Original RAW 26-07-05 115326540.dng",
+     "Original RAW 26-07-11 202403093.dng",
+     "Original RAW 26-07-12 182506394.dng",
+     "Original RAW 26-07-24 194203657.dng"
+    ]
+   }
   }
  }
 }
