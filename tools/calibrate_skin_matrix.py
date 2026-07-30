@@ -658,6 +658,35 @@ MATERIAL_BASE_STRENGTH = {"skin": 1.0, "foliage": 0.9, "cyan": 0.9, "neutral": 0
 MATERIAL_MASK_SCALE = {"skin": 1.6, "foliage": 2.0, "cyan": 2.2, "neutral": 1.2, "magenta": 2.0}
 
 
+def synthetic_reflectance_families(count_per_family: int = 60) -> np.ndarray:
+    """Siragusano-style "create objects": smooth parametric reflectance families.
+
+    The AMPAS 190 spectra cover real materials but leave chromaticity space sparse;
+    FilmLight's virtual shoot-out densifies the pairing with synthetic families. These
+    are physically plausible smooth reflectances (Gaussian bumps, sigmoid edges,
+    slopes and two-bump combinations on [0.02, 0.95]) used ONLY for fitting the two
+    observers' colorimetric profiles — per-material class fits keep their own measured
+    spectra, because a synthetic bump is not evidence about skin.
+    """
+    rng_like = np.linspace(0.0, 1.0, count_per_family)
+    spectra = []
+    wl_n = (WL - WL[0]) / (WL[-1] - WL[0])
+    for i, t in enumerate(rng_like):
+        center = 0.1 + 0.8 * t
+        width = 0.08 + 0.22 * ((i * 7) % count_per_family) / count_per_family
+        bump = np.exp(-0.5 * ((wl_n - center) / width) ** 2)
+        base = 0.05 + 0.25 * ((i * 3) % count_per_family) / count_per_family
+        spectra.append(base + (0.9 - base) * bump)
+        edge = 1.0 / (1.0 + np.exp(-(wl_n - center) / max(0.03, width / 3)))
+        spectra.append(0.05 + 0.85 * edge)
+        spectra.append(0.05 + 0.85 * (1.0 - edge))
+        if i % 3 == 0:
+            c2 = 0.9 - 0.8 * t
+            bump2 = np.exp(-0.5 * ((wl_n - c2) / (width * 0.8)) ** 2)
+            spectra.append(np.clip(0.08 + 0.5 * bump + 0.45 * bump2, 0.0, 1.0))
+    return np.clip(np.asarray(spectra, dtype=np.float64), 0.02, 0.95)
+
+
 def material_spectra_sets(args: argparse.Namespace) -> dict[str, tuple[np.ndarray, str]]:
     def from_file(fname: str, fallback: np.ndarray, label: str) -> tuple[np.ndarray, str]:
         path = default_data_path(args.data_dir, fname)
@@ -696,7 +725,7 @@ def run_material_mode(
 
     materials = material_spectra_sets(args)
     sky = demo_sky_reflectance(d55)
-    profile_parts = [spec for spec, _ in materials.values()] + [demo_colour_spectra(), sky]
+    profile_parts = [spec for spec, _ in materials.values()] + [demo_colour_spectra(), sky, synthetic_reflectance_families()]
     if args.profile_csv is not None:
         profile_parts.append(load_spectra_csv(args.profile_csv))
     if args.profile_dir is not None:
