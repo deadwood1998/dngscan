@@ -403,6 +403,12 @@ HDR 分支按同一套证据规则接入这条路径，并有专门测试钉住�
 帧实测相差 0.09 EV，门限 0.3 EV）。两条解码线的成像差异属于相机诠释取向，不是 HDR
 预算的泄漏。
 
+反方向的暗场对等性：LibRaw 路径现在同样兑现 DNG 暗场 opcode——解拜耳前施加
+`GainMap`（fp）、渲染后施加 `FixVignetteRadial`（iPhone ProRAW），证据副本取自
+校正前的传感器真值。iPhone 主摄双解码对照（同一帧、同一 AgX plan）：
+
+![iPhone 16 Pro 同帧双解码：LibRaw 施加 DNG GainMap 与 RAW 9 的 FixVignetteRadial，角部亮度一致](assets/decoder-iphone-libraw-vs-raw9.jpg)
+
 ![LibRaw 与 Apple RAW 9 走同一条 AgX plan：差异是相机诠释，不是管线漂移](assets/decoder-libraw-vs-raw9.jpg)
 
 Core Image 与 LibRaw 并没有暴露同一个 scene unit，单一固定补偿也无法跨相机、跨场景成立。
@@ -749,6 +755,19 @@ flowchart LR
   （实数域构造精确，float32 舍入 ~1e-7，测试钉定），不会退化成隐藏白平衡；色度
   越高效应越显，无手调常数。SDR 与 HDR 在同一咽喉施加同一 gain，域外插值钳向 1，
   扩展高光自然回中性——Ultra HDR 胶片导出实测通过 archive 档像素色度门。
+
+同一帧 fp 样张过四个家族与影院引用（随机选自真实拍摄卡，全部现行管线渲染）：
+
+![同帧对比：AgX 基线与七款胶片预设（柯达/富士负片、反转片、电影卷及影院引用）](assets/film-families.jpg)
+
+同一组预设在非日光的室内复杂色场景（钨丝暖光 + 多色罐墙）：负片的宽容、反转片的
+密度、影院引用的反差在混合人工光下走向各自的另一面：
+
+![室内复杂色同帧对比：同一组胶片预设在钨丝混合光下](assets/film-families-indoor.jpg)
+
+WB 声明与镜前滤镜层的独立效果（同帧，无胶片曲线）：
+
+![同帧对比：AsShot 与三档固定色温，及 85B/80A 转换滤镜](assets/film-wb-and-filter.jpg)
 
 ### 预设库与出处
 

@@ -475,6 +475,13 @@ camera-interpretation choice, not an HDR budget leak.
 
 ![LibRaw vs Apple RAW 9, same frame through the same AgX plan: the differences are camera interpretation, not pipeline drift](assets/decoder-libraw-vs-raw9.jpg)
 
+Dark-field parity runs the other way too: the LibRaw path now honours the DNG
+dark-field opcodes — `GainMap` before demosaic (fp), `FixVignetteRadial` after the
+render (iPhone ProRAW) — with evidence copies taken from the pre-correction sensor
+truth. The iPhone main-camera decoder pair (same frame, same AgX plan):
+
+![iPhone 16 Pro, same frame decoded twice: LibRaw applying the DNG GainMap vs RAW 9's FixVignetteRadial — corner brightness agrees](assets/decoder-iphone-libraw-vs-raw9.jpg)
+
 Core Image and LibRaw do not expose the same scene unit, and a single fitted correction
 did not generalize across cameras or scenes. The default is therefore
 `--coreimage-scale aligned`: dngscan makes a cheap half-size LibRaw reconstruction of the
@@ -922,6 +929,21 @@ flowchart LR
   hand-tuned constants. SDR and HDR apply the identical gain at the same choke point;
   out-of-domain interpolation clamps toward 1 so extended highlights stay neutral —
   verified live by an Ultra HDR film export passing the archive-tier chroma gate.
+
+One fp frame through the four families plus the theatrical quotation (picked at
+random from a real shooting card, all rendered by the current pipeline):
+
+![Same frame compared: AgX baseline and seven film presets across Kodak/Fuji negatives, reversal, cine and the theatrical quotation](assets/film-families.jpg)
+
+The same presets on a non-daylight indoor scene of complex colour (warm tungsten plus
+a wall of multicoloured cans) — negative latitude, reversal density and the theatrical
+contrast each show their other face under mixed artificial light:
+
+![Indoor complex-colour comparison: the same film presets under mixed tungsten light](assets/film-families-indoor.jpg)
+
+The WB declaration and lens-filter layers in isolation (same frame, no film curve):
+
+![Same frame compared: AsShot and three fixed Kelvin references, plus the 85B/80A conversion filters](assets/film-wb-and-filter.jpg)
 
 ### The preset library and its provenance
 

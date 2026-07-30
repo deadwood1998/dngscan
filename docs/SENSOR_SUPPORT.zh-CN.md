@@ -64,6 +64,13 @@ soname 26，A7 V 入表；**全套 411 项测试零漂移通过**——master �
 X-E5 借 X100VI 矩阵、A7R VI 待上游、GR IV 走 DNG 自带标签）。0.22.1 已知
 机型的回退条目（A7S III/X100VI/Zf）永不触发，保留作老构建环境的防御层。
 
+## iPhone 双解码对照
+
+同一 iPhone 16 Pro ProRAW 帧、同一 AgX plan：LibRaw 施加文件内的 DNG `GainMap`，
+RAW 9 施加 `FixVignetteRadial`——两条路径的角部暗场矫正相互印证：
+
+![iPhone 16 Pro 同帧双解码对照](assets/decoder-iphone-libraw-vs-raw9.jpg)
+
 ## iPhone 主摄 CMOS（IMX903）检索纪要
 
 iPhone 16 Pro / Pro Max 主摄为索尼定制 IMX903：48MP quad-Bayer、1.22µm、
