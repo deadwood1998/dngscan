@@ -23,6 +23,7 @@ from .delivery import (
     DeliveryTolerances,
     FinishedPair,
     profile_from_encode_settings,
+    reprofile_for_container,
 )
 
 # Backward-compatible aliases for the archive operating point. Prefer DeliveryProfile.
@@ -264,7 +265,13 @@ def _hdr_roundtrip_is_acceptable(
     metrics: dict[str, float],
     tolerances: DeliveryTolerances = ARCHIVE_TOLERANCES,
 ) -> bool:
-    """Whether the expanded HDR preserves low-frequency tone and colour geometry."""
+    """Whether the expanded HDR preserves tone and colour geometry.
+
+    Block gates carry the tone/low-frequency contract. The pixel-scale chroma gate is
+    kept alongside them because 8x8 block means average over the same grid 4:2:0
+    subsamples chroma on, making them nearly blind to exactly that loss; per-profile
+    limits state how much pixel-scale chroma damage each delivery contract accepts.
+    """
     return bool(
         metrics["block_median_relative_error"]
         <= tolerances.hdr_block_median_relative_error
@@ -273,10 +280,11 @@ def _hdr_roundtrip_is_acceptable(
         and metrics["block_p99_relative_error"]
         <= tolerances.hdr_block_p99_relative_error
         and metrics["block_chroma_error"] <= tolerances.hdr_block_chroma_error
+        and metrics["chroma_error"] <= tolerances.hdr_pixel_chroma_error
     )
 
 
-def _read_primary_rgb_u8(path: Path) -> Any:
+def read_primary_rgb_u8(path: Path) -> Any:
     """Decode the primary SDR image without requiring Pillow HEIC support.
 
     JPEG still goes through Pillow when available (matches historical base gates). HEIC
@@ -330,7 +338,7 @@ def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
     block means expose an actual colour/tone transform while discounting zero-mean
     high-frequency texture loss.
     """
-    decoded = np.asarray(_read_primary_rgb_u8(path), dtype=np.uint8)
+    decoded = np.asarray(read_primary_rgb_u8(path), dtype=np.uint8)
     intended = np.asarray(intended_rgb_u8, dtype=np.uint8)
     if decoded.shape != intended.shape:
         return {
@@ -474,15 +482,10 @@ def write_apple_gainmap_jpeg(
     _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
     """Write and validate a Display P3 JPEG carrying an ISO 21496-1 gain map."""
-    profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
-    if profile.container != "jpeg":
-        profile = DeliveryProfile(
-            name=profile.name,
-            quality=profile.quality,
-            chroma=profile.chroma,
-            container="jpeg",
-            tolerances=profile.tolerances,
-        )
+    profile = delivery or profile_from_encode_settings(
+        int(quality), str(chroma), container="jpeg"
+    )
+    profile = reprofile_for_container(profile, "jpeg")
     return write_apple_gainmap_file(
         base_rgb_u8,
         hdr_rgba_half,
@@ -505,14 +508,10 @@ def write_apple_gainmap_heic(
     _verify_roundtrip_capability: bool = True,
 ) -> dict[str, Any]:
     """Write and validate a Display P3 HEIC carrying an ISO 21496-1 gain map."""
-    profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
-    profile = DeliveryProfile(
-        name=profile.name,
-        quality=profile.quality,
-        chroma=profile.chroma,
-        container="heic",
-        tolerances=profile.tolerances,
+    profile = delivery or profile_from_encode_settings(
+        int(quality), str(chroma), container="heic"
     )
+    profile = reprofile_for_container(profile, "heic")
     return write_apple_gainmap_file(
         base_rgb_u8,
         hdr_rgba_half,
@@ -597,9 +596,18 @@ def write_apple_gainmap_file(
         Quartz.kCGImageDestinationEncodeBaseIsSDR: _nsnumber_bool(True),
     }
     if tolerances.gainmap_subsample_factor is not None:
-        encode_request_options[
-            Quartz.kCGImageDestinationEncodeGainMapSubsampleFactor
-        ] = NSNumber.numberWithInt_(int(tolerances.gainmap_subsample_factor))
+        subsample_key = getattr(
+            Quartz, "kCGImageDestinationEncodeGainMapSubsampleFactor", None
+        )
+        if subsample_key is None:
+            raise RuntimeError(
+                "此 macOS 的 ImageIO 不支持 gain-map 下采样 "
+                "(kCGImageDestinationEncodeGainMapSubsampleFactor)；"
+                "请升级系统或改用 --delivery-profile archive"
+            )
+        encode_request_options[subsample_key] = NSNumber.numberWithInt_(
+            int(tolerances.gainmap_subsample_factor)
+        )
     options = {
         Quartz.kCGImageDestinationLossyCompressionQuality: float(quality) / 100.0,
         Quartz.kCIImageRepresentationHDRImage: hdr_image,

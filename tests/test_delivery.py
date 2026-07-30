@@ -2,6 +2,7 @@
 """Delivery profile resolution: encode knobs stay out of formation."""
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,11 @@ from dngscan.cli import parse_args
 from dngscan.color import srgb_decode
 from dngscan.delivery import (
     ARCHIVE_JPEG_QUALITY,
+    SHARE_HEIC_TOLERANCES,
     SHARE_JPEG_QUALITY,
+    SHARE_TOLERANCES,
+    DeliveryProfile,
+    reprofile_for_container,
     resolve_delivery_profile,
 )
 from dngscan.gainmap import apple_gainmap_backend_status, write_apple_gainmap_jpeg
@@ -70,6 +75,70 @@ class DeliveryProfileTests(unittest.TestCase):
         )
         self.assertEqual(args.delivery.container, "heic")
         self.assertEqual(args.jpeg_quality, 100)
+
+    def test_cli_explicit_knobs_without_profile_are_honoured(self) -> None:
+        """Pre-profile invocations keep working; gates are inferred, not vetoed."""
+        args = parse_args(["photo.dng", "--jpeg", "out.jpg", "--jpeg-quality", "85"])
+        self.assertEqual(args.jpeg_quality, 85)
+        self.assertEqual(args.delivery.name, "share")
+        args = parse_args(
+            ["photo.dng", "--jpeg", "out.jpg",
+             "--jpeg-quality", "90", "--chroma", "420"]
+        )
+        self.assertEqual((args.jpeg_quality, args.chroma), (90, "420"))
+        self.assertEqual(args.delivery.name, "share")
+        args = parse_args(["photo.dng", "--jpeg", "out.jpg"])
+        self.assertEqual(args.delivery.name, "archive")
+        self.assertEqual(args.jpeg_quality, 100)
+
+    def test_cli_hdr_rejects_unhonourable_chroma(self) -> None:
+        for extra in (
+            ["--chroma", "422"],
+            ["--delivery-profile", "share", "--chroma", "444"],
+        ):
+            with self.subTest(extra=extra):
+                with self.assertRaises(SystemExit):
+                    parse_args(
+                        ["photo.dng", "--output-format", "ultrahdr", *extra]
+                    )
+
+    def test_share_heic_gets_its_own_calibration(self) -> None:
+        jpeg = resolve_delivery_profile("share", container="jpeg")
+        heic = resolve_delivery_profile("share", container="heic")
+        self.assertIs(jpeg.tolerances, SHARE_TOLERANCES)
+        self.assertIs(heic.tolerances, SHARE_HEIC_TOLERANCES)
+        self.assertGreater(
+            heic.tolerances.hdr_block_p95_relative_error,
+            jpeg.tolerances.hdr_block_p95_relative_error,
+        )
+
+    def test_reprofile_for_container_rederives_standard_gates(self) -> None:
+        moved = reprofile_for_container(
+            resolve_delivery_profile("share", container="jpeg"), "heic"
+        )
+        self.assertIs(moved.tolerances, SHARE_HEIC_TOLERANCES)
+        custom = DeliveryProfile(
+            name="share", quality=90, chroma="420", container="jpeg",
+            tolerances=dataclasses.replace(
+                SHARE_TOLERANCES, hdr_block_median_relative_error=0.5
+            ),
+        )
+        moved_custom = reprofile_for_container(custom, "heic")
+        self.assertEqual(
+            moved_custom.tolerances.hdr_block_median_relative_error, 0.5
+        )
+
+    def test_pixel_chroma_gate_is_wired_per_profile(self) -> None:
+        """Block means average over the 4:2:0 grid; only the pixel gate sees that loss."""
+        for name, container in (
+            ("archive", "jpeg"), ("share", "jpeg"), ("share", "heic"),
+        ):
+            with self.subTest(profile=name, container=container):
+                tol = resolve_delivery_profile(name, container=container).tolerances
+                self.assertGreater(tol.hdr_pixel_chroma_error, 0.0)
+                self.assertTrue(
+                    tol.hdr_pixel_chroma_error < float("inf")
+                )
 
 
 class ShareEncodeLiveTests(unittest.TestCase):

@@ -20,10 +20,13 @@ from .constants import (
     JPEG_OUTPUT_FORMATS, MAX_HDR_HEADROOM_EV, WB_CHOICES,
 )
 from .delivery import (
+    ARCHIVE_CHROMA,
+    ARCHIVE_JPEG_QUALITY,
     DEFAULT_DELIVERY_PROFILE,
     DELIVERY_PROFILE_CHOICES,
     container_for_output_format,
     is_hdr_output_format,
+    profile_from_encode_settings,
     resolve_delivery_profile,
 )
 from .export import chroma_to_subsampling, export_jpeg
@@ -91,10 +94,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--delivery-profile",
         choices=DELIVERY_PROFILE_CHOICES,
-        default=DEFAULT_DELIVERY_PROFILE,
+        default=None,
         help=(
-            "交付编码档: archive=q100/4:4:4 严格 round-trip（默认）；"
+            "交付编码档: archive=q100/4:4:4 严格 round-trip；"
             "share=q90/4:2:0 倾向，体积更小、门禁放宽。只影响最后编码，不重算 AgX/HDR。"
+            "缺省时：未显式给 --jpeg-quality/--chroma 则为 archive；"
+            "给了则按参数值推断门禁档（q>=98 且 444 走 archive，其余走 share）。"
         ),
     )
     parser.add_argument(
@@ -103,7 +108,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="sdr",
         help=(
             "输出格式: sdr=普通 JPEG；ultrahdr=Apple ISO gain-map JPEG；"
-            "ultrahdr-heic=同内容 HEIC 容器（通常更小）"
+            "ultrahdr-heic=同内容 HEIC 容器（实测在本机 Core Image 下并不更小，"
+            "share 档误差也更大；主要用于需要 HEIC 的下游）"
         ),
     )
     parser.add_argument(
@@ -281,14 +287,47 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if is_hdr_output_format(args.output_format) and args.tone_core != "agx":
         parser.error("HDR 输出当前只实现 AgX tone core；请使用 --tone-core agx")
     try:
-        args.delivery = resolve_delivery_profile(
-            args.delivery_profile,
-            quality=args.jpeg_quality,
-            chroma=args.chroma,
-            container=container_for_output_format(args.output_format),
-        )
+        container = container_for_output_format(args.output_format)
+        if args.delivery_profile is None and (
+            args.jpeg_quality is not None or args.chroma is not None
+        ):
+            # Explicit encode knobs without a named profile keep working as before the
+            # profiles existed: honour them, and infer which engineering gates apply.
+            # Missing knobs fill from the historical CLI defaults (q100 / 4:4:4).
+            args.delivery = profile_from_encode_settings(
+                ARCHIVE_JPEG_QUALITY if args.jpeg_quality is None else args.jpeg_quality,
+                ARCHIVE_CHROMA if args.chroma is None else args.chroma,
+                container=container,
+            )
+        else:
+            args.delivery = resolve_delivery_profile(
+                args.delivery_profile or DEFAULT_DELIVERY_PROFILE,
+                quality=args.jpeg_quality,
+                chroma=args.chroma,
+                container=container,
+            )
     except ValueError as exc:
         parser.error(str(exc))
+    if is_hdr_output_format(args.output_format) and args.chroma is not None:
+        # The HDR container's primary-image subsampling is emergent from quality inside
+        # Core Image; an explicit --chroma the encoder cannot honour must fail loudly
+        # instead of writing a file that contradicts the request.
+        if args.chroma == "422":
+            parser.error(
+                "HDR gain-map 容器不提供 4:2:2 主图采样；"
+                "Core Image 按 quality 决定采样（q100→4:4:4，share→通常 4:2:0）"
+            )
+        if args.chroma == "444" and not args.delivery.is_archive:
+            parser.error(
+                "HDR 容器的 4:4:4 只在 q100（archive 档）下产生并被门禁验证；"
+                "请用 --delivery-profile archive（或去掉 --chroma）"
+            )
+        if args.chroma == "420" and args.delivery.is_archive:
+            parser.error(
+                "archive 档（q100）的 HDR 主图为 4:4:4；"
+                "要 4:2:0 请用 --delivery-profile share"
+            )
+    args.delivery_profile = str(args.delivery.name)
     args.jpeg_quality = int(args.delivery.quality)
     args.chroma = str(args.delivery.chroma)
     if args.decoder == "coreimage" and args.tone_core == "gated":

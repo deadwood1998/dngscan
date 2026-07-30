@@ -15,6 +15,8 @@ from .delivery import (
     FinishedPair,
     container_for_output_format,
     is_hdr_output_format,
+    profile_from_encode_settings,
+    reprofile_for_container,
     resolve_delivery_profile,
 )
 from .gainmap import apple_gainmap_backend_status, encode_finished_pair
@@ -76,12 +78,15 @@ def export_ultrahdr_jpeg(
 ) -> dict[str, Any]:
     """Write Display P3 Ultrahdr (JPEG or HEIC) carrying an ISO 21496-1 gain map."""
     output_gamut = "p3"
-    profile = delivery or resolve_delivery_profile(
-        "archive" if int(quality) >= 98 and str(chroma) == "444" else "share",
-        quality=int(quality),
-        chroma=str(chroma),
-    )
+    profile = delivery or profile_from_encode_settings(int(quality), str(chroma))
     container_label = "HEIC" if profile.container == "heic" else "JPEG"
+    # A .jpg that actually holds HEIC bytes (or the reverse) misleads every downstream
+    # consumer; the container decides the suffix, and the rewrite is reported in info.
+    suffix = out_path.suffix.lower()
+    if profile.container == "heic" and suffix not in (".heic", ".heif"):
+        out_path = out_path.with_suffix(".heic")
+    elif profile.container == "jpeg" and suffix in (".heic", ".heif"):
+        out_path = out_path.with_suffix(".jpg")
     if str(hdr_drt) not in HDR_DRT_CHOICES:
         raise RuntimeError(f"未知 HDR DRT：{hdr_drt}（可选：{'/'.join(HDR_DRT_CHOICES)}）")
     if look != "none" or display_filter != "none":
@@ -135,7 +140,10 @@ def export_ultrahdr_jpeg(
             scene_transform_strength,
         )
         actual = achieved_headroom(hdr_linear)
-        peak = float(2.0 ** hdr_plan.tone.display_headroom_ev)
+        # Encode-boundary guard at the scene-authorized content peak, not the display
+        # capacity: the design contract (§9) keeps the alternate's ceiling at 2^H_content,
+        # and the renderer already fitted its volume to exactly this endpoint.
+        peak = float(hdr_plan.tone.peak_linear)
         pair = FinishedPair(
             sdr_rgb_u8=base_u8,
             hdr_rgba_f16=to_gainmap_alternate(hdr_linear, peak),
@@ -143,6 +151,7 @@ def export_ultrahdr_jpeg(
             output_gamut=output_gamut,
         )
         info = encode_finished_pair(pair, out_path, profile)
+        info["output_path"] = str(out_path)
         info["hdr_plan"] = describe_hdr_plan(hdr_plan)
         info["display_headroom_ev"] = float(hdr_plan.tone.display_headroom_ev)
         info["requested_headroom_ev"] = float(hdr_plan.tone.requested_headroom_ev)
@@ -226,20 +235,11 @@ def export_jpeg(
         cont = container_for_output_format(output_format)
         profile = delivery
         if profile is None:
-            profile = resolve_delivery_profile(
-                "archive" if int(quality) >= 98 and str(chroma) == "444" else "share",
-                quality=int(quality),
-                chroma=str(chroma),
-                container=cont,
+            profile = profile_from_encode_settings(
+                int(quality), str(chroma), container=cont
             )
         elif profile.container != cont:
-            profile = DeliveryProfile(
-                name=profile.name,
-                quality=profile.quality,
-                chroma=profile.chroma,
-                container=cont,
-                tolerances=profile.tolerances,
-            )
+            profile = reprofile_for_container(profile, cont)
         return export_ultrahdr_jpeg(
             path,
             out_path,
