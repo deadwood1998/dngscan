@@ -88,9 +88,8 @@ button.preview:disabled{opacity:.5;cursor:default}
 
 <div class="card">
   <label>RAW 文件</label>
-  <input type="file" id="filePicker" accept="RAW_ACCEPT" aria-describedby="filePickerHint">
+  <input type="file" id="filePicker" accept="RAW_ACCEPT">
   <input type="hidden" id="input">
-  <div class="muted" id="filePickerHint" style="margin-top:7px">使用浏览器原生文件选择器；文件只传给本机 dngscan 服务，并在服务退出时清理临时副本。</div>
 </div>
 
 <div class="workspace">
