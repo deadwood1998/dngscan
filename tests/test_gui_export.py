@@ -34,8 +34,15 @@ class ExportSuffixTests(unittest.TestCase):
         self.assertIn("/raw9-support", html)
         self.assertIn("此文件不支持 RAW 9", html)
         self.assertNotIn('optgroup label="本地 LUT"', html)
-        for vendor in ("ARRI Classic", "ARRI Reveal", "Fujifilm", "Kodak", "RED IPP2"):
-            self.assertNotIn(vendor, html)
+        # Vendor display LUTs must never leak into the public GUI. Named film
+        # observation presets ("Kodak Portra 400", "Fujifilm Superia X-TRA 400") are
+        # NOT vendor LUTs — they are dngscan's own calibrated declarations fitted from
+        # published datasheet data — so the guard targets LUT product names, not the
+        # manufacturers whose stocks the film feature legitimately names.
+        for vendor_lut in ("ARRI Classic", "ARRI Reveal", "RED IPP2", "LC-709", "2383", ".cube"):
+            self.assertNotIn(vendor_lut, html)
+        self.assertIn("Kodak Portra 400", html)
+        self.assertIn("Fujifilm Superia X-TRA 400", html)
 
     def test_default_agx_only(self) -> None:
         self.assertEqual(export_suffix_parts("clip", "srgb", "sdr"), "agx")
