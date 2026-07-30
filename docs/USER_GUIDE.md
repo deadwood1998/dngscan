@@ -2,7 +2,8 @@
 
 This is the manual without the math. It answers three questions: which cameras this tool
 can handle, what every number on screen means, and what to pick when exporting. For the
-pipeline internals and technical detail, see the [README](../README.md).
+pipeline internals and technical detail, see the
+[architecture notes](ARCHITECTURE.md).
 [中文版使用说明在这里](USER_GUIDE.zh-CN.md).
 
 dngscan does one thing: it turns RAW photos into faithful JPEGs — ordinary JPEGs, or HDR
@@ -103,24 +104,44 @@ no eye in the loop.
 Fixed Kelvin works on both decoders. A visible color cast after choosing one is
 **expected behavior** — it is precisely how film sees the world, not a malfunction.
 
-## 3.7 Film observation positions (Portra 400 / Superia X-TRA 400)
+## 3.7 Film observation positions (20 stocks + 5 theatrical variants)
 
 The **film observation position** selector (imaging card) sets three independent
-declarations at once: white balance locked to 5500K (film's calibration temperature),
-the spectral prefeed (how that stock's layers separated colour, from manufacturer
-datasheets), and the curve preset (that stock plus its paired paper, as a fitted
-coordinate). The three underlying controls visibly update when you pick one — **nothing
-is baked**; adjust any layer individually at any time.
+declarations at once: white balance locked to the stock's calibration temperature
+(5500K for daylight stocks, 3200K for tungsten cine stocks), the spectral prefeed
+(how that stock's layers separated colour, from manufacturer datasheets), and the
+curve preset (that stock plus its paired display medium, as a fitted coordinate).
+The three underlying controls visibly update when you pick one — **nothing is
+baked**; adjust any layer individually at any time.
 
-- **Kodak Portra 400** — the Western memory portrait negative, famous for its skin
-  separation;
-- **Fujifilm Superia X-TRA 400** — the Eastern memory everyday negative (the classic
-  recipe discontinued in 2024).
+The library covers four families (all data digitized from datasheets by the
+spektrafilm project, CC BY-SA 4.0):
+
+- **Kodak negatives** — Portra 160/400/800 (plus push 1/2), Ektar 100, Gold 200,
+  Ultramax 400 — printed on Endura paper;
+- **Fujifilm negatives** — Superia X-TRA 400, C200, Pro 400H — printed on Crystal
+  Archive paper;
+- **Reversal (slide) film** — Provia 100F, Velvia 100, Ektachrome 100,
+  Kodachrome 64 — the slide is its own display medium;
+- **Cinema negatives** — Vision3 50D/250D/200T/500T, Verita 200D — printed on 2383
+  theatrical stock.
+
+Slides and cinema prints were designed for **dark projection rooms** and are built
+about 1.5× contrastier than bright-environment media; when delivering to an everyday
+screen the tool translates that difference away using the classic viewing-condition
+constants, so they *look* right on your display rather than merely being numerically
+faithful. If you want the raw high-contrast "2383 print on a monitor" appearance
+(the look colorists get from stock 2383 LUTs), pick the **· theatrical** variants.
+
+Each preset also carries the stock's measured **per-channel saturation
+differential** — e.g. highlights drifting warm as the blue-sensitive layer saturates
+first. It is solved from the characteristic curves, not a slider; neutral grays are
+mathematically untouched, so it can never become a hidden white balance.
 
 It adds no grain and no vignette — it changes *how the camera saw the world*: how
-colours separate, how highlights roll off, where shadows rest against the paper's
-deepest black. **HDR keeps working**: a film body plus genuinely measured highlight
-headroom, a combination no other film tool offers.
+colours separate, how highlights roll off, where shadows rest against the display
+medium's deepest black. **HDR keeps working**: a film body plus genuinely measured
+highlight headroom, a combination no other film tool offers.
 
 **Lens filters** (RAW decode card) are the companion control: Wratten conversion
 glass simulated from Kodak's published parameters (85B daylight-to-tungsten, 80A the
