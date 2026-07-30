@@ -74,18 +74,14 @@ scene-referred 直到 formation，因此 HDR 可达。两者在"数据手册的�
 - CLI `--lens-filter {none,85,85b,80a,81a,82a}`；GUI 放在"RAW 解码"卡
   （它是采集光学，不是颜色创作）。
 
-### 2.3 推导与验收（实施记录，2026-07-30 与实现对齐）
+### 2.3 验收门
 
-**实际路线：出版 mired 常数，不是光谱积分。** 原计划的
-`tools/derive_lens_filter.py`（AMPAS 190 谱 × 数字化 T(λ) 积分拟合）与
-`lens_filter_presets.json` **未实施**——柯达 Wratten 透过率曲线没有可靠的机读
-数据源，手工数字化的曲线反而会给"声明出处"掺入转录误差。实现改为从柯达出版的
-两个数字（mired 位移 + 滤镜因子）直接构造：以工作白点 mired 对称取锚对
-（m₀±Δ/2）做 Bradford von Kries 传输，等值反号滤镜对按构造严格互逆，矩阵运行时
-生成并缓存，无预设 JSON。光谱 T(λ) 精修保留为"待机读数据"的声明升级路径
-（见 lens_filter.py 模块声明）。
+规范决定：滤镜从**出版 mired 常数**构造（原计划的 T(λ) 光谱积分因无可靠机读
+数据源而废止——手工数字化会给声明出处掺入转录误差；光谱精修保留为"待机读
+数据"的声明升级路径）。已建成形态的描述见
+[架构文档·胶片观察](ARCHITECTURE.zh-CN.md)。
 
-实际验收门（`tests/test_lens_filter.py`）：
+验收门（`tests/test_lens_filter.py`）：
 
 ```text
 mired 算术：各滤镜的声明位移落到出版目标色温（85B: 5500→3200K 等）

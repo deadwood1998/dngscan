@@ -15,9 +15,14 @@ LibRaw 或 Core Image 形成场景线性 Rec. 2020 图像，再把测量结果�
 传感器分析、显示变换、胶片观察和交付编码各有边界；新的解码器、明暗压缩方法、胶片模型
 或交付格式，可以在同一份 RAW 数据和同一套验证方法上比较，不必重新发明整条管线。
 
-[English](README.md) · [使用说明](docs/USER_GUIDE.zh-CN.md) ·
-[工程记录](docs/ENGINEERING_NOTES.zh-CN.md) · [许可证](LICENSE) ·
-[第三方声明](NOTICE.md)
+[English](README.md) · [许可证](LICENSE) · [第三方声明](NOTICE.md)
+
+**文档**：
+[使用说明](docs/USER_GUIDE.zh-CN.md)（支持的相机、界面字段、导出选择）·
+[架构与技术细节](docs/ARCHITECTURE.zh-CN.md)（完整管线与每个环节的设计理由）·
+[工程决策记录](docs/ENGINEERING_NOTES.zh-CN.md)（问题、证据与解法的推理过程）·
+[设计合同](docs/FILM_OBSERVATION_PLAN.zh-CN.md)（胶片观察的生产合同与计算边界）·
+[机型支持](docs/SENSOR_SUPPORT.zh-CN.md)（传感器数据、降级策略与 LibRaw 升级）
 
 ## 一张图看 HDR
 
@@ -29,6 +34,16 @@ LibRaw 或 Core Image 形成场景线性 Rec. 2020 图像，再把测量结果�
 可以看到，额外亮度集中在灯具和反光处，房间本身并没有跟着变亮。支持 HDR 的设备会
 显示这些亮部；普通屏幕则显示文件中的 SDR 底图。如果 RAW 里没有未过曝的高光，
 dngscan 也不会凭空增加 HDR 余量。
+
+## 一张图看胶片观察
+
+![AgX 基线、Portra 400、Velvia 100 与 Vision3 250D 影院外观对比](docs/assets/film-observation-showcase.jpg)
+
+同一张 RAW 的四种观察位置：AgX 基线（无胶片）、Kodak Portra 400（负片+相纸）、
+Fujifilm Velvia 100（反转片）、Vision3 250D 影院放映外观（引用原文变体）。每个
+预设都由数据手册数据声明式构成——白平衡色温、感色层分离、显影曲线、层饱和差异
+——没有手调滑杆，也没有烘焙的 LUT。二十款胶卷与五款影院变体见
+[架构文档](docs/ARCHITECTURE.zh-CN.md)。
 
 ## 功能
 
@@ -179,16 +194,6 @@ dngscan 还会重新打开成品，确认 SDR 底图、HDR 效果和增益图都
 dngscan 目前不管理图库，也不做局部调整。这是现阶段产品的边界，不是项目想象力的边界。
 它更大的潜力，是成为一套开放、可解释的数字成像工作台：既能直接用来出片，也能在同一
 批照片上比较算法、验证标准，并继续发展新的成像方法。
-
-## 文档
-
-- [使用说明](docs/USER_GUIDE.zh-CN.md)：支持的相机、界面字段、导出选择与常见问题。
-- [架构与技术细节](docs/ARCHITECTURE.zh-CN.md)：完整的管线展示与每个环节的设计理由
-  ——四层结构、解码器轴、胶片观察位置、HDR 对比与附录。
-- [工程记录](docs/ENGINEERING_NOTES.zh-CN.md)：架构决策、实验依据与实现过程。
-- [设计合同](docs/FILM_OBSERVATION_PLAN.zh-CN.md)：胶片观察功能群的生产合同与
-  声明的计算边界。
-- [第三方声明](NOTICE.md)：darktable、AgX 与其他上游组件的来源。
 
 ## 许可证
 

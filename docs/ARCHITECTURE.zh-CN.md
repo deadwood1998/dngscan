@@ -3,9 +3,11 @@
 > 本文承载完整的管线展示与每个环节的设计理由，是 [README](../README.zh-CN.md) 的
 > 技术下层。只想用起来看[使用说明](USER_GUIDE.zh-CN.md)；想看问题与解法的推理过程
 > 看[工程决策记录](ENGINEERING_NOTES.zh-CN.md)；胶片观察功能群的生产合同在
-> [FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md)。
+> [FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md)；机型支持与
+> 降级策略在 [SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md)。
 
-按管线的四层往下读（胶片观察位置作为跨层功能群，单独成节排在三层之后）：
+先读[认识论基调](#认识论基调与声明纪律)——它解释这条管线的每个"为什么"共享的
+那个前提。然后按四层往下读（胶片观察位置作为跨层功能群，单独成节排在三层之后）：
 
 | 层 | 负责什么 | 不负责什么 |
 |---|---|---|
@@ -17,6 +19,36 @@
 [解码器](#解码器：libraw-与可选的-core-image--raw-9)是与这四层正交的一根轴：它决定 RAW
 怎样变成 scene-linear 像素，不决定这些像素之后怎么被压缩。分层是刻意的：调整某个
 环节时，至少能知道画面为什么发生变化。
+
+## 认识论基调与声明纪律
+
+管线搬运的是"某个声明观察者对场景的报告"——传感器的、或胶片乳剂的——数字部分
+提供技术上的完善（精度、可验证、可复现），不掺自己的口味。这一立场源自数字音频界
+"透明搬运模拟介质签名"的传统（创始故事见
+[工程决策记录·前言](ENGINEERING_NOTES.zh-CN.md)）。
+
+由此推出三条**声明纪律**，全库通用：
+
+1. **公开出处**：每个常数要么有出版物/数据手册可引（mired 表、CIE 轨迹、
+   Bartleson-Breneman 常数、spektrafilm 密度曲线），要么有可复现的标定脚本；
+   "不知道哪来的 3×3 矩阵"（Siragusano 讥为 *magically derived from somewhere*）
+   不准入库。
+2. **固定管线位置**：每个变换声明它作用在链条的哪一点（滤镜在前馈前、surround 项
+   在拟合目标里、比率场在 hue restore 后），位置本身是合同的一部分。
+3. **可测量的残差**：每次拟合发布 rms/max 与钉界参数（`fit.pinned`=声明的域外
+   外推）；残差是产品的一部分，不是要藏起来的尴尬。
+
+两条来自色彩科学文献的界碑限定了野心：**同色异谱**（Luther-Ives 条件不满足）使
+"复现观感"在原理上不可达，所以合同是"忠实翻译声明观察者的报告"而非"复刻眼睛
+看到的"；而报告只有连同**阅读条件**才完整——把黑暗放映厅的密度数字原样搬进明
+环境显示，搬运的是脱离校准的裸数字（同引用 Cineon 码值不带 95/1023 黑锚）。
+翻译因此必须补上观看条件之间的经典 surround 项，且只补这一项——其余色貌现象
+（Hunt、Stevens 等）需要绝对亮度，介质不提供，声明为边界。完整合同与逐条边界见
+[FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md)。
+
+同一纪律的另一面是**降级也要声明**：机型缺标定数据时照常渲染，但报告与 GUI 标明
+"暂无足够数据支撑准确运算，输出可能有无法预测的偏差"——声明的降级可用，静默的
+降级等于隐藏白平衡（见 [SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md)）。
 
 ## 为什么单独做这条管线
 
@@ -304,10 +336,15 @@ GUI/CLI 可手动指定 `dht / dcb / ahd / aahd / vng / ppg`；如果本机 LibR
 `camera` 使用文件里的 AsShot 测量，`daylight` 使用 LibRaw 的日光标定乘子。前者跟随拍摄
 现场，后者适合让同一光线下的一组照片保持固定配平。固定色温模式（`6500k` D65 显示白点、
 `5500k` 摄影日光/日光卷、`3400k`/`3200k` Type A/B 钨丝卷、`9300k` 日本广播传统白点）是
-声明的标准参考而非肉眼调整：LibRaw 侧经文件自身的 DNG 双光源标定求解（ColorMatrix1/2
-按倒数色温插值，单 Adobe 矩阵回退），RAW 9 侧通过 CIRAWFilter 原生的
-neutralTemperature/neutralTint 接口接收同一声明（tint 钉零）。两种解码器各用自己的标定
-兑现同一个声明；在适马 fp 参考帧上，求解的 6500K 乘数与厂商日光元数据吻合在 0.1% 以内。
+声明的标准参考而非肉眼调整：LibRaw 侧经**标定阶梯**求解——文件自身的 DNG 双光源
+标定（ColorMatrix1/2 按倒数色温插值）→ LibRaw 的机型 Adobe 矩阵 → 本项目为
+"比安装版 LibRaw 还新"的机型准备的回退矩阵表（`camera_matrices.py`）→ 全部缺失时
+**退化为相机 AsShot 并显式警示**，渲染照常（声明的降级可用，静默的降级等于隐藏
+白平衡）。RAW 9 侧通过 CIRAWFilter 原生的 neutralTemperature/neutralTint 接口接收
+同一声明（tint 钉零，避免 AsShot tint 残留混入声明基准）。两种解码器各用自己的标定
+兑现同一个声明；在适马 fp 参考帧上，求解的 6500K 乘数与厂商日光元数据吻合在 0.1%
+以内。逐机型支持状态、传感器先验表（PhotonsToPhotos 实测曲线）与 LibRaw 升级路径
+见 [SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md)。
 
 日光、阴天和阴影大致落在可预测的日光轨迹上，机内测量通常足够有用；混合光、窄谱 LED、
 荧光灯和钠灯则不是一个简单的色温问题。还有些看起来像“白平衡不对”的变化，实际来自
@@ -597,6 +634,10 @@ white EV，结果就是高光很刺眼而主体仍然偏暗。C1 端点和主体
 曲线前的 `inset` 把工作原色向中性轴收缩并做小幅旋转，避免极纯颜色直接撞上单通道上限，
 给饱和高光留出平滑的 path-to-white。曲线后的 `outset` 再恢复纯度，但它刻意不是 inset
 的严格逆矩阵。两者之间的差异，以及可选的 hue restore，共同构成 AgX 的颜色性格。
+胶片预设激活时，hue restore 与 outset 之间还插入一个**逐通道比率级**
+`r_c(EV_c)/r_c(EV_Y)`（见胶片观察一节）——放在 hue restore 之后是刻意的：hue
+restore 约束的是通用曲线自身的色相摆动，而比率场是介质实测的报告内容，不该被
+渲染器的色相纪律稀释。
 这也在预先处理裸逐通道曲线的 notorious six：例如纯红随亮度走向橙黄、纯蓝走向 cyan；
 inset 的小幅旋转同时承担一部分 Abney 式感知色相补偿。
 
@@ -668,47 +709,70 @@ RAW headroom retreat 只在解拜耳前 CFA 表明通道接近或到达 full-wel
 
 ## 胶片观察位置 — 跨四层的声明功能群
 
-胶片模拟在这条管线里不是一张 LUT，而是**四个独立声明**，各自落在它物理上正确的层：
+胶片模拟在这条管线里不是一张 LUT，而是**五个独立声明**，各自落在它物理上正确的层。
+规范条款（验收门、边界、翻译规则）在
+[设计合同](FILM_OBSERVATION_PLAN.zh-CN.md)；本节描述已建成的形态。
 
 ```mermaid
 flowchart LR
     D1["WB 声明<br/>日光卷 5500K / 钨丝卷 3200K<br/>（一层 Capture）"]
     D2["镜前滤镜（可选）<br/>Wratten mired 位移<br/>（一层 Capture 光学）"]
     D3["光谱分离<br/>胶片感色层作为观察者<br/>（前馈层）"]
-    D4["显影曲线<br/>AgX 参数空间具名坐标<br/>含相纸/正片地板（二层 Tone）"]
-    D1 --> D2 --> D3 --> D4
-    D4 --> OUT["三层色彩几何与四层交付原样工作<br/>含 Ultra HDR gain map"]
+    D4["显影曲线 + 观看条件翻译<br/>AgX 具名坐标 · surround 项 · 介质地板<br/>（二层 Tone）"]
+    D5["逐通道比率场<br/>层饱和差异，hue restore 后施加<br/>（三层 formation）"]
+    D1 --> D2 --> D3 --> D4 --> D5
+    D5 --> OUT["四层交付原样工作<br/>含 Ultra HDR gain map"]
 ```
 
-- **WB 声明**：固定色温不是肉眼调整而是标准引用，配平系数经文件自身的 DNG 双光源
-  标定插值求解（LibRaw），或走 CIRAWFilter 原生 neutralTemperature（RAW 9）；
-- **镜前滤镜**：按柯达出版的 mired 位移推导（85B/85/80A/81A/82A），作用于
-  scene-linear、前馈之前；可靠尾部与 HDR 预算都透过滤镜测量——胶片也是这样测光的。
-  滤镜没有强度滑杆：玻璃没有半片；
-- **光谱分离**：把胶片当作"另一台相机"喂给现有前馈标定器——数据手册的感色层曲线
-  就是它的 SSF，分材料窗口矩阵、中性轴保持、置信度加权全部沿用；
-- **显影曲线**：数据手册特性曲线（负片+配对相纸端到端；暗环境介质——反转片与
-  Vision3→2383 影院放映链——统一经 surround 项 `T^(1/1.5)` 翻译到明环境交付，
-  出处 Bartleson-Breneman/Fairchild 2013）最小二乘解到 AgX 参数空间的一个具名
-  坐标；预设激活时整卷一致、场景自适应关闭，EV0→0.18 锚定不破。曲线之外每个
-  预设还携带**逐通道比率场**——从同一特性曲线解出的层饱和差异（如蓝感层先饱和
-  带来的高光渐暖），运行时按 `r_c(EV_c)/r_c(EV_Y)` 施加：中性轴上恒为 1
-  （构造保证，不会退化成隐藏白平衡），色度越高效应越显，无手调常数。
+### 五个声明
+
+- **WB 声明**（一层）：固定色温是标准引用不是肉眼调整；求解走 Capture 一节描述的
+  标定阶梯，两个解码器各用自己的标定兑现同一声明。
+- **镜前滤镜**（一层，可选）：按柯达出版的 mired 位移构造（85B/85/80A/81A/82A），
+  Bradford 对称锚对保证等值反号滤镜严格互逆。滤镜的第一语义是**把光源搬到胶片的
+  校准点**（配对使用时中性轴在胶片参考系里不动）；单独使用是声明的创作性退化。
+  作用于 scene-linear、前馈之前——可靠尾部与 HDR 预算都透过滤镜测量，胶片也是
+  这样测光的。没有强度滑杆：玻璃没有半片。
+- **光谱分离**（前馈层）：把胶片当作"另一台相机"喂给现有前馈标定器——数据手册的
+  感色层曲线就是它的 SSF，分材料窗口矩阵、中性轴保持、置信度加权、von Kries 窗口
+  搬运全部沿用。
+- **显影曲线 + 观看条件翻译**（二层）：数据手册特性曲线（负片+配对显示介质端到端）
+  最小二乘解到 AgX 参数空间的一个具名坐标；预设激活时整卷一致、场景自适应关闭，
+  EV0→0.18 锚定不破，介质地板（相纸/正片 Dmax 的亮度合成）经 `target_black_linear`
+  进入曲线。**翻译是观看条件完整的**：暗环境介质（反转片、Vision3→2383 放映链）
+  统一按经典 surround 常数（dark 1.5 / dim 1.2 / average 1.0，Bartleson-Breneman，
+  Fairchild 2013）折算到明环境交付；想要"影院拷贝原样上监视器"的是 `*_theatrical`
+  引用变体——合同区分**翻译**与**引用原文**，引用不占用胶片名。
+- **逐通道比率场**（三层）：从同一特性曲线解出的层饱和差异
+  `r_c(EV) = T_c/T_neutral`（如蓝感层先饱和带来的高光渐暖），运行时按
+  `r_c(EV_c)/r_c(EV_Y)` 在 hue restore 之后、outset 之前施加：中性轴上恒为 1
+  （实数域构造精确，float32 舍入 ~1e-7，测试钉定），不会退化成隐藏白平衡；色度
+  越高效应越显，无手调常数。SDR 与 HDR 在同一咽喉施加同一 gain，域外插值钳向 1，
+  扩展高光自然回中性——Ultra HDR 胶片导出实测通过 archive 档像素色度门。
+
+### 预设库与出处
 
 **二十款胶卷 + 五款影院变体**（Portra 全家含迫冲、Ektar、Gold、Ultramax、
-Superia X-TRA、C200、Pro 400H、四款反转片、Vision3 电影卷全系与 Verita；电影链
-另有 `*_theatrical` 引用变体——按合同区分"翻译"与"引用原文"：不折算暗环境
-补偿、保留 2383 放映拷贝的原生高反差，即调色圈 2383 LUT 的习惯外观）以
-`--film <名字>` 或 GUI 一键展开为上述三/四层组合；任何一层都可单独覆盖——
-**没有烘焙**。每个预设携带 `source`（具体数据文件 + 模型描述）、`fit.rms_stop`
-（拟合残差）与 `fit.pinned`（钉界参数=声明的域外外推），数据来自 spektrafilm 的
-CC BY-SA 4.0 profile（出处链见 NOTICE.md 与
-`dngscan_assets/spectral/spektrafilm/README.md`）。
+Superia X-TRA、C200、Pro 400H、四款反转片、Vision3 全系与 Verita）以
+`--film <名字>` 或 GUI 一键展开为上述声明组合；任何一层都可单独覆盖——**没有
+烘焙**。每个预设携带 `source`（数据文件+模型描述）、`fit.rms_stop`（拟合残差）与
+`fit.pinned`（钉界参数=声明的域外外推）；数据来自 spektrafilm 的 CC BY-SA 4.0
+profile（出处链见 NOTICE.md 与 `dngscan_assets/spectral/spektrafilm/README.md`）。
+当前拟合水平：负片系 rms 0.019–0.067 stop，反转片系 0.013–0.022（地板改为亮度
+合成后四款全部为无钉界内点解），theatrical 引用系 0.059–0.105（刻意超出设计
+条件的声明成本）。
+
+### 外部验证
+
+`tools/crosscheck_2383.py` 用独立实现（DiVERE 的 Kodak 2383 曲线，曲线域约定从其
+源码逐行核对）交叉验证密度域合成：在两个声明自由度（印片灯、反差尺度）内 R/G
+通道合流至 rms ≤0.14 stop——Cineon 黑锚、印片曲线形态、Dmin 相对透过率的合成
+路径被独立路径证实；B 通道余差 ~0.4 stop 与"尺度阶梯随波长单调下降"共同构成
+Status M ≠ 印片有效密度的光谱签名，把该声明简化的代价定量化（详见合同·外部互证）。
 
 与市面胶片工具的根本差异：全部声明发生在 scene-referred 侧，因此**胶片性格能进
-Ultra HDR 交付**——"Portra 的身体 + 真实测量的高光余量"。曲线拟合的方法论与三次
-拟合器缺陷的排查过程见[工程决策记录](ENGINEERING_NOTES.zh-CN.md)，
-设计合同见 [docs/FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md)。
+Ultra HDR 交付**——"Portra 的身体 + 真实测量的高光余量"。曲线拟合的方法论与
+历次拟合器缺陷的排查过程见[工程决策记录](ENGINEERING_NOTES.zh-CN.md)。
 
 ## 四层：Delivery — SDR 与 HDR 交付
 

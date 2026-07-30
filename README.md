@@ -17,9 +17,14 @@ Decoding, sensor analysis, display transforms, film observation, and delivery ha
 boundaries. New decoders, tone cores, film models, and delivery formats can be compared against the
 same RAW evidence and validation instead of rebuilding the whole pipeline.
 
-[简体中文](README.zh-CN.md) · [User guide](docs/USER_GUIDE.md) ·
-[Engineering notes (Chinese)](docs/ENGINEERING_NOTES.zh-CN.md) · [License](LICENSE) ·
-[Third-party notices](NOTICE.md)
+[简体中文](README.zh-CN.md) · [License](LICENSE) · [Third-party notices](NOTICE.md)
+
+**Documentation**:
+[User guide](docs/USER_GUIDE.md) (supported cameras, interface fields, export choices) ·
+[Architecture and technical details](docs/ARCHITECTURE.md) (the full pipeline and why each stage is built this way) ·
+[Engineering notes](docs/ENGINEERING_NOTES.zh-CN.md) (problems, evidence and reasoning; Chinese) ·
+[Design contract](docs/FILM_OBSERVATION_PLAN.zh-CN.md) (film observation contract and boundaries; Chinese) ·
+[Sensor support](docs/SENSOR_SUPPORT.zh-CN.md) (per-body data, degradation policy, LibRaw upgrades; Chinese)
 
 ## HDR in one frame
 
@@ -32,6 +37,17 @@ by the evidence in this RAW.
 The additional brightness stays around lamps and reflections instead of lifting the entire frame.
 HDR-capable devices display those highlights; an ordinary screen still receives a normal SDR JPEG.
 If the RAW contains no reliable highlight information, dngscan does not invent HDR headroom.
+
+## Film observation in one frame
+
+![AgX baseline, Portra 400, Velvia 100, and Vision3 250D theatrical compared](docs/assets/film-observation-showcase.jpg)
+
+One RAW, four observation positions: the AgX baseline (no film), Kodak Portra 400
+(negative + paper), Fujifilm Velvia 100 (reversal), and Vision3 250D in its theatrical
+quotation. Every preset is constructed declaratively from datasheet data — the WB
+Kelvin, the layer separation, the development curve, the layer-saturation differential
+— with no hand-tuned sliders and no baked LUT. All twenty stocks and five theatrical
+variants are described in the [architecture notes](docs/ARCHITECTURE.md).
 
 ## Features
 
@@ -195,17 +211,6 @@ dngscan does not currently manage a library or perform local retouching. That is
 current product, not the full ambition of the project. Its larger potential is an open,
 explainable imaging workbench: useful both for making photographs and for comparing algorithms,
 testing standards, and developing new image-formation methods on the same captures.
-
-## Documentation
-
-- [User guide](docs/USER_GUIDE.md): supported cameras, interface fields, export choices, and FAQ.
-- [Architecture and technical details](docs/ARCHITECTURE.md): the full pipeline exposition —
-  the four layers, the decoder axis, film observation positions, HDR comparisons and appendices.
-- [Engineering notes (Chinese)](docs/ENGINEERING_NOTES.zh-CN.md): architecture decisions,
-  experimental evidence, and implementation history.
-- [Film observation design contract (Chinese)](docs/FILM_OBSERVATION_PLAN.zh-CN.md): the
-  production contract and its declared computational boundaries.
-- [Third-party notices](NOTICE.md): darktable, AgX, and other upstream work.
 
 ## License
 

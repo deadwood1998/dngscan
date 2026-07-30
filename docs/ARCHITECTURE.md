@@ -4,10 +4,14 @@
 > substrate of the [README](../README.md). To just use the tool, read the
 > [user guide](USER_GUIDE.md); for problems/evidence/resolution write-ups see the
 > [engineering notes](ENGINEERING_NOTES.zh-CN.md) (Chinese); the film-observation
-> production contract is [FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md).
+> production contract is [FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md);
+> per-body support and degradation policy live in
+> [SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md).
 
-Read down the four layers (film observation positions, a cross-layer feature group,
-gets its own section after layer 3):
+Start with the [epistemological stance](#epistemological-stance-and-declaration-discipline)
+— it is the shared premise behind every "why" in this document. Then read down the four
+layers (film observation positions, a cross-layer feature group, gets its own section
+after layer 3):
 
 | Layer | Owns | Does not own |
 |---|---|---|
@@ -20,6 +24,45 @@ gets its own section after layer 3):
 orthogonal to the four layers: they decide how RAW becomes scene-linear pixels, not how
 those pixels are later compressed. The layering is deliberate: when you adjust one stage
 you can at least know why the image changed.
+
+## Epistemological stance and declaration discipline
+
+The pipeline carries "a declared observer's report of the scene" — the sensor's, or a
+film emulsion's — and the digital side supplies technical perfection (precision,
+verifiability, reproducibility) without adding taste of its own. The stance descends
+from the digital-audio tradition of transparently carrying an analog medium's signature
+(the founding story is in the [engineering notes](ENGINEERING_NOTES.zh-CN.md)).
+
+Three **declaration disciplines** follow, and apply repository-wide:
+
+1. **Public provenance.** Every constant either cites a publication or datasheet
+   (mired tables, CIE loci, the Bartleson-Breneman constants, spektrafilm
+   densitometry) or comes from a reproducible calibration script. Matrices
+   "magically derived from somewhere" (Siragusano's phrase) are not admitted.
+2. **A fixed pipeline position.** Every transform declares where in the chain it
+   acts (the lens filter before the prefeed, the surround term inside the fit
+   target, the ratio field after hue restore); the position is part of the contract.
+3. **A measurable residual.** Every fit publishes rms/max and its bound-pinned
+   parameters (`fit.pinned` = declared out-of-domain extrapolation). Residuals are
+   part of the product, not an embarrassment to hide.
+
+Two results from the colour-science literature bound the ambition. **Metamerism**
+(the Luther-Ives condition is never satisfied) makes "reproducing appearance"
+unreachable in principle, so the contract is "a faithful translation of a declared
+observer's report", not a replica of what an eye saw. And a report is complete only
+together with its **reading conditions**: carrying a dark-projection-room density
+verbatim onto a bright display transports bare numbers stripped of their calibration
+(like quoting Cineon code values without the 95/1023 black anchor). Translation must
+therefore apply the classic surround term between viewing conditions — and only that
+term; the remaining colour-appearance phenomena (Hunt, Stevens, …) need absolute
+luminance the media do not pin down, and are declared boundaries. The full contract
+is [FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md).
+
+The same discipline has a degradation face: a body missing calibration data still
+renders, but the report and GUI mark it plainly — "insufficient data to support
+accurate computation; output may deviate unpredictably". A declared degradation is
+usable; a silent one is a hidden white balance
+(see [SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md)).
 
 ## Why a separate pipeline
 
@@ -340,12 +383,20 @@ daylight multipliers and is useful when a group of images under the same light s
 keep a fixed balance. The fixed-Kelvin modes (`6500k` D65 display white, `5500k`
 photographic daylight / daylight film, `3400k`/`3200k` Type A/B tungsten film, `9300k`
 the traditional Japanese broadcast white) are declared references rather than eyeballed
-adjustments: LibRaw solves them through the file's own DNG dual-illuminant calibration
-(ColorMatrix1/2 interpolated in reciprocal CCT, single Adobe matrix as fallback), and
+adjustments: LibRaw solves them through a **calibration ladder** — the file's own DNG
+dual-illuminant tags (ColorMatrix1/2 interpolated in reciprocal CCT) -> LibRaw's
+per-model Adobe matrix -> this project's fallback matrix table for bodies newer than
+the installed LibRaw (`camera_matrices.py`) -> and when every rung is missing, a
+**degradation to as-shot with an explicit warning** while the render proceeds (a
+declared degradation is usable; a silent one would be a hidden white balance).
 RAW 9 receives the same declaration through CIRAWFilter's native
-neutralTemperature/neutralTint interface with tint pinned to zero. Both decoders realise
-one declaration with their own calibration; on the Sigma fp reference frame the solved
-6500K multipliers match the manufacturer daylight metadata within 0.1%.
+neutralTemperature/neutralTint interface with tint pinned to zero (so as-shot tint
+residue cannot leak into the declared reference). Both decoders realise one
+declaration with their own calibration; on the Sigma fp reference frame the solved
+6500K multipliers match the manufacturer daylight metadata within 0.1%. Per-body
+support status, the sensor priors table (PhotonsToPhotos measured curves) and the
+LibRaw upgrade path are catalogued in
+[SENSOR_SUPPORT.zh-CN.md](SENSOR_SUPPORT.zh-CN.md).
 
 Sun, overcast, and shade lie roughly on a predictable daylight locus, where the camera
 measurement is usually useful. Mixed light, narrow-band LED, fluorescent, and sodium
@@ -724,7 +775,11 @@ The pre-curve `inset` contracts the working primaries toward the neutral axis an
 a small rotation. Extreme colors do not hit a single channel ceiling directly and gain
 a smoother path to white. The post-curve `outset` restores purity, but is deliberately
 not the exact inverse of the inset. The difference between the two, plus optional hue
-restoration, is part of AgX's color character. This also addresses the notorious six of
+restoration, is part of AgX's color character. With a film preset active, a
+**per-channel ratio stage** `r_c(EV_c)/r_c(EV_Y)` sits between hue restore and the
+outset (see the film observation section) — deliberately after hue restore: that
+control moderates the generic curve's own hue swing, while the ratio field is the
+medium's measured report and must not be diluted by the renderer's hue discipline. This also addresses the notorious six of
 bare per-channel curves, such as pure red moving toward orange-yellow and pure blue
 toward cyan as they brighten; the inset rotation carries some Abney-style perceptual hue
 compensation as well.
@@ -815,53 +870,88 @@ last step.
 
 ## Film observation positions — a declared feature group across the four layers
 
-Film simulation here is not a LUT but **four independent declarations**, each placed at
-its physically correct layer:
+Film simulation here is not a LUT but **five independent declarations**, each placed at
+its physically correct layer. The normative clauses (acceptance gates, boundaries, the
+translation rules) live in the [design contract](FILM_OBSERVATION_PLAN.zh-CN.md); this
+section describes the system as built.
 
 ```mermaid
 flowchart LR
     D1["WB declaration<br/>daylight film 5500K / tungsten cine 3200K<br/>(Layer 1 Capture)"]
     D2["Lens filter (optional)<br/>Wratten mired shift<br/>(Layer 1 optics)"]
     D3["Spectral separation<br/>the film's layers as the observer<br/>(prefeed)"]
-    D4["Development curve<br/>a named coordinate in AgX parameter space<br/>with the paper/slide floor (Layer 2 Tone)"]
-    D1 --> D2 --> D3 --> D4
-    D4 --> OUT["Layers 3 and 4 work unchanged<br/>including Ultra HDR gain-map delivery"]
+    D4["Development curve + viewing translation<br/>named AgX coordinate · surround term · medium floor<br/>(Layer 2 Tone)"]
+    D5["Per-channel ratio field<br/>layer-saturation differential, after hue restore<br/>(Layer 3 formation)"]
+    D1 --> D2 --> D3 --> D4 --> D5
+    D5 --> OUT["Layer 4 works unchanged<br/>including Ultra HDR gain-map delivery"]
 ```
 
-- **WB**: fixed Kelvin as a standard reference, solved through the file's own DNG
-  dual-illuminant calibration (LibRaw) or CIRAWFilter's native neutralTemperature (RAW 9);
-- **Lens filters**: derived from Kodak's published mired shifts, applied in scene-linear
-  before the prefeed — the reliable tail and HDR budget meter through the glass, exactly
-  as film would. No strength slider: glass has no half-installed state;
-- **Spectral separation**: the film stock is fed to the existing prefeed calibrator as
-  "another camera" — datasheet layer sensitivities are its SSF; material windows,
-  neutral-axis preservation and confidence weighting all carry over;
-- **Development curve**: the datasheet characteristic curve (negative + paired paper end
-  to end; dark-surround media — slides and the Vision3 -> 2383 theatrical chain alike —
-  translated to the average-surround delivery through the declared surround term
-  T^(1/1.5), per Bartleson-Breneman / Fairchild 2013) solved by least squares into
-  AgX's parameter space. Whole-roll consistency: scene adaptation is off while a preset
-  is active, and the EV0 -> 0.18 anchor holds by construction. Beyond the curve, every
-  preset carries the stock's **per-channel ratio field** — the layer-saturation
-  differential solved from the same characteristic curves (e.g. highlights drifting
+### The five declarations
+
+- **WB** (layer 1): fixed Kelvin as a standard reference, solved through the
+  calibration ladder described under Capture; each decoder realises the same
+  declaration with its own calibration.
+- **Lens filter** (layer 1, optional): constructed from Kodak's published mired
+  shifts (85B/85/80A/81A/82A); Bradford symmetric anchor pairs make equal-and-opposite
+  filters exact inverses. The filter's first semantics is **moving the illuminant onto
+  the film's calibration point** (used as intended, the neutral axis does not move in
+  the film's frame); standalone use is the declared creative degenerate. Applied in
+  scene-linear before the prefeed — the reliable tail and HDR budget meter through the
+  glass, exactly as film would. No strength slider: glass has no half-installed state.
+- **Spectral separation** (prefeed): the stock is fed to the existing prefeed
+  calibrator as "another camera" — datasheet layer sensitivities are its SSF; material
+  windows, neutral-axis preservation, confidence weighting and von Kries window
+  transport all carry over.
+- **Development curve + viewing translation** (layer 2): the datasheet characteristic
+  curve (negative + paired display medium end to end) solved by least squares into a
+  named AgX coordinate; whole-roll consistency (scene adaptation off while active),
+  the EV0 -> 0.18 anchor by construction, and the medium's floor (paper/slide Dmax,
+  luminance-composed) entering through `target_black_linear`. The translation is
+  **viewing-condition complete**: dark-surround media (slides, the Vision3 -> 2383
+  projection chain) are converted to the average-surround delivery through the classic
+  surround constants (dark 1.5 / dim 1.2 / average 1.0; Bartleson-Breneman, Fairchild
+  2013). The raw "2383 print on a monitor" appearance is the `*_theatrical` quotation
+  variant — the contract separates **translation** from **quotation**, and quotations
+  do not occupy the stock's name.
+- **Per-channel ratio field** (layer 3): the layer-saturation differential solved from
+  the same characteristic curves, `r_c(EV) = T_c / T_neutral` (e.g. highlights drifting
   warm as the blue-sensitive layer saturates first), applied at runtime as
-  `r_c(EV_c)/r_c(EV_Y)`: exactly 1 on the neutral axis by construction (it cannot decay
-  into a hidden white balance), emerging with chroma, no hand-tuned constants.
+  `r_c(EV_c)/r_c(EV_Y)` after hue restore and before the outset: exactly 1 on the
+  neutral axis (exact in real arithmetic, ~1e-7 in float32, pinned by tests), so it
+  cannot decay into a hidden white balance; it emerges with chroma and has no
+  hand-tuned constants. SDR and HDR apply the identical gain at the same choke point;
+  out-of-domain interpolation clamps toward 1 so extended highlights stay neutral —
+  verified live by an Ultra HDR film export passing the archive-tier chroma gate.
+
+### The preset library and its provenance
 
 **Twenty stocks plus five theatrical variants** (the Portra family with pushes, Ektar,
-Gold, Ultramax, Superia X-TRA, C200, Pro 400H, four slide stocks, the Vision3 cine
-family and Verita; the cine chains also ship `*_theatrical` quotation variants — the
-contract's translation-vs-quotation distinction: no surround conversion, the 2383
-print's native high contrast kept verbatim, i.e. the look colorists know from stock
-2383 LUTs) expand from `--film <name>` or one GUI select into those declarations; any
+Gold, Ultramax, Superia X-TRA, C200, Pro 400H, four slide stocks, the Vision3 family
+and Verita) expand from `--film <name>` or one GUI select into those declarations; any
 layer can be overridden individually — **nothing is baked**. Every preset records
 `source`, `fit.rms_stop` and `fit.pinned` (bound-pinned parameters = declared
 out-of-domain extrapolation); profile data is spektrafilm's under CC BY-SA 4.0
-(provenance chain in NOTICE.md and `dngscan_assets/spectral/spektrafilm/README.md`). Because every declaration lives on the
-scene-referred side, film character survives into Ultra HDR delivery — a film body with
-genuinely measured highlight headroom. The fitter's three defects and their diagnosis are
-recorded in the [engineering notes](ENGINEERING_NOTES.zh-CN.md); the design contract
-is [docs/FILM_OBSERVATION_PLAN.zh-CN.md](FILM_OBSERVATION_PLAN.zh-CN.md).
+(provenance chain in NOTICE.md and `dngscan_assets/spectral/spektrafilm/README.md`).
+Current fit levels: negatives rms 0.019-0.067 stop; reversals 0.013-0.022 (all four
+are pin-free interior solutions since the luminance-composed floor fix); theatrical
+quotations 0.059-0.105 (the declared cost of quoting outside design conditions).
+
+### External validation
+
+`tools/crosscheck_2383.py` cross-checks the density-domain composition against an
+independent implementation (DiVERE's Kodak 2383 curve, its curve-domain convention
+verified line-by-line from source). Within the two declared freedoms (printer light,
+contrast scale) the R/G channels converge to rms <= 0.14 stop — the Cineon black
+anchor, the print curve shape and Dmin-relative transmittance are confirmed by an
+independent path. The remaining blue residual (~0.4 stop) plus a wavelength-monotone
+scale ladder form the spectral signature of Status M densitometry differing from
+effective printing density, quantifying that declared simplification (details in the
+contract's external-validation section).
+
+The root difference from other film tools: every declaration lives on the
+scene-referred side, so film character survives into Ultra HDR delivery — a film body
+with genuinely measured highlight headroom. The fitter's defect history and diagnosis
+are recorded in the [engineering notes](ENGINEERING_NOTES.zh-CN.md).
 
 ## Layer 4 — Delivery: SDR and HDR output
 
