@@ -34,7 +34,8 @@ headroom。它不是把 JPEG 内部的 RGB 辅助 gain map 原样抽出来，而
 
 只想把片子转出来，看[快速开始](#快速开始)就够，后面都可以跳过。不想接触任何技术
 细节的话，有一份单独的[使用说明](docs/USER_GUIDE.zh-CN.md)：支持哪些相机、界面上
-每个数字什么意思、导出该选什么。
+每个数字什么意思、导出该选什么。想 review 架构决策与推理过程（遇到过什么问题、
+证据是什么、为什么这样解），看[工程决策记录](docs/ENGINEERING_NOTES.zh-CN.md)。
 
 想知道某个环节为什么这样做，按管线的四层往下读：
 
@@ -256,7 +257,7 @@ flowchart TB
 flowchart TB
     SCENE["存储态 scene-linear Rec.2020 frame"]
     SCALE["解释 scene 单位<br/>stored / scene_scale x 固定锚点 x 2^EV"]
-    PREFEED["可选 scene-linear 相机响应前馈<br/>随 WB 适配；plan 编译时使用同一变换"]
+    PREFEED["可选 scene-linear 前馈<br/>相机响应校正 或 胶片光谱分离（20 款）<br/>随 WB 声明适配；镜前滤镜先于此作用"]
     PLAN["RenderPlan<br/>+ 独立的 Analysis 证据"]
     MASKS["逐像素 CFA mask 与 guidance<br/>仅存在于 LibRaw 几何"]
     LOOKPOLICY["可选本地 look 的 plan override<br/>AgX hue restore 与 target black/white"]

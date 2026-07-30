@@ -40,7 +40,9 @@ below.](#hdr-comparisons)
 To just convert a photo, [Quick start](#quick-start) is enough; the rest is optional.
 There is also a plain-language [user guide](docs/USER_GUIDE.md)
 ([中文版](docs/USER_GUIDE.zh-CN.md)) covering supported cameras, what every on-screen
-number means, and which export to pick.
+number means, and which export to pick. To review the architecture decisions and the
+reasoning behind them — what went wrong, what the evidence was, why each fix took the
+shape it did — see the [engineering notes (Chinese)](docs/ENGINEERING_NOTES.zh-CN.md).
 
 To understand why a stage behaves the way it does, read the four layers in order:
 
@@ -191,7 +193,7 @@ flowchart TB
     subgraph DECODERS["2. Scene pixel formation - independent decoder choice"]
         direction TB
         SELECT{"Scene decoder"}
-        LR["LibRaw<br/>camera or daylight WB<br/>demosaic selection<br/>clip / blend / reconstruct"]
+        LR["LibRaw<br/>declared WB: as-shot or fixed Kelvin<br/>(DNG dual-illuminant solve)<br/>demosaic selection, clip / blend / reconstruct"]
         LRRGB["Oriented linear Rec.2020 uint16<br/>no auto-bright"]
         CIPROBE["CIRAWFilter capability probe<br/>RAW 9 or explicit RAW 8/7 fallback"]
         CI["Neutral Core Image RAW recipe<br/>RAW 9: CoreML reconstruction + denoise<br/>older versions: system decoder<br/>highlight recovery, lens correction, DNG opcodes"]
@@ -281,7 +283,7 @@ the completed SDR pixels as its tone-map input.
 flowchart TB
     SCENE["Stored scene-linear Rec.2020 frame"]
     SCALE["Interpret scene units<br/>stored / scene_scale x fixed anchor x 2^EV"]
-    PREFEED["Optional scene-linear camera-response prefeed<br/>WB-adapted; also used while compiling the plan"]
+    PREFEED["Optional scene-linear prefeed<br/>camera-response correction or film spectral separation (20 stocks)<br/>adapted to the declared WB; lens filters apply before it"]
     PLAN["RenderPlan<br/>+ Analysis as separate evidence"]
     MASKS["Per-pixel CFA masks and guidance<br/>LibRaw geometry only"]
     LOOKPOLICY["Optional local-look plan overrides<br/>AgX hue restore and target black/white"]
