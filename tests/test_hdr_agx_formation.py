@@ -170,6 +170,49 @@ class PlanCompilationTests(unittest.TestCase):
         self.assertIn("白点", text)
         self.assertIn("容量", text)
 
+    def test_low_headroom_compiles_a_subdivided_shoulder_not_no_hdr(self) -> None:
+        """A capped display keeps earned HDR range through a validated monotone chain.
+
+        H_content = min(H_display, H_signal) caps Z_peak while the tail keeps pushing W
+        out, so alpha exceeds the single-segment bound. That request is well-posed, and
+        turning HDR off there would be both the least faithful rendering available and a
+        cliff in an otherwise continuous headroom control.
+        """
+        bundle = load_raw(FRAMES["daylight"], scene_half_size=True)
+        analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
+        plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
+        steep_tone = dataclasses.replace(plan.tone, contrast=4.5)
+        scene = dataclasses.replace(plan.scene, reliable_tail_ev_p9999=8.0)
+        steep = dataclasses.replace(plan, tone=steep_tone, scene=scene)
+        low = compile_hdr_agx_plan(
+            steep, HdrDisplayTarget(peak_nits=280.0), analysis=analysis
+        )
+        self.assertGreater(low.tone.shoulder_alpha, 3.0)
+        self.assertGreater(low.tone.rendered_headroom_ev, 0.0)
+        self.assertEqual(
+            low.tone.rendered_headroom_ev, low.tone.requested_headroom_ev
+        )
+        self.assertGreater(len(low.tone.shoulder_segments), 1)
+        self.assertIn("细分", describe_hdr_plan(low))
+
+        # The chain honours the same structural contract as a single segment: the body
+        # anchor at K is untouched and every join is C1.
+        first = low.tone.shoulder_segments[0]
+        value, slope_t = c1_value_and_derivative_at_ev(
+            low.tone.shoulder_start_ev, low.formation
+        )
+        self.assertEqual(first.z0, math.log2(value / 0.18))
+        self.assertEqual(first.m0, slope_t / (math.log(2.0) * value))
+        self.assertEqual(low.tone.shoulder_segments[-1].m1, 0.0)
+
+        # Continuity of the control: a display one notch brighter still compiles, and the
+        # curve below K is bit-identical between the two (headroom cannot reach the body).
+        high = compile_hdr_agx_plan(
+            steep, HdrDisplayTarget(peak_nits=800.0), analysis=analysis
+        )
+        self.assertGreater(high.tone.rendered_headroom_ev, 0.0)
+        self.assertEqual(low.formation, high.formation)
+
     def test_bigger_display_target_never_moves_scene_white_endpoint(self) -> None:
         bundle = load_raw(FRAMES["daylight"], scene_half_size=True)
         analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
@@ -221,6 +264,90 @@ class PlanCompilationTests(unittest.TestCase):
         changed_hdr = compile_hdr_agx_plan(changed, analysis=analysis)
         self.assertEqual(original_hdr.tone.white_ev, changed_hdr.tone.white_ev)
         self.assertEqual(original_hdr.formation.white_ev, changed_hdr.formation.white_ev)
+
+
+def _coreimage_available() -> bool:
+    try:
+        from dngscan import coreimage_decode
+
+        return coreimage_decode.available()
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(
+    FRAMES["daylight"].is_file() and _coreimage_available(),
+    "sample frames or Core Image decoder unavailable",
+)
+class Raw9HdrCouplingTests(unittest.TestCase):
+    """RAW 9 scene-referred data must couple into the same HDR AgX contract.
+
+    The Core Image decoder is a separate pipeline: warped geometry, no per-pixel CFA
+    masks, aggregate-only RAW evidence. These gates pin the couplings that keep its HDR
+    output honest — capped chroma freedom, rank-trimmed reliable tail, mask-free
+    formation — against the LibRaw path on the same frame.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.pairs = {}
+        for decoder in ("libraw", "coreimage"):
+            bundle = load_raw(
+                FRAMES["daylight"], scene_half_size=True, decoder=decoder
+            )
+            analysis, _, _ = analyze(bundle, margin=4, diagnostics=False)
+            plan = build_render_plan(bundle, analysis, RENDER_MODE, "p3")
+            hdr_plan = compile_hdr_agx_plan(
+                plan, analysis=analysis, scene_decoder=bundle.scene_decoder
+            )
+            cls.pairs[decoder] = (bundle, analysis, plan, hdr_plan)
+
+    def test_masks_are_dropped_not_faked(self) -> None:
+        bundle, _, _, _ = self.pairs["coreimage"]
+        self.assertEqual(bundle.scene_decoder, "coreimage")
+        self.assertIsNone(bundle.clip_masks)
+
+    def test_chroma_freedom_is_capped_without_aligned_evidence(self) -> None:
+        from dngscan.hdr_agx_plan import (
+            UNALIGNED_DECODER_RHO_CAP,
+            compile_channel_separation,
+        )
+
+        _, analysis, _, hdr_plan = self.pairs["coreimage"]
+        rho = compile_channel_separation(analysis, "coreimage")
+        self.assertLessEqual(rho, UNALIGNED_DECODER_RHO_CAP + 1e-9)
+        self.assertLessEqual(
+            hdr_plan.color.channel_separation, UNALIGNED_DECODER_RHO_CAP + 1e-9
+        )
+        # The same frame under LibRaw earns more freedom, proving the cap binds here
+        # rather than the scene being colour-poor.
+        libraw_rho = compile_channel_separation(
+            self.pairs["libraw"][1], "libraw"
+        )
+        self.assertGreater(libraw_rho, rho)
+
+    def test_reliable_tail_agrees_with_libraw_within_policy_margin(self) -> None:
+        """Rank-trimmed RAW9 tail must track the CFA-masked LibRaw measurement.
+
+        The two decoders measure the same scene through different highlight machinery;
+        if the rank-domain constraint works, their reliable tails differ by decode
+        variance, not by reconstruction fabricating a brighter white endpoint. 0.3 EV is
+        both looser than measured (0.09 EV) and tighter than the smallest policy step.
+        """
+        libraw_tail = self.pairs["libraw"][3].tone.reliable_tail_ev
+        raw9_tail = self.pairs["coreimage"][3].tone.reliable_tail_ev
+        self.assertTrue(math.isfinite(libraw_tail) and math.isfinite(raw9_tail))
+        self.assertLess(abs(raw9_tail - libraw_tail), 0.3)
+
+    def test_mask_free_hdr_formation_renders_in_volume(self) -> None:
+        bundle, _, plan, hdr_plan = self.pairs["coreimage"]
+        self.assertGreater(hdr_plan.tone.rendered_headroom_ev, 0.0)
+        rendered = scene_render_to_hdr_display_linear(bundle, plan, hdr_plan, "p3")
+        self.assertTrue(bool(np.all(np.isfinite(rendered))))
+        self.assertGreaterEqual(float(np.min(rendered)), 0.0)
+        self.assertLessEqual(
+            float(np.max(rendered)), float(hdr_plan.tone.peak_linear) + 1e-5
+        )
 
 
 if __name__ == "__main__":
