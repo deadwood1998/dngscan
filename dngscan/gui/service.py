@@ -567,6 +567,43 @@ def run_preview(params: dict) -> dict:
     )
 
 
+def _finite_or_none(value: object) -> float | None:
+    """JSON-safe float: json.dumps emits bare NaN, which JSON.parse rejects."""
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def detected_scene_params(bundle: dg.RawBundle, analysis: dg.Analysis) -> dict:
+    """Measured scene facts that inform the user's later adjustments.
+
+    Compiled from the same plan machinery the render will use, at the proxy decode's
+    resolution. These are the numbers the pipeline itself consults — the reliable tail
+    that budgets HDR, the clipping share that withdraws chroma freedom, the compiled
+    curve endpoints — surfaced before any slider is touched.
+    """
+    plan = dg.build_render_plan(bundle, analysis, RENDER_MODE, "p3")
+    scene = plan.scene
+    tone = plan.tone
+    reliable_tail = _finite_or_none(getattr(scene, "reliable_tail_ev_p9999", None))
+    earned = None
+    if reliable_tail is not None:
+        earned = max(0.0, reliable_tail - float(dg.OUTPUT_REFERENCE_WHITE_STOPS))
+    return {
+        "raw_clip_union_pct": _finite_or_none(analysis.cell_union_pct),
+        "reliable_tail_ev": reliable_tail,
+        "tail_ev": _finite_or_none(getattr(scene, "tail_ev_p9999", None)),
+        "body_median_ev": _finite_or_none(getattr(scene, "body_ev_p50", None)),
+        "sparse_emitter": bool(getattr(scene, "sparse_emitter_tail", False)),
+        "black_ev": _finite_or_none(tone.black_ev),
+        "white_ev": _finite_or_none(tone.white_ev),
+        "contrast": _finite_or_none(tone.contrast),
+        "hdr_earned_ev": earned,
+    }
+
+
 def prepare_preview(params: dict) -> dict:
     """Warm a proxy session after file selection without rendering an image."""
     inp, highlight, _, _, _, _, _, _, _, _ = parse_job_params(params)
@@ -583,6 +620,12 @@ def prepare_preview(params: dict) -> dict:
             inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
         )
     height, width = entry.bundle.scene_rec2020_render.shape[:2]
+    try:
+        detected = detected_scene_params(entry.bundle, entry.analysis)
+    except Exception:
+        # Detection is guidance, not a gate: a plan-compile failure here must not
+        # block the preview session it decorates.
+        detected = None
     return {
         "ok": True,
         "prepared": True,
@@ -590,6 +633,7 @@ def prepare_preview(params: dict) -> dict:
         "height": int(height),
         "decoder": str(getattr(entry.bundle, "scene_decoder", decoder) or decoder),
         "decoder_version": getattr(entry.bundle, "scene_decoder_version", None),
+        "detected": detected,
     }
 
 

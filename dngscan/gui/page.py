@@ -96,6 +96,61 @@ button.preview:disabled{opacity:.5;cursor:default}
 <div class="controlPanel">
 
 <div class="card">
+  <div class="secTitle">RAW 解码</div>
+  <div class="row">
+    <div style="flex:1;min-width:170px" id="decoderBlock">
+      <label>解码器</label>
+      <select id="decoder" title="scene-linear RGB 来源；CFA 统计始终由 LibRaw 读取。">
+        <option value="libraw">LibRaw · 默认</option>
+        <option value="coreimage">Apple RAW · 9 优先</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
+      <label>CI 版本</label>
+      <select id="coreimageVersion" title="auto 选择文件支持的最高版本；显式版本在不支持时会报错。">
+        <option value="auto">自动</option>
+        <option value="9">9</option>
+        <option value="8">8</option>
+        <option value="7">7</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:170px">
+      <label>去马赛克</label>
+      <select id="demosaic" title="仅 LibRaw；RAW 9 使用 Apple 的 CoreML 去马赛克与降噪模型。">
+        <option value="auto">自动 · DHT</option>
+        <option value="dht">DHT</option>
+        <option value="dcb">DCB</option>
+        <option value="ahd">AHD</option>
+        <option value="aahd">AAHD</option>
+        <option value="vng">VNG</option>
+        <option value="ppg">PPG</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:150px">
+      <label>白平衡</label>
+      <select id="wb" title="使用拍摄值，或统一到相机日光基准。">
+        <option value="camera">拍摄值 · As Shot</option>
+        <option value="daylight">日光基准</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:160px">
+      <label>高光</label>
+      <select id="highlight" title="LibRaw 的高光恢复方式；RAW 9 固定使用 Apple 重建。">
+        <option value="clip">保持剪切 · 原始</option>
+        <option value="blend">通道混合 · 温和</option>
+        <option value="reconstruct">邻域重建 · 完整</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="secTitle">检测参数</div>
+  <dl class="reportGrid" id="detectedParams"><dt class="muted">选择文件后显示</dt><dd></dd></dl>
+  <div class="muted" style="margin-top:6px">来自渲染将实际使用的同一套场景分析（预览分辨率）；调整曝光与明暗前先看这里。</div>
+</div>
+
+<div class="card">
   <div class="secTitle">曝光</div>
   <div class="row">
     <div class="evMain">
@@ -177,18 +232,6 @@ button.preview:disabled{opacity:.5;cursor:default}
 <div class="card">
   <div class="secTitle">颜色</div>
   <div class="row">
-    <div style="flex:2;min-width:210px">
-      <label>前馈校正</label>
-      <select id="sceneTransform" title="在 AgX 前校正相机的 scene-linear 色彩响应。">
-SCENE_TRANSFORM_OPTIONS
-      </select>
-    </div>
-    <div id="sceneTransformStrengthBlock" class="sliderField" style="display:none">
-      <div class="labelRow"><label>前馈强度</label><span class="val" id="sceneTransformStrengthVal">1.00</span></div>
-      <input type="range" id="sceneTransformStrength" min="0" max="3" step="0.05" value="1" title="1 为校准强度；更高数值用于比较。">
-    </div>
-  </div>
-  <div class="row" style="margin-top:12px">
     <div id="punchBlock" class="sliderField">
       <div class="labelRow"><label>中频纯度</label><span class="val" id="punchVal">1.00</span></div>
       <input type="range" id="punch" min="0" max="1.5" step="0.05" value="1" title="1 使用场景分析值；0 关闭。">
@@ -196,71 +239,6 @@ SCENE_TRANSFORM_OPTIONS
     <div id="highlightFadeBlock" class="sliderField">
       <div class="labelRow"><label title="只调整接近显示白的色度，不改变亮度 shoulder。">高光褪白</label><span class="val" id="highlightFadeVal">自动</span></div>
       <input type="range" id="highlightFade" min="-1" max="1" step="0.05" value="0" title="向左保留更多颜色，向右更早褪向白色。">
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="secTitle">风格</div>
-  <div class="row">
-    <div style="flex:2;min-width:210px">
-      <label>色彩风格</label>
-      <select id="grade" title="曲线后的可选色彩处理。">
-GRADE_OPTIONS
-      </select>
-    </div>
-    <div id="gradeStrengthBlock" class="sliderField" style="display:none">
-      <div class="labelRow"><label>风格强度</label><span class="val" id="gradeStrengthVal">1.00</span></div>
-      <input type="range" id="gradeStrength" min="0" max="1.5" step="0.05" value="1">
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="secTitle">RAW</div>
-  <div class="row">
-    <div style="flex:1;min-width:160px">
-      <label>高光</label>
-      <select id="highlight" title="LibRaw 的高光恢复方式；RAW 9 固定使用 Apple 重建。">
-        <option value="clip">保持剪切 · 原始</option>
-        <option value="blend">通道混合 · 温和</option>
-        <option value="reconstruct">邻域重建 · 完整</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:150px">
-      <label>白平衡</label>
-      <select id="wb" title="使用拍摄值，或统一到相机日光基准。">
-        <option value="camera">拍摄值 · As Shot</option>
-        <option value="daylight">日光基准</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:170px">
-      <label>去马赛克</label>
-      <select id="demosaic" title="仅 LibRaw；RAW 9 使用 Apple 的 CoreML 去马赛克与降噪模型。">
-        <option value="auto">自动 · DHT</option>
-        <option value="dht">DHT</option>
-        <option value="dcb">DCB</option>
-        <option value="ahd">AHD</option>
-        <option value="aahd">AAHD</option>
-        <option value="vng">VNG</option>
-        <option value="ppg">PPG</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:170px" id="decoderBlock">
-      <label>解码器</label>
-      <select id="decoder" title="scene-linear RGB 来源；CFA 统计始终由 LibRaw 读取。">
-        <option value="libraw">LibRaw · 默认</option>
-        <option value="coreimage">Apple RAW · 9 优先</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
-      <label>CI 版本</label>
-      <select id="coreimageVersion" title="auto 选择文件支持的最高版本；显式版本在不支持时会报错。">
-        <option value="auto">自动</option>
-        <option value="9">9</option>
-        <option value="8">8</option>
-        <option value="7">7</option>
-      </select>
     </div>
   </div>
 </div>
@@ -320,6 +298,38 @@ GRADE_OPTIONS
   </div>
   <div class="chk" style="margin-top:12px">
     <input type="checkbox" id="png"><label for="png" style="margin:0">附带分析图</label>
+  </div>
+</div>
+
+<div class="card">
+  <div class="secTitle">前馈校正 · 实验</div>
+  <div class="row">
+    <div style="flex:2;min-width:210px">
+      <label>前馈校正</label>
+      <select id="sceneTransform" title="在 AgX 前校正相机的 scene-linear 色彩响应。">
+SCENE_TRANSFORM_OPTIONS
+      </select>
+    </div>
+    <div id="sceneTransformStrengthBlock" class="sliderField" style="display:none">
+      <div class="labelRow"><label>前馈强度</label><span class="val" id="sceneTransformStrengthVal">1.00</span></div>
+      <input type="range" id="sceneTransformStrength" min="0" max="3" step="0.05" value="1" title="1 为校准强度；更高数值用于比较。">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="secTitle">风格 · LUT</div>
+  <div class="row">
+    <div style="flex:2;min-width:210px">
+      <label>色彩风格</label>
+      <select id="grade" title="曲线后的可选色彩处理。">
+GRADE_OPTIONS
+      </select>
+    </div>
+    <div id="gradeStrengthBlock" class="sliderField" style="display:none">
+      <div class="labelRow"><label>风格强度</label><span class="val" id="gradeStrengthVal">1.00</span></div>
+      <input type="range" id="gradeStrength" min="0" max="1.5" step="0.05" value="1">
+    </div>
   </div>
 </div>
 
@@ -601,6 +611,7 @@ $("#punch").oninput=()=>{setPunchLabel();saveSettings();};
 $("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();};
 restoreSettings();
 checkHdrBackend();
+if($("#input").value.trim())preparePreview();
 document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();});
 let lastSavedPath="";
 
@@ -670,7 +681,7 @@ async function ensureRaw9Support(body){
   }
   if(!j.ok){setStatus("RAW 9 探测失败："+(j.error||"未知错误"),"err");return false;}
   const switchToLibRaw=(message)=>{
-    window.alert(message+"\n\n将改用 LibRaw。");
+    window.alert(message+"\\n\\n将改用 LibRaw。");
     $("#decoder").value="libraw";updateDecoderUi();saveSettings();
     body.decoder="libraw";body.coreimageVersion="auto";
     setStatus(message+" 已改用 LibRaw。","warn");
@@ -692,7 +703,7 @@ async function ensureRaw9Support(body){
   const approved=RAW9_APPROVALS.get(key);
   if(approved===j.fallback_version){body.coreimageVersion=approved;return true;}
   const useFallback=window.confirm(
-    j.message+"\n\n确定：继续使用 Apple RAW "+j.fallback_version+"\n取消：改用 LibRaw"
+    j.message+"\\n\\n确定：继续使用 Apple RAW "+j.fallback_version+"\\n取消：改用 LibRaw"
   );
   if(useFallback){
     RAW9_APPROVALS.set(key,j.fallback_version);
@@ -705,10 +716,28 @@ async function ensureRaw9Support(body){
   }
   return true;
 }
+function renderDetectedParams(d){
+  const box=$("#detectedParams");
+  if(!d||typeof d!=="object"){box.innerHTML='<dt class="muted">该文件暂无检测结果</dt><dd></dd>';return;}
+  const rows=[];
+  const add=(k,v)=>{if(v!==undefined&&v!==null&&v!=="")rows.push("<dt>"+k+"</dt><dd>"+v+"</dd>");};
+  const ev=v=>(v>=0?"+":"")+(+v).toFixed(2)+" EV";
+  if(d.raw_clip_union_pct!==null)add("RAW 剪切",(+d.raw_clip_union_pct).toFixed(2)+"%（≥1 通道）");
+  if(d.reliable_tail_ev!==null)add("可靠高光尾部",ev(d.reliable_tail_ev)+"（p99.99，剪切样本已剔除）");
+  else add("可靠高光尾部","不可用 · HDR 余量将为 0");
+  if(d.hdr_earned_ev!==null)add("HDR 可挣余量","+"+(+d.hdr_earned_ev).toFixed(2)+" EV（超出参考白的部分）");
+  if(d.body_median_ev!==null)add("主体中位",ev(d.body_median_ev));
+  add("场景类型",d.sparse_emitter?"稀疏光源（夜景/舞台策略）":"普通");
+  if(d.black_ev!==null&&d.white_ev!==null)add("编译曲线",ev(d.black_ev)+" .. "+ev(d.white_ev)+(d.contrast!==null?" · 对比 "+(+d.contrast).toFixed(2):""));
+  box.innerHTML=rows.join("")||'<dt class="muted">该文件暂无检测结果</dt><dd></dd>';
+}
 async function preparePreview(){
   const body=payload();if(!body)return;
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
-  try{await postJob("/prepare",body);}catch(_){/* Preview remains available on demand. */}
+  try{
+    const j=await postJob("/prepare",body);
+    if(j&&j.ok)renderDetectedParams(j.detected);
+  }catch(_){/* Preview remains available on demand. */}
 }
 function beginBusy(){const w=$("#previewWrap");w.classList.add("loading");}
 function endBusy(){const w=$("#previewWrap");w.classList.remove("loading");}
@@ -752,7 +781,9 @@ function handleJobResult(j, prefix){
   if(!j.ok)return false;
   applyJobEv(j);
   renderDeliveryReport(j);
-  setStatus(prefix+"：EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+decoderText(j)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j),"ok");
+  // Scene facts live in the detection card and export truth in the delivery report;
+  // a successful preview needs no small print. Auto-EV keeps its one-line feedback.
+  setStatus(j.ev_auto?prefix+"：EV "+fmtEv(j.ev)+fullFrameReferenceText(j):"","ok");
   setPreviewImage(j.preview);
   return true;
 }
@@ -760,6 +791,9 @@ function handleJobResult(j, prefix){
 $("#previewBtn").onclick=async()=>{
   const body=payload();if(!body)return;
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
+  // Keep the detection card in step even when the path was pasted without a change
+  // event; the proxy session is already warm so this costs one cached lookup.
+  if($("#detectedParams").innerText.indexOf("EV")<0)preparePreview();
   $("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在生成预览…","");
   try{
     const j=await postJob("/preview",body);
