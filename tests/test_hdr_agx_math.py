@@ -210,8 +210,13 @@ class BodyInvarianceTests(unittest.TestCase):
 
 
 class SingleSegmentFeasibilityTests(unittest.TestCase):
-    def test_steep_authoritative_request_fails_closed(self) -> None:
-        """An unproved tone shape must disable HDR, not silently select another curve."""
+    def test_steep_request_without_opt_in_compiles_nothing(self) -> None:
+        """Without the subdivision opt-in a steep request yields no shoulder at all.
+
+        The math layer never silently selects another curve family; callers state the
+        contract they want. The authoritative plan compiler passes allow_subdivision=True
+        and receives a validated monotone chain instead (covered below and at plan level).
+        """
         knee = 0.0
         _, knee_stops, knee_slope = body_anchor_at_ev(knee, CONTRAST)
         white = knee + 1.0
@@ -222,8 +227,8 @@ class SingleSegmentFeasibilityTests(unittest.TestCase):
             compile_hdr_shoulder(knee, white, peak_stops, CONTRAST), ()
         )
 
-    def test_auxiliary_chroma_subdivision_requires_explicit_opt_in(self) -> None:
-        """The reference-white colour candidate may subdivide but never by default."""
+    def test_subdivision_requires_explicit_opt_in(self) -> None:
+        """Subdivided compiles keep the full structural contract when opted into."""
         knee = 0.0
         _, knee_stops, knee_slope = body_anchor_at_ev(knee, CONTRAST)
         white = knee + 1.0
@@ -306,6 +311,59 @@ class SingleSegmentFeasibilityTests(unittest.TestCase):
                 self.assertAlmostEqual(
                     max(worst_by_contrast.values()), expected_full_domain, places=9
                 )
+
+    def test_display_headroom_axis_always_compiles_a_valid_shoulder(self) -> None:
+        """Every well-posed (contrast, tail, headroom) request compiles and validates.
+
+        The scan above fixes display headroom at 3.0 EV, which is where the original
+        "alpha < 3 over the whole policy domain" claim came from -- and that claim is
+        false once the headroom control drops: H_content = min(H_display, H_signal), so a
+        low-headroom display caps Z_peak while the tail keeps pushing W out, and alpha
+        grows without bound. The contract is therefore not "single segment everywhere"
+        but "a validated monotone C1 shoulder everywhere": single where alpha <= 3,
+        subdivided beyond it, never absent for a well-posed request.
+        """
+        policies = (
+            ("normal", NORMAL_SHOULDER_START_EV, NORMAL_WHITE_MARGIN_EV,
+             NORMAL_MINIMUM_WHITE_EV),
+            ("sparse", SPARSE_EMITTER_SHOULDER_START_EV, SPARSE_EMITTER_WHITE_MARGIN_EV,
+             SPARSE_EMITTER_MINIMUM_WHITE_EV),
+        )
+        saw_subdivided = False
+        for label, knee, margin, minimum_white in policies:
+            for contrast in (1.5, 3.0, 4.5):
+                _, knee_stops, knee_slope = body_anchor_at_ev(knee, contrast)
+                for headroom_tenths in range(5, 54, 4):
+                    headroom = headroom_tenths / 10.0
+                    for tail_tenths in range(25, 121, 5):
+                        tail = tail_tenths / 10.0
+                        requested = requested_headroom_ev(tail, headroom)
+                        if requested <= 0.0:
+                            continue
+                        white = min(
+                            max(tail + margin, minimum_white), MAXIMUM_WHITE_EV
+                        )
+                        peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + requested
+                        alpha = knee_slope * (white - knee) / (peak_stops - knee_stops)
+                        segments = compile_hdr_shoulder(
+                            knee, white, peak_stops, contrast, allow_subdivision=True
+                        )
+                        with self.subTest(
+                            policy=label, contrast=contrast,
+                            headroom=headroom, tail=tail,
+                        ):
+                            ok, reason = validate_hdr_shoulder(
+                                segments, knee_slope, peak_stops
+                            )
+                            self.assertTrue(ok, msg=reason)
+                            if alpha <= MAX_SINGLE_SEGMENT_ALPHA:
+                                # Subdivision must never be gratuitous.
+                                self.assertEqual(len(segments), 1)
+                            else:
+                                self.assertGreater(len(segments), 1)
+                                saw_subdivided = True
+        # The sweep must actually exercise the low-headroom subdivided region.
+        self.assertTrue(saw_subdivided)
 
 
 class DegenerateRequestTests(unittest.TestCase):

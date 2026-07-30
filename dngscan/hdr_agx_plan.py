@@ -175,8 +175,14 @@ def compile_hdr_agx_plan(
     peak_stops = OUTPUT_REFERENCE_WHITE_STOPS + requested
     # Anchor on the body that will actually render. K lands at or just past the darktable
     # curve's own shoulder transition on real plans, so the central-line closed form would
-    # make the C1 join approximate rather than exact. The authoritative plan deliberately
-    # leaves subdivision disabled: the coupled W/H policy proves alpha < 3 over its domain.
+    # make the C1 join approximate rather than exact. Subdivision is enabled for the
+    # authoritative plan: display headroom caps Z_peak independently of the tail-driven W
+    # (H_content = min(H_display, H_signal)), so a low-headroom display with a long
+    # reliable tail legitimately pushes alpha past the single-segment bound. That request
+    # is not malformed -- it is an ordinary, strongly compressive shoulder -- and the
+    # subdivided chain passes the same structural contract (C1 joins, pinned K tangent,
+    # zero white tangent, per-piece monotonicity). Disabling HDR there would be the least
+    # faithful choice on offer and a discontinuity in an otherwise continuous control.
     from .drt import c1_value_and_derivative_at_ev
 
     def _body_anchor(ev: float) -> tuple[float, float]:
@@ -189,11 +195,12 @@ def compile_hdr_agx_plan(
             peak_stops,
             contrast,
             evaluate_body_with_derivative=_body_anchor,
+            allow_subdivision=True,
         )
         if requested > 0.0
         else ()
     )
-    _, _, knee_slope = body_anchor_from_curve(_body_anchor, knee)
+    _, knee_stops, knee_slope = body_anchor_from_curve(_body_anchor, knee)
     rendered = requested
     if segments:
         ok, reason = validate_hdr_shoulder(segments, knee_slope, peak_stops)
@@ -204,6 +211,17 @@ def compile_hdr_agx_plan(
             segments, rendered = (), 0.0
     else:
         rendered = 0.0
+
+    # Diagnostic: the request's own normalized start tangent, before any subdivision.
+    # Above 3 it records that the single-segment family could not span this geometry and
+    # the compiled chain is the subdivided one; the compiler never re-reads it.
+    span_e = white - knee
+    span_z = peak_stops - knee_stops
+    request_alpha = (
+        knee_slope * span_e / span_z
+        if requested > 0.0 and span_e > 0.0 and span_z > 1e-12 and math.isfinite(knee_slope)
+        else float("nan")
+    )
 
     tone = HdrToneCurve(
         black_ev=float(formation.black_ev),
@@ -220,7 +238,7 @@ def compile_hdr_agx_plan(
         reliable_tail_ev=tail,
         white_margin_ev=float(white_margin),
         shoulder_segments=tuple(segments),
-        shoulder_alpha=float(segments[0].alpha) if segments else float("nan"),
+        shoulder_alpha=request_alpha,
     )
     # Compiled from RAW evidence when it is available. Without an Analysis there is no
     # evidence to justify per-channel freedom, so the answer is none rather than a guess:
@@ -263,10 +281,12 @@ def describe_hdr_plan(plan: HdrAgxPlan) -> str:
         if tone.rendered_headroom_ev + 1e-4 < tone.requested_headroom_ev
         else ""
     )
+    count = len(tone.shoulder_segments)
+    shape = "单段 shoulder" if count <= 1 else f"细分 shoulder（{count} 段）"
     return (
         f"HDR: 原生 AgX 白点 +{tone.rendered_headroom_ev:.2f}EV / "
         f"容量 +{tone.display_headroom_ev:.2f}EV{reduced}；"
         f"K {tone.shoulder_start_ev:+.2f}EV / W {tone.white_ev:+.2f}EV，"
-        f"alpha {tone.shoulder_alpha:.3f}，单段 shoulder，"
+        f"alpha {tone.shoulder_alpha:.3f}，{shape}，"
         f"可靠尾部 {tone.reliable_tail_ev:+.2f}EV"
     )

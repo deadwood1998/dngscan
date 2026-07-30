@@ -24,9 +24,15 @@ reduction of dz/de toward zero.
 
 Monotonicity is decided by a stated condition rather than inspection: with the white
 tangent pinned at zero, a single cubic Hermite is monotone exactly when the normalized
-start tangent alpha lies in [0, 3]. The authoritative HDR tone compiler accepts only that
-single segment and fails closed outside it. Subdivision is an explicit opt-in reserved for
-the reference-white chroma candidate, which never owns output luminance.
+start tangent alpha lies in [0, 3]. Alpha above 3 does not mean the request is malformed:
+display headroom caps Z_peak independently of the tail-driven W, so a low-headroom
+display with a long reliable tail legitimately asks for a shoulder more compressive than
+one cubic can carry. There the compiler subdivides into a monotone Hermite chain that
+keeps the same structural contract -- the K tangent, the zero white tangent and C1 joins
+between pieces -- so behaviour stays continuous in the headroom control instead of
+snapping to "no HDR". Fail-closed remains for genuinely degenerate input (empty window,
+non-positive rise, non-finite anchors). Subdivision stays an explicit opt-in argument so
+auxiliary callers state which contract they want.
 
 Float64 and image-free: this is the oracle the float32 runtime is checked against.
 """
@@ -47,9 +53,10 @@ from .models import HdrShoulderSegment
 # Fritsch-Carlson monotonicity region evaluated at beta = 0.
 MAX_SINGLE_SEGMENT_ALPHA = 3.0
 
-# Auxiliary chroma-path subdivision ceiling. Authoritative tone plans never use it.
-# Each split roughly halves alpha, so the reachable range grows exponentially; a candidate
-# needing more than this is malformed rather than demanding.
+# Subdivision ceiling for monotone Hermite chains (authoritative low-headroom shoulders
+# and the reference-white chroma candidate alike). Each split roughly halves alpha, so the
+# reachable range grows exponentially; a request needing more than this is malformed
+# rather than demanding.
 MAX_SHOULDER_SEGMENTS = 16
 
 _EPS = 1e-12
@@ -182,13 +189,15 @@ def adaptive_monotone_segments(
     peak_stops: float,
     knee_slope: float,
 ) -> tuple[HdrShoulderSegment, ...]:
-    """Build an auxiliary monotone chain while holding both end tangents fixed.
+    """Build a monotone Hermite chain while holding both end tangents fixed.
 
-    This is not an authoritative tone fallback. It exists for the reference-white chroma
-    candidate, whose endpoint is intentionally decoupled from the scene-derived W/H pair.
-    A general PCHIP limiter would rescale the first tangent and break the C1 body join;
-    subdivision instead adds free interior knots while preserving `knee_slope` and the
-    zero tangent at W. Interior tangents use the Fritsch-Carlson harmonic mean.
+    Used when a single segment cannot span the requested geometry: the authoritative
+    curve on low-headroom displays (Z_peak capped while the tail pushes W out), and the
+    reference-white chroma candidate, whose endpoint is intentionally decoupled from the
+    scene-derived W/H pair. A general PCHIP limiter would rescale the first tangent and
+    break the C1 body join; subdivision instead adds free interior knots while preserving
+    `knee_slope` and the zero tangent at W. Interior tangents use the Fritsch-Carlson
+    harmonic mean.
     """
     span_e = float(white_ev) - float(knee_ev)
     span_z = float(peak_stops) - float(knee_stops)
@@ -245,9 +254,9 @@ def compile_hdr_shoulder_from_anchor(
     """Same solve, but with the knee anchor supplied rather than derived.
 
     Lets a second endpoint reuse one compiled anchor, so two candidate curves provably
-    leave the body at the same value and slope and differ only above K. Authoritative tone
-    compilation keeps `allow_subdivision=False`; only the luminance-neutral auxiliary
-    chroma candidate opts in.
+    leave the body at the same value and slope and differ only above K. Subdivision is an
+    explicit argument so each caller states which contract it wants; the chain keeps the
+    supplied knee tangent and the zero white tangent either way.
     """
     span_e = float(white_ev) - float(knee_ev)
     span_z = float(peak_stops) - float(knee_stops)
@@ -285,11 +294,13 @@ def compile_hdr_shoulder(
     latitude segment. Production always passes an actual value plus analytic derivative,
     because on real plans K lands at or just past the body's own shoulder transition.
 
-    The authoritative compiler accepts one monotone segment only. Its scene-derived W and
-    H are coupled, and the complete production policy stays below alpha=3. If a retune
-    violates that proof, the default returns an empty tuple and the caller disables HDR;
-    it does not silently enter an unvalidated tone shape. `allow_subdivision` is reserved
-    for the reference-white chroma candidate and must be explicit.
+    A single monotone segment is preferred and is always used when alpha <= 3. W couples
+    to the tail, but Z_peak is additionally capped by display headroom, so low-headroom
+    requests can exceed the single-segment bound while remaining well-posed; with
+    `allow_subdivision=True` (the authoritative plan compiler's setting) those compile to
+    a monotone Hermite chain under the same structural contract. With subdivision off the
+    result is an empty tuple, which callers must treat as "no shoulder", never as licence
+    to enter an unvalidated shape.
     """
     if evaluate_body_with_derivative is not None:
         _, knee_stops, knee_slope = body_anchor_from_curve(
