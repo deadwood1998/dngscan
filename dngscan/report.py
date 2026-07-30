@@ -99,8 +99,27 @@ def health_line_cn(analysis: Analysis) -> str:
     )
 
 
+def describe_wb_mode(wb_mode: str) -> str:
+    """Honest WB label for reports: the declared reference, not a stale binary.
+
+    The daylight/camera binary predates the fixed-Kelvin modes; letting 5500k print
+    as "相机白平衡" mislabelled a declared standard as AsShot — the report-side twin
+    of a hidden white balance.
+    """
+    from .wb import KELVIN_WB_MODES
+
+    if wb_mode == "daylight":
+        return "日光固定配平"
+    entry = KELVIN_WB_MODES.get(str(wb_mode))
+    if entry is not None:
+        return f"固定 {entry[0]:.0f}K 白平衡（{entry[1]}）"
+    return "相机白平衡"
+
+
 def wb_line_cn(bundle: RawBundle) -> str:
-    mode = "日光固定配平" if bundle.wb_mode == "daylight" else "相机 AsShot"
+    mode = (
+        "相机 AsShot" if bundle.wb_mode == "camera" else describe_wb_mode(bundle.wb_mode)
+    )
     line = f"白平衡: {mode}"
     cam = bundle.camera_wb
     day = bundle.daylight_wb
@@ -210,7 +229,7 @@ def print_report(
             if jpeg_mode in ("agx", "gated")
             else jpeg_mode
         )
-        wb_label = "日光固定配平" if bundle.wb_mode == "daylight" else "相机白平衡"
+        wb_label = describe_wb_mode(bundle.wb_mode)
         decoder = getattr(bundle, "scene_decoder", "libraw") or "libraw"
         decoder_version = getattr(bundle, "scene_decoder_version", None)
         decoder_runtime = getattr(bundle, "scene_decoder_runtime", None)
@@ -293,7 +312,7 @@ def print_report(
                 f"全图亮度参考：提升 {auto_ev.ev_boost:+.2f} EV（相对 EV 0）"
                 f"{limit_note}；应用 EV={auto_ev.ev:+.2f}"
             )
-        print(f"JPEG 策略: {jpeg_policy_cn(reported_mode, output_gamut)}")
+        print(f"JPEG 策略: {jpeg_policy_cn(reported_mode, output_gamut, getattr(tone_plan, 'curve_preset', 'none'))}")
         plan_line = jpeg_tone_plan_cn(
             bundle,
             analysis,
@@ -307,10 +326,21 @@ def print_report(
             print(f"JPEG 自动计划: {plan_line}")
 
 
-def jpeg_policy_cn(mode: str, output_gamut: str = "srgb") -> str:
+def jpeg_policy_cn(
+    mode: str, output_gamut: str = "srgb", curve_preset: str = "none"
+) -> str:
     label = output_gamut_label(output_gamut)
     if mode == "agx":
-        return f"agx: scene-linear Rec.2020 工作空间；白平衡按导出选项；无隐式自动增亮；高光重建属于所选解码器；AgX inset→端点归一化 C1→hue restore→outset；可靠 scene Y 只编译黑白范围与 toe/shoulder；逐像素 CFA mask 存在时才驱动曲线前褪白；最后转 {label}；4:4:4 色度采样"
+        # The formation order must be reported as actually executed: a film preset
+        # inserts the measured channel-ratio stage between hue restore and outset.
+        from .film_curve import channel_ratio_field
+
+        ratio_stage = (
+            "→胶片逐通道比率（实测层饱和差异，中性轴恒等）"
+            if channel_ratio_field(str(curve_preset or "")) is not None
+            else ""
+        )
+        return f"agx: scene-linear Rec.2020 工作空间；白平衡按导出选项；无隐式自动增亮；高光重建属于所选解码器；AgX inset→端点归一化 C1→hue restore{ratio_stage}→outset；可靠 scene Y 只编译黑白范围与 toe/shoulder；逐像素 CFA mask 存在时才驱动曲线前褪白；最后转 {label}；4:4:4 色度采样"
     if mode == "lum":
         return f"lum: scene-linear Rec.2020 工作空间；逐像素 CFA mask 存在时驱动曲线前褪白；场景编译 C1 作用于标量亮度/norm，RGB 比例保持；显示白附近再温和褪色；无 AgX inset/outset，最后转 {label} 并做输出色域 fit"
     if mode == "gated":
@@ -471,7 +501,7 @@ def csv_row(
         "jpeg_exposure_gain": bundle.exposure_gain if jpeg_path is not None else "",
         "jpeg_icc_embedded": jpeg_icc_embedded if jpeg_path is not None else "",
         "jpeg_srgb_icc_embedded": jpeg_icc_embedded if jpeg_path is not None and output_gamut == "srgb" else "",
-        "jpeg_policy_cn": jpeg_policy_cn(reported_mode, output_gamut) if jpeg_path is not None else "",
+        "jpeg_policy_cn": jpeg_policy_cn(reported_mode, output_gamut, getattr(tone_plan, "curve_preset", "none")) if jpeg_path is not None else "",
         "jpeg_tone_plan_cn": jpeg_tone_plan_cn(
             bundle,
             analysis,

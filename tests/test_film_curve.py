@@ -26,12 +26,20 @@ from dngscan.hdr_agx_math import (
 SAMPLE = Path.home() / "Pictures" / "_SDI0150.DNG"
 SAMPLE_NIGHT = Path.home() / "Pictures" / "_SDI0199.DNG"
 
-# Calibrated to the measured residual landscape across all twenty stocks (worst
-# negative: Verita 200D rms 0.103 / max 0.32). Reversal S-curves sit at the edge of
-# the AgX family and carry a declared looser multiplier (worst: Velvia rms 0.347).
-RMS_GATE = 0.12
-MAX_GATE = 0.35
-REVERSAL_GATE_FACTOR = 2.5  # post surround-compensation landscape (Velvia rms 0.284)
+# Calibrated to the measured residual landscape across all twenty stocks after the
+# viewing-condition-complete refit AND the luminance-composed floor fix. The floor fix
+# retired the reversal exception entirely: the "structural AgX-vs-slide distance" was
+# an arithmetic-mean floor sitting up to 0.57 stop above the luminance target's own
+# asymptote (Velvia rms 0.284 -> 0.013, all four reversals now pin-free interior
+# solutions). Worst stock today: Ektar 100 rms 0.067 / max 0.164.
+RMS_GATE = 0.10
+MAX_GATE = 0.25
+REVERSAL_GATE_FACTOR = 1.0  # retired 2026-07-30: reversals fit as well as negatives
+# Theatrical quotations carry the dark-surround report verbatim into a curve family
+# shaped for average-surround media — intentionally out-of-condition, and the extra
+# ~1.5x contrast strains the family (worst: Verita theatrical rms 0.102). The looser
+# gate is the declared cost of quotation over translation.
+THEATRICAL_GATE_FACTOR = 1.25
 STORED_RESIDUAL_SLACK = 0.005
 
 CURVE_FIELDS = (
@@ -89,11 +97,17 @@ class ResidualGateTests(unittest.TestCase):
                 r = np.log2(np.maximum(fitted[mask], 1e-4)) - np.log2(target[mask])
                 rms = float(np.sqrt(np.mean(r * r)))
                 worst = float(np.max(np.abs(r)))
-                reversal = "reversal" in str(preset["source"].get("model", ""))
-                # Slides' steep S-curves sit at the edge of the AgX family; their
-                # looser (still recorded) residuals are declared, not hidden.
-                rms_gate = RMS_GATE * (REVERSAL_GATE_FACTOR if reversal else 1.0)
-                max_gate = MAX_GATE * (REVERSAL_GATE_FACTOR if reversal else 1.0)
+                model = str(preset["source"].get("model", ""))
+                # The reversal factor is 1.0 since the luminance-composed floor fix
+                # (slides now fit as well as negatives); the hook stays so a future
+                # regression surfaces as a factor change in review, not a gate edit.
+                factor = 1.0
+                if "reversal" in model:
+                    factor = REVERSAL_GATE_FACTOR
+                elif "theatrical quotation" in model:
+                    factor = THEATRICAL_GATE_FACTOR
+                rms_gate = RMS_GATE * factor
+                max_gate = MAX_GATE * factor
                 self.assertLessEqual(rms, rms_gate)
                 self.assertLessEqual(worst, max_gate)
                 # Regression pinning: drift cannot hide beneath the ceiling.
@@ -116,6 +130,101 @@ class ResidualGateTests(unittest.TestCase):
                 self.assertGreater(floor, 0.0)
                 deep = float(_compiled_curve(preset["params"], np.array([-12.0]))[0])
                 self.assertAlmostEqual(deep, floor, delta=floor * 0.25)
+
+
+class ChannelRatioFieldTests(unittest.TestCase):
+    """Exposure-dependent colour phase 1: the per-channel ratio field's invariants.
+
+    r_c(EV) = T_c / T_neutral along the balanced neutral ramp is the stock's measured
+    layer-saturation differential. Its contract: unity at the EV0 anchor (per-channel
+    balance guarantees it), bounded everywhere (a broken balance or surround term
+    would blow the range), and present for every preset so the phase-2 runtime
+    (out_c = C(EV_c) * r_c(EV_c) / r_c(EV_Y)) can rely on it.
+    """
+
+    def test_every_preset_carries_a_ratio_field(self) -> None:
+        for name, preset in FILM_CURVE_PRESETS.items():
+            with self.subTest(preset=name):
+                rc = preset.get("channel_ratio_curve")
+                self.assertIsNotNone(rc, f"{name} missing channel_ratio_curve")
+                self.assertEqual(len(rc["ev"]), len(rc["ratio_rgb"]))
+                self.assertGreaterEqual(len(rc["ev"]), 64)
+
+    def test_ratio_is_unity_at_the_ev0_anchor(self) -> None:
+        for name, preset in FILM_CURVE_PRESETS.items():
+            with self.subTest(preset=name):
+                rc = preset["channel_ratio_curve"]
+                ev = np.array(rc["ev"], dtype=np.float64)
+                r = np.array(rc["ratio_rgb"], dtype=np.float64)
+                for c in range(3):
+                    r0 = float(np.interp(0.0, ev, r[:, c]))
+                    self.assertLess(abs(r0 - 1.0), 6e-3)
+
+    def test_ratio_field_is_bounded(self) -> None:
+        for name, preset in FILM_CURVE_PRESETS.items():
+            with self.subTest(preset=name):
+                r = np.array(preset["channel_ratio_curve"]["ratio_rgb"])
+                self.assertGreater(float(r.min()), 0.2)
+                self.assertLess(float(r.max()), 5.0)
+
+
+class TheatricalVariantTests(unittest.TestCase):
+    """Quotation presets: every dark-surround print chain carries a *_theatrical twin."""
+
+    CINE_STOCKS = ("verita200d", "vision3200t", "vision3250d", "vision3500t", "vision350d")
+
+    def test_every_cine_chain_has_a_theatrical_twin(self) -> None:
+        for base in self.CINE_STOCKS:
+            with self.subTest(stock=base):
+                t = FILM_CURVE_PRESETS.get(f"{base}_theatrical")
+                self.assertIsNotNone(t, f"{base}_theatrical missing")
+                self.assertIn("theatrical quotation", str(t["source"]["model"]))
+                # The quotation shares the base declaration layers: same WB, same
+                # spectral separation — only the viewing translation differs.
+                self.assertEqual(t["combo"], FILM_CURVE_PRESETS[base]["combo"])
+
+    def test_quotation_is_contrastier_than_translation(self) -> None:
+        """The verbatim dark-surround report must render steeper mid-tones than the
+        translated one — that difference *is* the surround term being real."""
+        for base in self.CINE_STOCKS:
+            with self.subTest(stock=base):
+                ev = np.array([-2.0, 2.0])
+                translated = _compiled_curve(FILM_CURVE_PRESETS[base]["params"], ev)
+                quoted = _compiled_curve(
+                    FILM_CURVE_PRESETS[f"{base}_theatrical"]["params"], ev
+                )
+                span_t = np.log2(translated[1] / max(translated[0], 1e-6))
+                span_q = np.log2(quoted[1] / max(quoted[0], 1e-6))
+                self.assertGreater(float(span_q), float(span_t) + 0.5)
+
+
+class ShadowFloorCodeTests(unittest.TestCase):
+    """Film floors are the digital D-min: deep shadows must never pile at u8 code 0.
+
+    Cineon put black at code 95/1023 so film's shadow grain kept its bilateral
+    distribution instead of clipping single-sided at the bottom of the encoding;
+    LogC4 re-made the same decision with its +64 toe offset. The preset floors serve
+    that function in the u8 delivery — if any floor encoded to sRGB code 0, shadow
+    noise would fold upward and the medium's D-min guard would be silently lost.
+    """
+
+    def test_deep_shadows_encode_above_code_zero(self) -> None:
+        from dngscan.color import srgb_encode
+
+        for name, preset in FILM_CURVE_PRESETS.items():
+            with self.subTest(preset=name):
+                ev = np.linspace(-14.0, -8.0, 25)
+                deep = _compiled_curve(preset["params"], ev)
+                codes = np.round(np.asarray(srgb_encode(deep)) * 255.0)
+                floor = float(preset["params"]["target_black_linear"])
+                floor_code = round(float(srgb_encode(np.float64(floor))) * 255.0)
+                # Every translated floor sits comfortably off zero (lowest today: the
+                # cine chain at linear 0.00586 -> code ~18). Theatrical quotations
+                # keep the projection print's genuinely deep Dmax (2383 at ~code 2):
+                # for them the guard is only that black never collapses to code 0.
+                theatrical = "theatrical quotation" in str(preset["source"]["model"])
+                self.assertGreaterEqual(floor_code, 1 if theatrical else 8)
+                self.assertGreaterEqual(float(codes.min()), floor_code - 1.0)
 
 
 class HdrFeasibilityTests(unittest.TestCase):
@@ -169,6 +278,95 @@ class ApplyPresetTests(unittest.TestCase):
             self.assertEqual(getattr(tone, field), float(p[field]), msg=field)
         self.assertEqual(tone.curve_preset, "portra400")
         self.assertEqual(tone.dynamic_range_ev, tone.white_ev - tone.black_ev)
+
+
+class ChannelRatioRuntimeTests(unittest.TestCase):
+    """Phase 2: the formation applies the measured differential; neutrals untouched.
+
+    Runtime formula: out_c = C(EV_c) * r_c(EV_c) / r_c(EV_Y), applied after hue
+    restore (the medium's report is not a curve-origin swing for the renderer's hue
+    discipline to moderate) and identically on the SDR and HDR dispatchers.
+    """
+
+    def _film_plan(self, name: str = "portra400"):
+        from dngscan.models import ToneCompressionPlan
+
+        base = ToneCompressionPlan(
+            target_gamut="Rec2020",
+            luma_p1=0.01, luma_p50=0.18, luma_p99=1.0, luma_p999=2.0,
+            black_ev=-7.0, white_ev=4.5, dynamic_range_ev=11.5,
+            contrast=3.0, toe_power=1.5, shoulder_power=3.3,
+            chroma_p95=0.0, negative_rgb_pct=0.0, over_rgb_pct=0.0,
+            toe_start_ev=-3.0, shoulder_start_ev=0.2, use_c1_endpoints=True,
+        )
+        return apply_film_curve_preset(base, name)
+
+    def test_gain_is_exactly_unity_on_the_neutral_axis(self) -> None:
+        from dngscan import agx as agx_engine
+
+        plan = self._film_plan()
+        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        weights = agx_engine.formation_luma_row(outset_mtx)
+        neutral = np.repeat(
+            np.geomspace(1e-4, 8.0, 64, dtype=np.float32)[:, None], 3, axis=1
+        )
+        gain = agx_engine.channel_ratio_gain(neutral, plan, weights)
+        self.assertIsNotNone(gain)
+        # EV_c == EV_Y exactly in the real-number construction; in float32 the
+        # luminance dot product rounds by <= 1 ulp, so the gain sits within a few
+        # 1e-7 of unity — invisible against 8/10-bit quantization, and pinned here
+        # so a real regression (a window, a bias) cannot hide behind "close to 1".
+        self.assertLess(float(np.abs(gain - 1.0).max()), 2e-6)
+
+    def test_no_preset_means_no_gain(self) -> None:
+        from dngscan import agx as agx_engine
+        from dataclasses import replace
+
+        plan = replace(self._film_plan(), curve_preset="none")
+        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        weights = agx_engine.formation_luma_row(outset_mtx)
+        rgb = np.array([[0.5, 0.2, 0.1]], dtype=np.float32)
+        self.assertIsNone(agx_engine.channel_ratio_gain(rgb, plan, weights))
+
+    def test_neutral_pixels_render_identically_with_and_without_field(self) -> None:
+        """Full formation: the film gain must be invisible on the neutral axis."""
+        from dataclasses import replace
+
+        from dngscan import agx as agx_engine
+
+        plan = self._film_plan()
+        plain = replace(plan, curve_preset="none")  # identical curve, gain off
+        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        neutral = np.repeat(
+            np.geomspace(1e-3, 4.0, 48, dtype=np.float32)[:, None], 3, axis=1
+        )
+        with_field = agx_engine.apply_core(neutral, plan, inset_mtx, outset_mtx)
+        without = agx_engine.apply_core(neutral, plain, inset_mtx, outset_mtx)
+        np.testing.assert_allclose(with_field, without, rtol=0.0, atol=1e-6)
+
+    def test_chromatic_pixels_receive_the_measured_differential(self) -> None:
+        from dataclasses import replace
+
+        from dngscan import agx as agx_engine
+
+        plan = self._film_plan()
+        plain = replace(plan, curve_preset="none")
+        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        chroma = np.array(
+            [[2.4, 0.9, 0.4], [0.3, 1.1, 2.2], [0.05, 0.5, 0.02]], dtype=np.float32
+        )
+        with_field = agx_engine.apply_core(chroma, plan, inset_mtx, outset_mtx)
+        without = agx_engine.apply_core(chroma, plain, inset_mtx, outset_mtx)
+        rel = np.abs(with_field - without) / np.maximum(np.abs(without), 1e-4)
+        self.assertGreater(float(rel.max()), 1e-3)
+
+    def test_fast_backend_declines_film_ratio_plans(self) -> None:
+        """The native kernel has no channel-ratio stage: it must refuse the plan
+        (falling back to the NumPy formation) rather than silently dropping the
+        measured differential."""
+        from dngscan import _fast as fast_backend
+
+        self.assertFalse(fast_backend.supports_agx(self._film_plan()))
 
 
 class FilmPrefeedPresetTests(unittest.TestCase):

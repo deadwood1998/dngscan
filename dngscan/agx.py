@@ -747,13 +747,74 @@ def apply_formation_curve(inset: Any, plan: Any) -> Any:
     return linear.astype(np.float32, copy=False)
 
 
+def channel_ratio_gain(inset: Any, plan: Any, luma_weights: Any) -> Any | None:
+    """Exposure-dependent colour: the film's measured layer-saturation differential.
+
+    gain_c = r_c(EV_c) / r_c(EV_Y), with r_c the preset's channel_ratio_curve
+    (film_curve.channel_ratio_field), EV_c the channel's own formation exposure and
+    EV_Y the pixel's formation-luminance exposure. On the neutral axis EV_c == EV_Y
+    so the gain is 1 by construction (exact in real arithmetic; within ~1e-7 in
+    float32 from the luminance dot product's rounding) — the anti-hidden-WB
+    contract does not rest on a tuned window. Off axis, the channels sit at different points of their
+    layer curves and the measured differential emerges, growing with chroma without
+    any hand-tuned window. np.interp clamps at the grid ends, which is the declared
+    semantics beyond the fit domain (HDR shoulder region included: deep-white ratios
+    approach 1, so extended highlights fade to neutral instead of contaminating the
+    gain map). The [0.25, 4] rail is a safety clamp above the worst measured ratio
+    quotient (~3.7, Velvia deep shadows), not a shaping control.
+
+    Returns None when the plan carries no ratio field (non-film renders pay nothing).
+    """
+    from .film_curve import channel_ratio_field
+
+    field = channel_ratio_field(str(getattr(plan, "curve_preset", "") or ""))
+    if field is None:
+        return None
+    ev_grid, ratios = field
+    safe = np.maximum(inset.astype(np.float32, copy=False), 0.0)
+    ev_c = np.log2(np.maximum(safe / 0.18, EPS))
+    weights = np.asarray(luma_weights, dtype=np.float32)
+    ev_y = np.log2(np.maximum((safe @ weights) / 0.18, EPS))
+    gain = np.empty_like(ev_c, dtype=np.float32)
+    for c in range(3):
+        r_c = np.interp(ev_c[:, c], ev_grid, ratios[:, c])
+        r_y = np.interp(ev_y, ev_grid, ratios[:, c])
+        gain[:, c] = r_c / np.maximum(r_y, EPS)
+    return np.clip(gain, 0.25, 4.0, out=gain)
+
+
+def formation_luma_row(outset_matrix: Any) -> Any:
+    """Rec.2020 luminance row transported to pre-outset formation RGB.
+
+    Same construction as hdr_color.formation_luma_weights; duplicated here (three
+    lines) so the SDR formation does not import the HDR colour module.
+    """
+    from .constants import REC2020_LUMA
+
+    weights = np.asarray(REC2020_LUMA, dtype=np.float64) @ np.asarray(
+        outset_matrix, dtype=np.float64
+    )
+    return (weights / np.sum(weights)).astype(np.float32)
+
+
 def finish_formation(
-    linear: Any, pre_hue: Any | None, plan: Any, outset_matrix: Any
+    linear: Any,
+    pre_hue: Any | None,
+    plan: Any,
+    outset_matrix: Any,
+    channel_gain: Any | None = None,
 ) -> Any:
-    """Apply darktable hue restore and outset to completed formation-space RGB."""
+    """Apply darktable hue restore, the film channel gain, and the outset.
+
+    Order: hue restore first, channel gain second. The gain is the medium's measured
+    report (layer-saturation differential), not a curve-origin hue swing — hue
+    restore exists to moderate the latter and must not dilute the former.
+    """
     hue_restore = _plan_hue_restore(plan)
     if pre_hue is not None:
         linear = _mix_hue(linear, pre_hue, hue_restore)
+    if channel_gain is not None:
+        linear = linear * channel_gain
     return _apply_matrix3(linear, outset_matrix).astype(np.float32)
 
 
@@ -761,7 +822,8 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
     """AgX's shared formation order in the Rec.2020 working space:
 
     guard rail -> inset (rotation+attenuation) -> log2 window -> sigmoid ->
-    linearize -> hue restore (darktable semantics) -> outset in LINEAR light.
+    linearize -> hue restore (darktable semantics) -> film channel-ratio gain
+    (film presets only) -> outset in LINEAR light.
 
     Deviations from the reference, all deliberate: the endpoint-normalized log2 window
     and C1 sigmoid parameters come from the scene plan while EV=0 remains the calibrated
@@ -770,5 +832,6 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
     for preset-specific inset/outset before invoking this function.
     """
     inset, pre_hue = prepare_formation(rgb_rec2020, plan, inset_matrix)
+    gain = channel_ratio_gain(inset, plan, formation_luma_row(outset_matrix))
     linear = apply_formation_curve(inset, plan)
-    return finish_formation(linear, pre_hue, plan, outset_matrix)
+    return finish_formation(linear, pre_hue, plan, outset_matrix, channel_gain=gain)

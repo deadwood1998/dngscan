@@ -42,6 +42,25 @@ class CctChromaticityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cct_to_xy(1000.0)
 
+    def test_locus_seam_is_pinned_and_modes_keep_clear(self) -> None:
+        """The daylight/Planckian switchover at 4000 K is a known discontinuity.
+
+        Two invariants: the seam's size stays the documented ~0.005 in xy (a silent
+        change would mean one locus formula moved), and every declared mode keeps at
+        least 500 K away from it — a mode near the seam needs a declared bridge first
+        (see cct_to_xy docstring).
+        """
+        below = np.array(cct_to_xy(3999.0))
+        above = np.array(cct_to_xy(4001.0))
+        seam = float(np.hypot(*(above - below)))
+        self.assertGreater(seam, 1e-3)   # the seam is real: do not paper over it
+        self.assertLess(seam, 1.2e-2)    # and it stays the documented magnitude
+        for mode, (cct, _label) in KELVIN_WB_MODES.items():
+            self.assertGreaterEqual(
+                abs(cct - 4000.0), 500.0,
+                f"mode {mode} ({cct} K) sits too close to the locus seam",
+            )
+
 
 class KelvinMultiplierTests(unittest.TestCase):
     # An identity-ish matrix stands in for a camera whose channels read XYZ directly.

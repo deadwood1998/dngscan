@@ -105,6 +105,12 @@ def _form_hdr_chunk(
     A pair of aliased tables encodes "no reference candidate needed".
     """
     inset, pre_hue = agx_engine.prepare_formation(intent_rec, hdr_tone_plan, inset_matrix)
+    # Film channel-ratio gain, same construction as the SDR body (agx.apply_core):
+    # the HDR plan is a replace() of the film plan so curve_preset rides along, and
+    # both dispatchers must apply the identical gain or the gain map inherits the
+    # difference as chroma error. Beyond the fit domain the field clamps toward 1,
+    # so the extended shoulder stays neutral by construction.
+    channel_gain = agx_engine.channel_ratio_gain(inset, hdr_tone_plan, formation_y)
     native_table, reference_table = curve_tables
     native_formation = native_table.apply(inset)
     if reference_table is not native_table:
@@ -121,7 +127,7 @@ def _form_hdr_chunk(
     else:
         formation = native_formation
     mapped_rec = agx_engine.finish_formation(
-        formation, pre_hue, hdr_tone_plan, outset_matrix
+        formation, pre_hue, hdr_tone_plan, outset_matrix, channel_gain=channel_gain
     )
     mapped_rec = punch_engine.apply_punch_rec2020(
         mapped_rec, float(getattr(hdr_tone_plan, "punch_strength", 0.0))

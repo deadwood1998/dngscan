@@ -8,6 +8,17 @@ reverse), so deriving the scene-linear matrix from it is working from the specif
 not from taste. The matrix is a Bradford-adapted von Kries transport between the two
 white points, expressed in linear Rec.2020.
 
+The filter's purpose — the first semantics — is to move the *illuminant* onto the
+film's calibration point: daylight stock under tungsten light plus an 80A sees light ×
+filter ~= its design illuminant, and in the film's own frame the neutral axis does not
+move at all. Used as intended, the filter pairs with a mismatched declared WB (WB
+3200K + 85B in daylight; WB 5500K + 80A under tungsten), the two cancel to near
+neutral, and every downstream calibration window remains valid. Applying the filter
+alone on a matched balance — the deliberate colour cast — is the *declared degenerate
+case*: real film driven that way runs deep into excitation regions our separation fits
+never covered, so the prefeed's chromaticity windows fading toward identity there is a
+refusal to extrapolate, not a malfunction.
+
 Deliberate simplifications, stated rather than hidden:
 - Spectral transmission refinement (integrating a digitized T(lambda) against camera
   SSFs) would capture the small material-dependent residual beyond the mired action;
@@ -18,9 +29,12 @@ Deliberate simplifications, stated rather than hidden:
 
 There is no strength control. A filter has no half-installed state.
 
-Position in the pipeline: scene-linear Rec.2020, after decode/WB, before the prefeed.
-This module is intentionally separate from scene_transform: the prefeed contract keeps
-the neutral axis fixed, while a conversion filter's entire purpose is to move it.
+Position in the pipeline: scene-linear Rec.2020, after decode/WB, before the prefeed —
+the same order as the physical light path (filter before the film's spectral response).
+This module stays separate from scene_transform because the two hold different
+invariants: the prefeed keeps the working frame's neutral axis fixed, while the filter
+re-expresses the light itself — moving the rendered neutral axis whenever its partner
+illuminant mismatch is absent.
 """
 from __future__ import annotations
 

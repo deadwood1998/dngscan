@@ -52,6 +52,12 @@ def cct_to_xy(cct: float) -> tuple[float, float]:
     Tungsten film is balanced for incandescent (blackbody) light, so 3200/3400 take the
     Planckian locus; D-series targets take the CIE daylight locus with the revised-c2
     temperature correction so 6500 lands on modern D65.
+
+    Known seam: the two loci do not meet — at the 4000 K switchover the daylight locus
+    sits ~0.005 Duv above the Planckian, so chromaticity is discontinuous across it.
+    That is acceptable *only because* every declared mode keeps well clear of the seam
+    (nearest: 3400 K, 600 K away — an invariant pinned by tests). A mode near 4000 K
+    must not be added without first bridging the seam (e.g. a declared blend band).
     """
     t = float(cct)
     if not 1667.0 <= t <= 25000.0:
