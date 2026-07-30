@@ -31,7 +31,7 @@ SAMPLE_NIGHT = Path.home() / "Pictures" / "_SDI0199.DNG"
 # the AgX family and carry a declared looser multiplier (worst: Velvia rms 0.347).
 RMS_GATE = 0.12
 MAX_GATE = 0.35
-REVERSAL_GATE_FACTOR = 3.5
+REVERSAL_GATE_FACTOR = 2.5  # post surround-compensation landscape (Velvia rms 0.284)
 STORED_RESIDUAL_SLACK = 0.005
 
 CURVE_FIELDS = (

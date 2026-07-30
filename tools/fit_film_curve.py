@@ -99,6 +99,14 @@ STOCKS = discover_stocks()
 
 # Fit domain in scene EV. Below -6.5 both film and AgX sit in their deep toes where
 # Status-M densitometry and the display floor both stop being meaningful.
+# Dark-surround appearance compensation for projection media (reversal film). The
+# classic photographic imaging-science value: slides are built ~1.5x contrastier than
+# a bright-surround rendering of the same scene because dark-surround viewing lowers
+# perceived contrast by roughly that factor (Hunt/Giorgianni-Madden tradition;
+# broadcast's dim-surround convention uses 1.2 for the milder case). A declared
+# constant, recorded in each reversal preset's source.model.
+DARK_SURROUND_GAMMA = 1.5
+
 FIT_EV_LO, FIT_EV_HI = -6.5, 6.0
 TARGET_POINTS_STORED = 192
 
@@ -116,15 +124,32 @@ def _build_reversal_target(
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Slide film is its own display medium: no print stage, densities read directly.
 
-    Per-channel balance is a logE shift placing mid-scale at exactly 18% transmittance
-    (the projection/viewing analogue of print filtration), then the scalar tone target
-    is the luminance of the neutral ramp, same definition as the print path. The shadow
-    floor is the slide's own Dmax relative to its base."""
+    Reversal film is designed for dark-surround projection: the medium's high gamma
+    (~1.6-1.8) is the classic surround compensation — in a dark surround perceived
+    contrast drops and the medium must overshoot physically to look right. Mapping raw
+    transmittance straight onto a bright-surround display would apply that compensation
+    twice (the fits confirmed it: black_ev and toe_power pinned at their bounds with
+    the residual concentrated in the shadows). The declared appearance transform
+    T^(1/DARK_SURROUND_GAMMA) removes the projection-side compensation once, with the
+    exponent from the imaging-science dark-surround convention, and brings the curve
+    into the AgX family's expressible range. Per-channel balance then places mid-scale
+    at exactly 18% post-transform; the scalar tone target is the luminance of the
+    neutral ramp, same definition as the print path. The shadow floor is the slide's
+    own Dmax relative to its base, viewed through the same transform."""
     d_min = np.nanmin(dens, axis=0)
-    floor = float(np.mean(np.power(10.0, -(np.nanmax(dens, axis=0) - d_min))))
+    floor = float(
+        np.mean(
+            np.power(
+                np.power(10.0, -(np.nanmax(dens, axis=0) - d_min)),
+                1.0 / DARK_SURROUND_GAMMA,
+            )
+        )
+    )
     channels = []
     for c in range(3):
-        t = np.power(10.0, -(dens[:, c] - d_min[c]))
+        t = np.power(
+            np.power(10.0, -(dens[:, c] - d_min[c])), 1.0 / DARK_SURROUND_GAMMA
+        )
         order = np.argsort(t)
         le_mid = np.interp(0.18, t[order], le[order])
         channels.append(np.interp(le + le_mid, le, t))
@@ -210,11 +235,11 @@ def _agx_curve(ev: np.ndarray, params_vec: np.ndarray, target_black: float = 0.0
 
 BOUNDS = np.array(
     [
-        (-14.0, -4.0),   # black_ev
+        (-14.0, -2.5),   # black_ev (reversal media die shallow; -4 pinned pre-surround)
         (2.0, 8.5),      # white_ev
         (1.2, 5.5),      # contrast
-        (0.8, 3.0),      # toe_power
-        (1.2, 6.0),      # shoulder_power
+        (0.8, 3.5),      # toe_power
+        (1.2, 10.0),     # shoulder_power (slides clip highlights harder than any paper)
         (0.0, 1.5),      # latitude_lo_ev
         (0.0, 1.5),      # latitude_hi_ev
     ]
@@ -333,7 +358,8 @@ def fit_stock(key: str, stock: dict) -> dict:
             ),
             "license": "CC BY-SA 4.0 (spektrafilm profiles, Andrea Volpato)",
             "model": (
-                "reversal direct transmittance, per-channel mid-scale balance, "
+                "reversal transmittance through dark-surround appearance "
+                f"T^(1/{DARK_SURROUND_GAMMA:g}), per-channel mid-scale balance, "
                 "printed-luminance neutral"
                 if stock.get("positive")
                 else "contact print, per-channel neutral balance at mid-scale, "
