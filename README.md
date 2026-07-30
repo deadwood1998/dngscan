@@ -38,6 +38,9 @@ below.](#hdr-comparisons)
 ## How to read this
 
 To just convert a photo, [Quick start](#quick-start) is enough; the rest is optional.
+There is also a plain-language [user guide](docs/USER_GUIDE.md)
+([中文版](docs/USER_GUIDE.zh-CN.md)) covering supported cameras, what every on-screen
+number means, and which export to pick.
 
 To understand why a stage behaves the way it does, read the four layers in order:
 
