@@ -3,19 +3,71 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
+import tempfile
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import dngscan as dg
 from dngscan.debug_util import maybe_print_exc
 
+from .constants import RAW_EXTS
 from .page import render_page
 from .service import list_dir, prepare_preview, raw9_support, run_export_isolated, run_preview
+
+
+_UPLOADS = tempfile.TemporaryDirectory(prefix="dngscan-gui-uploads-")
+_UPLOAD_ROOT = Path(_UPLOADS.name)
+
+
+def store_upload(
+    filename: str,
+    source: BinaryIO,
+    content_length: int,
+    upload_root: Path = _UPLOAD_ROOT,
+) -> Path:
+    """Store one browser-selected RAW in a process-scoped temporary directory."""
+    clean_name = Path(filename.replace("\\", "/")).name
+    suffix = Path(clean_name).suffix.lower()
+    if suffix not in RAW_EXTS:
+        allowed = "、".join(sorted(RAW_EXTS))
+        raise ValueError(f"不支持的 RAW 文件类型；请选择：{allowed}")
+    if content_length <= 0:
+        raise ValueError("选择的 RAW 文件为空")
+
+    stem = Path(clean_name).stem
+    safe_stem = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem)
+    safe_stem = safe_stem.strip("._")[:64] or "photo"
+    slot = upload_root / uuid4().hex
+    slot.mkdir(parents=True)
+    target = slot / f"{safe_stem}{suffix}"
+    partial = slot / f".{safe_stem}.uploading"
+
+    remaining = content_length
+    try:
+        with partial.open("wb") as handle:
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("RAW 文件传输未完成")
+                handle.write(chunk)
+                remaining -= len(chunk)
+        os.replace(partial, target)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        try:
+            slot.rmdir()
+        except OSError:
+            pass
+        raise
+    return target
 
 
 def reveal_path(params: dict) -> dict:
@@ -57,7 +109,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/upload":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                name = parse_qs(parsed.query).get("name", [""])[0]
+                saved = store_upload(name, self.rfile, length)
+                self._json({"ok": True, "path": str(saved), "name": saved.name})
+            except Exception as exc:
+                maybe_print_exc()
+                self._json({"ok": False, "error": str(exc)}, code=200)
+            return
         if path not in ("/export", "/preview", "/prepare", "/raw9-support", "/reveal"):
             self.send_error(404)
             return

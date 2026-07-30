@@ -64,6 +64,9 @@ python -m dngscan.gui
 在浏览器中打开终端显示的本机地址（localhost）即可。可以先用 `EV 0`、`AgX`、`base` 原色、
 `camera` 白平衡和 `reconstruct` 高光处理，再根据照片本身调整。
 
+顶部的 RAW 入口使用浏览器原生文件选择器。选中的文件只会传给同一台电脑上的 localhost
+服务，并保存在进程级临时目录中；退出 dngscan 后临时副本会自动清理，不会发送到外部服务。
+
 ### 命令行
 
 ```bash
