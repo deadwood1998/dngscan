@@ -151,3 +151,41 @@ class MixtureWindowTests(unittest.TestCase):
         })
         self.assertEqual(len(region.components), 2)  # malformed entry skipped, not fatal
         self.assertAlmostEqual(region.components[0].weight, 0.7)
+
+
+class DecoderTransportTests(unittest.TestCase):
+    """Windows follow the pixels into the RAW 9 reference frame; pixels never move."""
+
+    def test_libraw_is_identity(self) -> None:
+        from dngscan.scene_transform import decoder_window_ratios
+
+        self.assertIsNone(decoder_window_ratios("libraw", "skin"))
+
+    def test_coreimage_transport_is_measured_and_bounded(self) -> None:
+        from dngscan.scene_transform import decoder_window_ratios
+
+        for name in ("skin", "foliage", "neutral", "unknown"):
+            ratios = decoder_window_ratios("coreimage", name)
+            self.assertIsNotNone(ratios)
+            for r in ratios:
+                self.assertGreater(r, 0.6)
+                self.assertLess(r, 1.4)
+
+    def test_composition_multiplies_wb_and_decoder(self) -> None:
+        from dngscan.scene_transform import _compose_transport, decoder_window_ratios
+
+        dec = decoder_window_ratios("coreimage", "skin")
+        combined = _compose_transport((1.1, 0.9, "coreimage"), "skin")
+        self.assertAlmostEqual(combined[0], 1.1 * dec[0], places=9)
+        self.assertAlmostEqual(combined[1], 0.9 * dec[1], places=9)
+        self.assertEqual(_compose_transport((1.1, 0.9), "skin"), (1.1, 0.9))
+        self.assertIsNone(_compose_transport(None, "skin"))
+
+    def test_wb_ratios_tag_nonlibraw_decoders(self) -> None:
+        from dngscan.scene_transform import wb_adaptation_ratios
+
+        tagged = wb_adaptation_ratios("5500k", [2.0, 1.0, 1.8], [2.6, 1.3, 2.3], "coreimage")
+        self.assertEqual(len(tagged), 3)
+        self.assertEqual(tagged[2], "coreimage")
+        legacy = wb_adaptation_ratios("camera", [2.0, 1.0, 1.8], [2.6, 1.3, 2.3])
+        self.assertEqual(len(legacy), 2)

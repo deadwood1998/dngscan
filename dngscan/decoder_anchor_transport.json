@@ -1,0 +1,70 @@
+{
+ "version": 1,
+ "coreimage": {
+  "global_ratio_rg_bg": [
+   1.04162,
+   0.82031
+  ],
+  "per_class": {
+   "cool_balance": {
+    "ratio_rg_bg": [
+     0.97414,
+     0.83542
+    ],
+    "effective_support": 2736.9,
+    "basis": "class-weighted"
+   },
+   "cyan": {
+    "ratio_rg_bg": [
+     1.04162,
+     0.82031
+    ],
+    "effective_support": 32.1,
+    "basis": "global-fallback"
+   },
+   "foliage": {
+    "ratio_rg_bg": [
+     0.98195,
+     0.84619
+    ],
+    "effective_support": 1693.5,
+    "basis": "class-weighted"
+   },
+   "magenta": {
+    "ratio_rg_bg": [
+     1.04162,
+     0.82031
+    ],
+    "effective_support": 38.9,
+    "basis": "global-fallback"
+   },
+   "neutral": {
+    "ratio_rg_bg": [
+     1.04162,
+     0.82031
+    ],
+    "effective_support": 15.3,
+    "basis": "global-fallback"
+   },
+   "skin": {
+    "ratio_rg_bg": [
+     1.08009,
+     0.72
+    ],
+    "effective_support": 697.2,
+    "basis": "class-weighted+clamped"
+   }
+  },
+  "source": {
+   "method": "dual-decode block-paired chroma transport, 5500K declared WB, grid 64x96, weighted median per window class",
+   "corpus": [
+    "_SDI0150.DNG",
+    "_SDI0133.DNG",
+    "_SDI0199.DNG",
+    "_SDI0237.DNG",
+    "_SDI0165.DNG"
+   ],
+   "camera_scope": "Sigma fp corpus; other bodies inherit the global ratio until measured"
+  }
+ }
+}

@@ -124,6 +124,44 @@ def _load_presets() -> dict[str, SceneTransformPreset]:
 
 
 SCENE_TRANSFORMS: dict[str, SceneTransformPreset] = _load_presets()
+
+DECODER_ANCHOR_TRANSPORT_JSON = Path(__file__).with_name("decoder_anchor_transport.json")
+
+
+def _load_decoder_transport() -> dict:
+    try:
+        return json.loads(DECODER_ANCHOR_TRANSPORT_JSON.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+_DECODER_TRANSPORT = _load_decoder_transport()
+
+
+def decoder_window_ratios(scene_decoder: str, region_name: str) -> tuple[float, float] | None:
+    """Measured chromaticity transport moving a calibration window into the given
+    decoder's reference frame (see tools/calibrate_raw9_anchors.py). None = identity.
+
+    The prefeed windows are calibrated against LibRaw-decoded responses; RAW 9
+    realises the same declared balance through Apple's own calibration and interprets
+    hue regions differently (measured global B/G x0.82 on the fp corpus, skin
+    shifting hardest). Windows follow the pixels; matrices and pixels are untouched.
+    """
+    entry = _DECODER_TRANSPORT.get(str(scene_decoder))
+    if not isinstance(entry, dict):
+        return None
+    per_class = entry.get("per_class", {})
+    ratio = None
+    if isinstance(per_class, dict):
+        cls = per_class.get(str(region_name))
+        if isinstance(cls, dict):
+            ratio = cls.get("ratio_rg_bg")
+    if ratio is None:
+        ratio = entry.get("global_ratio_rg_bg")
+    if not ratio:
+        return None
+    r = (float(ratio[0]), float(ratio[1]))
+    return None if abs(r[0] - 1.0) < 1e-4 and abs(r[1] - 1.0) < 1e-4 else r
 SCENE_TRANSFORM_CHOICES = ("none",) + tuple(SCENE_TRANSFORMS)
 
 
@@ -141,8 +179,11 @@ def validate_scene_transform(name: str) -> str:
 
 
 def wb_adaptation_ratios(
-    wb_mode: str, applied_wb: list[float] | None, daylight_wb: list[float] | None
-) -> tuple[float, float] | None:
+    wb_mode: str,
+    applied_wb: list[float] | None,
+    daylight_wb: list[float] | None,
+    scene_decoder: str = "libraw",
+) -> tuple | None:
     """(R/G, B/G) chromaticity transport from the calibration balance to the applied one.
 
     Region anchors are calibrated under a daylight-balanced render (the preset's D55 is
@@ -152,9 +193,9 @@ def wb_adaptation_ratios(
     von Kries transport of the anchor. Returns None (identity) for the daylight balance
     or when either multiplier set is unusable."""
     if wb_mode == "daylight":
-        return None
+        return (1.0, 1.0, scene_decoder) if scene_decoder != "libraw" else None
     if not applied_wb or not daylight_wb or len(applied_wb) < 3 or len(daylight_wb) < 3:
-        return None
+        return (1.0, 1.0, scene_decoder) if scene_decoder != "libraw" else None
     ar, ag, ab = (float(v) for v in applied_wb[:3])
     dr, dg, db = (float(v) for v in daylight_wb[:3])
     if min(ar, ag, ab, dr, dg, db) <= 0.0:
@@ -162,7 +203,9 @@ def wb_adaptation_ratios(
     r_r = min(5.0, max(0.2, (ar / ag) / (dr / dg)))
     r_b = min(5.0, max(0.2, (ab / ag) / (db / dg)))
     if abs(r_r - 1.0) < 1e-3 and abs(r_b - 1.0) < 1e-3:
-        return None
+        return (1.0, 1.0, scene_decoder) if scene_decoder != "libraw" else None
+    if scene_decoder != "libraw":
+        return (r_r, r_b, scene_decoder)
     return (r_r, r_b)
 
 
@@ -200,22 +243,42 @@ def _gaussian_weight(
     return np.exp(np.clip(-0.5 * mahal, -80.0, 0.0)).astype(np.float32, copy=False)
 
 
-def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple[float, float] | None = None) -> Any:
+def _compose_transport(
+    wb_adapt: tuple | None, region_name: str
+) -> tuple[float, float] | None:
+    """Combine the WB window transport with the measured decoder transport."""
+    decoder = None
+    base = wb_adapt
+    if wb_adapt is not None and len(wb_adapt) == 3:
+        base = (float(wb_adapt[0]), float(wb_adapt[1]))
+        decoder = str(wb_adapt[2])
+    dec = decoder_window_ratios(decoder, region_name) if decoder else None
+    if dec is None:
+        if base is not None and abs(base[0] - 1.0) < 1e-6 and abs(base[1] - 1.0) < 1e-6:
+            return None
+        return base
+    if base is None:
+        return dec
+    return (base[0] * dec[0], base[1] * dec[1])
+
+
+def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple | None = None) -> Any:
     denom = np.maximum(rgb[:, 1], np.float32(EPS))
     chroma = np.empty((rgb.shape[0], 2), dtype=np.float32)
     chroma[:, 0] = rgb[:, 0] / denom
     chroma[:, 1] = rgb[:, 2] / denom
 
+    transport = _compose_transport(wb_adapt, region.name)
     if region.components:
         # Mixture window: MAX over components, not sum — overlapping lobes must not
         # double-count. Each component transports through von Kries individually.
         weight = np.zeros((rgb.shape[0],), dtype=np.float32)
         for comp in region.components:
-            comp_w = _gaussian_weight(chroma, comp.mu_rg_bg, comp.cov_rg_bg, region.scale, wb_adapt)
+            comp_w = _gaussian_weight(chroma, comp.mu_rg_bg, comp.cov_rg_bg, region.scale, transport)
             comp_w *= np.float32(min(1.0, max(0.0, comp.weight)))
             np.maximum(weight, comp_w, out=weight)
     else:
-        weight = _gaussian_weight(chroma, region.mu_rg_bg, region.cov_rg_bg, region.scale, wb_adapt)
+        weight = _gaussian_weight(chroma, region.mu_rg_bg, region.cov_rg_bg, region.scale, transport)
     signal = np.max(rgb, axis=1)
     return np.where(signal > np.float32(EPS), weight, np.float32(0.0))
 
