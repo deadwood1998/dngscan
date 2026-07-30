@@ -23,6 +23,23 @@ used by Eary Chow's AgX LUT generator:
 
 No third-party display or camera LUT is distributed with dngscan.
 
+## spektrafilm film profiles (CC BY-SA 4.0)
+
+Film stock profiles under `dngscan_assets/spectral/spektrafilm/` (spectral
+sensitivities and characteristic curves for Kodak Portra 400 / Portra Endura and
+Fujifilm Superia X-TRA 400 / Crystal Archive Type II) come verbatim from Andrea
+Volpato's spektrafilm project:
+
+- https://github.com/andreavolpato/agx-emulsion
+
+spektrafilm's code is GPL-3.0-or-later; its profile data is licensed separately
+under **CC BY-SA 4.0** (license text included alongside the files). dngscan's film
+curve presets and prefeed targets derived from these profiles are treated as direct
+derivatives under the same CC BY-SA 4.0 terms, with provenance recorded in
+`dngscan_assets/spectral/spektrafilm/README.md` and in each preset's `source` field.
+The upstream data was processed from manufacturer datasheets and scientific papers;
+original measurements remain the property of their respective manufacturers.
+
 ## RAW to ACES spectral data (Apache-2.0)
 
 Selected camera sensitivities and training reflectances under
