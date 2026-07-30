@@ -162,6 +162,54 @@ class ApplyPresetTests(unittest.TestCase):
         self.assertEqual(tone.dynamic_range_ev, tone.white_ev - tone.black_ev)
 
 
+class FilmPrefeedPresetTests(unittest.TestCase):
+    """The film-separation prefeed presets obey the scene-transform contract."""
+
+    PRESETS = ("portra400_d55", "superia400_d55")
+
+    def test_presets_load_with_confidence_and_windows(self) -> None:
+        from dngscan.scene_transform import SCENE_TRANSFORMS
+
+        for name in self.PRESETS:
+            with self.subTest(preset=name):
+                preset = SCENE_TRANSFORMS[name]
+                self.assertEqual(preset.illuminant, "D55")
+                names = {r.name for r in preset.regions}
+                self.assertLessEqual(
+                    {"skin", "foliage", "cyan", "neutral", "magenta"}, names
+                )
+                for region in preset.regions:
+                    self.assertGreater(region.confidence, 0.0)
+                    self.assertLessEqual(region.confidence, 1.0)
+
+    def test_neutral_axis_survives_film_separation(self) -> None:
+        from dngscan._deps import np as _np
+        from dngscan.scene_transform import apply_scene_transform_rec2020
+
+        gray = _np.full((64, 3), 0.18, dtype=_np.float32)
+        for name in self.PRESETS:
+            with self.subTest(preset=name):
+                out = apply_scene_transform_rec2020(gray, name, 1.0)
+                _np.testing.assert_allclose(out, gray, atol=2e-3)
+
+    def test_film_separation_changes_nonneutral_colour(self) -> None:
+        from dngscan._deps import np as _np
+        from dngscan.scene_transform import SCENE_TRANSFORMS, apply_scene_transform_rec2020
+
+        for name in self.PRESETS:
+            with self.subTest(preset=name):
+                skin_region = next(
+                    r for r in SCENE_TRANSFORMS[name].regions if r.name == "skin"
+                )
+                rg, bg = skin_region.mu_rg_bg
+                skin_like = _np.array([[0.18 * rg, 0.18, 0.18 * bg]] * 8,
+                                      dtype=_np.float32)
+                out = apply_scene_transform_rec2020(skin_like, name, 1.0)
+                self.assertGreater(
+                    float(_np.max(_np.abs(out - skin_like))), 1e-4
+                )
+
+
 @unittest.skipUnless(
     SAMPLE.is_file() and SAMPLE_NIGHT.is_file(), "sample frames unavailable"
 )

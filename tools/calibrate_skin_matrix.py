@@ -773,11 +773,11 @@ def run_material_mode(
     key = args.material_key
     preset = {
         "name": key,
-        "label": "ALEV material prefeed (D55 windows)",
+        "label": args.material_label,
         "illuminant": "D55",
         "working_space": "Rec2020",
         "note": (
-            f"Material-aware Sigma->ALEV simulation: per-material constrained fits on "
+            f"Material-aware Sigma->{args.target_name} separation: per-material constrained fits on "
             f"{'+'.join(ill_names)} samples, windows in the D55 calibration frame "
             f"(runtime von Kries transport applies), look_gain={gain:g}. Confidence "
             f"folds fit quality into the effective weight. Data quality per "
@@ -877,6 +877,10 @@ def parse_args() -> argparse.Namespace:
                         help="material 模式的残差增益；1.0=严格物理拟合，不做风格放大")
     parser.add_argument("--material-key", default="alev_material_d55",
                         help="material 模式写入的 preset 键名（合并写入，不清空其他 preset）")
+    parser.add_argument("--material-label", default="ALEV material prefeed (D55 windows)",
+                        help="material 模式 preset 的显示名（如：胶片分离 · Portra 400）")
+    parser.add_argument("--target-name", default="ALEV",
+                        help="拟合目标观察者的名字，用于 note/报告（如 Portra 400）")
     parser.add_argument("--report-json", type=Path,
                         help="误差/泄漏报告输出路径（默认 data-dir/calibration_report.json）")
     return parser.parse_args()
