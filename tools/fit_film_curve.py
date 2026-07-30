@@ -56,7 +56,7 @@ STOCKS = {
 
 # Fit domain in scene EV. Below -6.5 both film and AgX sit in their deep toes where
 # Status-M densitometry and the display floor both stop being meaningful.
-FIT_EV_LO, FIT_EV_HI = -6.5, 3.5
+FIT_EV_LO, FIT_EV_HI = -6.5, 6.0
 TARGET_POINTS_STORED = 64
 
 
@@ -95,10 +95,21 @@ def build_endtoend_target(stock: dict) -> tuple[np.ndarray, np.ndarray, float]:
         d_p = np.interp(log_ep, le_p, d_prt[:, c])
         channels.append(np.power(10.0, -(d_p - d_min[c])))
 
-    t_neutral = np.mean(np.stack(channels, axis=1), axis=1)
+    # The scalar tone target is the LUMINANCE of the printed neutral ramp, by
+    # definition of what the scalar curve carries in this architecture: tone is the Y
+    # coordinate, and per-channel highlight behaviour (a runaway layer shifting hue
+    # before white) belongs to the separation/per-channel-AgX layers, not to the
+    # luminance curve. An arithmetic channel mean would let one imbalanced layer drag
+    # the whole tone coordinate — measured on Superia X-TRA 400, whose blue layer
+    # (gamma 0.76 vs 0.59, Status M with Fuji's stronger masking couplers) saturates
+    # far earlier than red: the mean fitted white_ev 3.5 where the luminance target
+    # fits a believable one. Portra's matched layers render both definitions nearly
+    # identical, which is exactly why the bug stayed invisible on the baseline stock.
+    luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
+    t_neutral = np.stack(channels, axis=1) @ luma
     ev = le_n / LOG10_2
-    # Re-anchor exactly: per-channel balance pins each channel at 0.18, the mean can
-    # drift by float epsilon only; assert instead of silently re-normalizing.
+    # Re-anchor exactly: per-channel balance pins each channel at 0.18, the weighted
+    # sum can drift by float epsilon only; assert instead of silently re-normalizing.
     t0 = float(np.interp(0.0, ev, t_neutral))
     if abs(t0 - 0.18) > 5e-4:
         raise RuntimeError(f"target mid-gray anchor drifted: T(0)={t0:.5f}")
