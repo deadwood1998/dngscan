@@ -52,7 +52,32 @@ SIGMA_FP = {
     "source": "PhotonsToPhotos PDR.htm / RN_e.htm, retrieved 2026-07-06",
 }
 
-PRIOR_TABLE = [SIGMA_FP]
+def _load_json_priors() -> list[dict[str, Any]]:
+    """Chart-extracted entries from sensor_priors.json (same schema, list values).
+
+    Kept as data rather than code: adding a camera is extracting its
+    PhotonsToPhotos series and appending an entry — no code change. Curves are
+    stored as [[log2iso, y], ...] and normalized to tuples here.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).with_name("sensor_priors.json")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = []
+    for item in raw.get("priors", []):
+        entry = dict(item)
+        for key in ("pdr_log2iso_ev", "read_noise_log2iso_log2e"):
+            entry[key] = [(float(x), float(y)) for x, y in entry.get(key, [])]
+        entry["model_equals"] = {str(m).upper() for m in entry.get("model_equals", [])}
+        entries.append(entry)
+    return entries
+
+
+PRIOR_TABLE = [SIGMA_FP] + _load_json_priors()
 
 
 def find_priors(make: str | None, model: str | None) -> dict[str, Any] | None:

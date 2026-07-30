@@ -789,6 +789,9 @@ function renderDetectedParams(d){
   if(!d||typeof d!=="object"){box.innerHTML='<dt class="muted">该文件暂无检测结果</dt><dd></dd>';return;}
   const rows=[];
   const add=(k,v)=>{if(v!==undefined&&v!==null&&v!=="")rows.push("<dt>"+k+"</dt><dd>"+v+"</dd>");};
+  const warn=(k,v)=>{if(v)rows.push('<dt style="color:#e0a437">'+k+'</dt><dd style="color:#e0a437">'+v+"</dd>");};
+  warn("⚠ 机型数据",d.data_support);
+  warn("⚠ 白平衡",d.wb_degradation);
   const ev=v=>(v>=0?"+":"")+(+v).toFixed(2)+" EV";
   if(d.raw_clip_union_pct!==null)add("RAW 剪切",(+d.raw_clip_union_pct).toFixed(2)+"%（≥1 通道）");
   if(d.reliable_tail_ev!==null)add("可靠高光尾部",ev(d.reliable_tail_ev)+"（p99.99，剪切样本已剔除）");

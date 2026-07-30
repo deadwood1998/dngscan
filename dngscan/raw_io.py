@@ -147,29 +147,82 @@ def _applied_wb_for_mode(
 
 
 def solve_wb_for_mode(
-    wb_mode: str, path: Path, xyz_to_cam: Any | None
-) -> list[float] | None:
-    """Fixed-Kelvin multipliers for this file, or None for non-Kelvin modes.
+    wb_mode: str,
+    path: Path,
+    xyz_to_cam: Any | None,
+    make: str | None = None,
+    model: str | None = None,
+) -> tuple[list[float] | None, str | None]:
+    """(Fixed-Kelvin multipliers or None, degradation/provenance note or None).
 
-    DNG dual-illuminant calibration is preferred; LibRaw's single Adobe matrix is the
-    fallback. Failure raises with a clear message instead of decoding with a guessed
-    balance."""
+    Calibration ladder, most trusted first: the file's own DNG dual-illuminant
+    tags -> LibRaw's per-model Adobe matrix -> this project's fallback matrix
+    table for bodies the installed LibRaw predates (camera_matrices.py; the note
+    records the borrowed provenance). When every rung is missing the request
+    DEGRADES instead of refusing: the caller renders with the camera's as-shot
+    balance and must surface the returned note — a declared degradation is
+    usable, a silent one would be a hidden white balance.
+    """
     cct = kelvin_mode_cct(wb_mode)
     if cct is None:
-        return None
+        return None, None
     calibration = dng_metadata.read_dng_color_calibration(path)
     matrix = None
     if xyz_to_cam is not None:
         candidate = np.asarray(xyz_to_cam, dtype=np.float64)
         if candidate.size >= 9 and float(np.abs(candidate[:3, :3]).sum()) > 1e-9:
             matrix = candidate[:3, :3]
+    note: str | None = None
+    if calibration is None and matrix is None:
+        from .camera_matrices import fallback_xyz_to_cam
+
+        fallback = fallback_xyz_to_cam(make, model)
+        if fallback is not None:
+            matrix, source_note = fallback
+            note = f"颜色标定来自回退矩阵表：{source_note}"
     try:
-        return solve_kelvin_wb(cct, dng_calibration=calibration, xyz_to_cam=matrix)
+        return solve_kelvin_wb(cct, dng_calibration=calibration, xyz_to_cam=matrix), note
     except ValueError as exc:
-        raise ValueError(
-            f"无法为 {wb_mode} 求解白平衡：{exc}；"
-            "该文件缺少可用的颜色标定，请改用 --wb camera"
-        ) from exc
+        return None, (
+            f"声明 {wb_mode} 白平衡不可用（{exc}）；已退化为相机 AsShot。"
+            "该机型缺少颜色标定数据：结果可用，但白平衡声明与色彩精度可能有偏差"
+        )
+
+
+def camera_data_support_note(
+    has_dng_calibration: bool,
+    has_libraw_matrix: bool,
+    fallback_available: bool,
+    has_priors: bool,
+    make: str | None,
+    model: str | None,
+) -> str | None:
+    """One consolidated per-file marker: does this body have enough data to render
+    accurately? None means fully supported. The render always proceeds — the marker
+    is a truthful label, never a gate.
+
+    Colour calibration is the rendering-accuracy data: without any matrix the
+    decoder's colour conversion for this model is unanchored and the deviation is
+    unpredictable (not merely "slightly off"). Missing sensor priors only degrade
+    the *analysis* numbers (absolute stops/DR), so alone they do not raise this
+    marker — the priors line already reports that honestly.
+    """
+    if has_dng_calibration or has_libraw_matrix:
+        return None
+    ident = f"{make or '?'} {model or '?'}".strip()
+    if fallback_available:
+        return (
+            f"机型 {ident} 的颜色标定不在解码器数据表内：白平衡求解已由内置回退"
+            "矩阵代偿，但解码器内部色彩转换仍无该机型矩阵，色彩精度可能有偏差。"
+            "功能照常执行"
+        )
+    note = (
+        f"机型 {ident} 暂无足够数据支撑准确运算（DNG 标签 / LibRaw 表 / 回退矩阵"
+        "均无颜色标定）：输出图片结果可能有无法预测的偏差。功能照常执行"
+    )
+    if not has_priors:
+        note += "；该机型亦无传感器先验，绝对档位/动态范围为单帧估计"
+    return note
 
 
 def libraw_wb_headroom_gain(wb_values: list[float] | None) -> float:
@@ -716,10 +769,42 @@ def load_raw(
             color_desc = decode_color_desc(getattr(raw, "color_desc", ""))
             # Declared fixed-Kelvin balances solve to multipliers through the file's
             # own calibration; the solve happens here so both decoders and the aligned
-            # reference decode all share one set of numbers.
-            kelvin_wb = solve_wb_for_mode(
-                wb_mode, path, getattr(raw, "rgb_xyz_matrix", None)
+            # reference decode all share one set of numbers. A body missing every
+            # calibration rung degrades to as-shot with a reported note instead of
+            # refusing (opened-interface contract: usable, loudly imperfect).
+            kelvin_wb, wb_note = solve_wb_for_mode(
+                wb_mode, path, getattr(raw, "rgb_xyz_matrix", None),
+                make=shot.make, model=shot.model,
             )
+            # Consolidated per-body support marker (report + GUI): computed for the
+            # LibRaw path only — a file Core Image agrees to decode is calibrated by
+            # Apple's own tables by construction.
+            camera_data_support: str | None = None
+            if decoder == "libraw":
+                from .camera_matrices import fallback_xyz_to_cam
+                from .priors import find_priors
+
+                matrix_attr = getattr(raw, "rgb_xyz_matrix", None)
+                has_matrix = False
+                if matrix_attr is not None:
+                    m = np.asarray(matrix_attr, dtype=np.float64)
+                    has_matrix = m.size >= 9 and float(np.abs(m[:3, :3]).sum()) > 1e-9
+                camera_data_support = camera_data_support_note(
+                    dng_metadata.read_dng_color_calibration(path) is not None,
+                    has_matrix,
+                    fallback_xyz_to_cam(shot.make, shot.model) is not None,
+                    find_priors(shot.make, shot.model) is not None,
+                    shot.make, shot.model,
+                )
+            wb_degradation: str | None = None
+            kelvin_requested = kelvin_mode_cct(wb_mode) is not None
+            if kelvin_requested and kelvin_wb is None:
+                wb_degradation = wb_note
+                if decoder == "libraw":
+                    # The render below must not claim a balance it cannot realise.
+                    wb_mode = "camera"
+            elif wb_note:
+                wb_degradation = wb_note
             if decoder == "libraw":
                 # Dark-field correction the DNG asks for and LibRaw ignores: pre-demosaic
                 # GainMaps (fp) and post-demosaic radial vignette (iPhone ProRAW). Warp
@@ -845,13 +930,26 @@ def load_raw(
                 # The reference must decode under the same declared balance as the
                 # Core Image render, or the green-median alignment would compare two
                 # different illuminant interpretations of one scene.
+                # If the Kelvin solve degraded (no calibration for this body), the
+                # reference decode falls back to as-shot while Core Image realises
+                # the declaration natively — a cross-balance alignment. Declared in
+                # the degradation note rather than hidden; the scale keeps working
+                # with reduced trust.
+                reference_wb_mode = (
+                    "camera" if (kelvin_requested and kelvin_wb is None) else wb_mode
+                )
+                if reference_wb_mode != wb_mode and wb_degradation:
+                    wb_degradation += (
+                        "；RAW9 主解码仍按声明色温（原生接口），但对齐参考解码退化为"
+                        "相机 AsShot——尺度对齐跨光源，可信度降低"
+                    )
                 with rawpy.imread(str(path)) as reference_raw:
                     reference_scene = render_to_scene_rec2020(
                         reference_raw,
                         effective_highlight_mode,
                         True,
                         None,
-                        wb_postprocess_kwargs(wb_mode, daylight_wb, kelvin_wb),
+                        wb_postprocess_kwargs(reference_wb_mode, daylight_wb, kelvin_wb),
                     )
                 # Decode the reference with the same storage-scale contract as the main
                 # LibRaw path. Normalising reconstruct by 65535 would lose its reserved
@@ -859,7 +957,9 @@ def load_raw(
                 reference_scale = libraw_scene_scale(
                     float(np.iinfo(reference_scene.dtype).max),
                     effective_highlight_mode,
-                    _applied_wb_for_mode(wb_mode, camera_wb, daylight_wb, kelvin_wb),
+                    _applied_wb_for_mode(
+                        reference_wb_mode, camera_wb, daylight_wb, kelvin_wb
+                    ),
                     baseline_exposure=effective_baseline_exposure,
                 )
                 reference_level = scene_green_median(
@@ -922,6 +1022,8 @@ def load_raw(
         scene_highlight_mode=effective_highlight_mode,
         orientation_flip=orientation_flip,
         wb_mode=wb_mode,
+        wb_degradation=wb_degradation,
+        camera_data_support=camera_data_support,
         daylight_wb=daylight_wb,
         shot_make=shot.make,
         shot_model=shot.model,

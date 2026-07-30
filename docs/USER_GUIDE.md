@@ -31,6 +31,13 @@ primarily on Sigma fp DNGs and iPhone ProRAW, so those are the most thoroughly
 validated; other mainstream cameras decode and convert normally, and sample files for
 anything misbehaving are welcome.
 
+**Brand-new bodies work too**: cameras so recent that built-in data tables haven't
+caught up (the A7 V / GR IV / X-E5 generation) are not refused — the tool degrades
+gracefully and the report states plainly that calibration data is incomplete and
+results may deviate, while the photo exports normally. Several new bodies
+(A7 V / A7S III / A7R VI / GR IV / Nikon Zf / X100VI / X-E5) already ship with
+measured sensor data and colour matrices, matching the established-camera experience.
+
 **The Apple RAW decoder (optional — set "解码器 / Decoder" to Apple RAW)** uses the RAW
 engine built into macOS. Its coverage follows Apple's official camera RAW compatibility
 list — mainstream Canon, Nikon, Sony, Fujifilm, Panasonic and Sigma bodies plus iPhone

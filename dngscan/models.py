@@ -55,6 +55,13 @@ class RawBundle:
     # Prefeed window transport reads this so calibrated chromaticity anchors follow the
     # balance the pixels really received. None means "fall back to camera_wb".
     applied_wb: list[float] | None = None
+    # Non-None when a declared WB could not be fully realised for this body (missing
+    # colour calibration): the render stays usable, the report must carry this note.
+    wb_degradation: str | None = None
+    # Consolidated per-body data-support marker (raw_io.camera_data_support_note):
+    # None = fully supported; otherwise a truthful label that rendering proceeds but
+    # this model lacks the data to guarantee accuracy. Never a gate.
+    camera_data_support: str | None = None
     # Half-resolution, orientation-correct RGB soft clip masks in raw/CFA space.
     # Shape is (H, W, 3), aligned to scene_rec2020_render when scene_half_size=True.
     # Full-resolution renders resize this mask to the render buffer on demand.

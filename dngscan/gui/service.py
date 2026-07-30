@@ -615,6 +615,8 @@ def detected_scene_params(bundle: dg.RawBundle, analysis: dg.Analysis) -> dict:
     if reliable_tail is not None:
         earned = max(0.0, reliable_tail - float(dg.OUTPUT_REFERENCE_WHITE_STOPS))
     return {
+        "data_support": getattr(bundle, "camera_data_support", None),
+        "wb_degradation": getattr(bundle, "wb_degradation", None),
         "raw_clip_union_pct": _finite_or_none(analysis.cell_union_pct),
         "reliable_tail_ev": reliable_tail,
         "tail_ev": _finite_or_none(getattr(scene, "tail_ev_p9999", None)),

@@ -74,7 +74,10 @@ def priors_line_cn(bundle: RawBundle, analysis: Analysis) -> str:
     ident = f"{bundle.shot_make or '?'} {bundle.shot_model or '?'}".strip()
     iso = f"ISO{bundle.shot_iso}" if bundle.shot_iso else "ISO?"
     if analysis.prior_id is None:
-        return f"机型/先验: {ident} @ {iso}（无先验表条目，全部使用单帧实测）"
+        return (
+            f"机型/先验: {ident} @ {iso}（无先验表条目，全部使用单帧实测；"
+            "传感器标定数据不完整，绝对档位/动态范围数字可能有偏差，渲染仍可正常使用）"
+        )
     parts = [f"机型/先验: {analysis.prior_id} @ {iso}"]
     if analysis.gain_e_per_dn is not None:
         parts.append(f"增益≈{analysis.gain_e_per_dn:.2f} e⁻/DN")
@@ -121,6 +124,12 @@ def wb_line_cn(bundle: RawBundle) -> str:
         "相机 AsShot" if bundle.wb_mode == "camera" else describe_wb_mode(bundle.wb_mode)
     )
     line = f"白平衡: {mode}"
+    degradation = getattr(bundle, "wb_degradation", None)
+    if degradation:
+        line += f"\n白平衡警示: {degradation}"
+    support = getattr(bundle, "camera_data_support", None)
+    if support:
+        line += f"\n机型数据支撑: {support}"
     cam = bundle.camera_wb
     day = bundle.daylight_wb
     if cam and day and len(cam) >= 3 and len(day) >= 3 and all(v > 0 for v in (cam[0], cam[2], day[0], day[2], cam[1], day[1])):
@@ -230,6 +239,12 @@ def print_report(
             else jpeg_mode
         )
         wb_label = describe_wb_mode(bundle.wb_mode)
+        wb_degradation = getattr(bundle, "wb_degradation", None)
+        if wb_degradation:
+            wb_label += f"；警示：{wb_degradation}"
+        data_support = getattr(bundle, "camera_data_support", None)
+        if data_support:
+            print(f"机型数据支撑: {data_support}")
         decoder = getattr(bundle, "scene_decoder", "libraw") or "libraw"
         decoder_version = getattr(bundle, "scene_decoder_version", None)
         decoder_runtime = getattr(bundle, "scene_decoder_runtime", None)
