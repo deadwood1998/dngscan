@@ -199,8 +199,12 @@ testing standards, and developing new image-formation methods on the same captur
 ## Documentation
 
 - [User guide](docs/USER_GUIDE.md): supported cameras, interface fields, export choices, and FAQ.
+- [Architecture and technical details](docs/ARCHITECTURE.md): the full pipeline exposition —
+  the four layers, the decoder axis, film observation positions, HDR comparisons and appendices.
 - [Engineering notes (Chinese)](docs/ENGINEERING_NOTES.zh-CN.md): architecture decisions,
   experimental evidence, and implementation history.
+- [Film observation design contract (Chinese)](docs/FILM_OBSERVATION_PLAN.zh-CN.md): the
+  production contract and its declared computational boundaries.
 - [Third-party notices](NOTICE.md): darktable, AgX, and other upstream work.
 
 ## License

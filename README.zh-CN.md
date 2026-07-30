@@ -183,7 +183,11 @@ dngscan 目前不管理图库，也不做局部调整。这是现阶段产品的
 ## 文档
 
 - [使用说明](docs/USER_GUIDE.zh-CN.md)：支持的相机、界面字段、导出选择与常见问题。
+- [架构与技术细节](docs/ARCHITECTURE.zh-CN.md)：完整的管线展示与每个环节的设计理由
+  ——四层结构、解码器轴、胶片观察位置、HDR 对比与附录。
 - [工程记录](docs/ENGINEERING_NOTES.zh-CN.md)：架构决策、实验依据与实现过程。
+- [设计合同](docs/FILM_OBSERVATION_PLAN.zh-CN.md)：胶片观察功能群的生产合同与
+  声明的计算边界。
 - [第三方声明](NOTICE.md)：darktable、AgX 与其他上游组件的来源。
 
 ## 许可证
