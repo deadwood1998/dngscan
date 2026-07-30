@@ -314,7 +314,7 @@ flowchart TB
 
     subgraph HDR["4B. Independent HDR AgX branch - AgX only"]
         direction TB
-        HDRPLAN["Compile HdrAgxPlan<br/>reliable RAW tail -> requested extended white<br/>fixed-gamma darktable body below K<br/>single monotone log-stop Hermite shoulder above K"]
+        HDRPLAN["Compile HdrAgxPlan<br/>reliable RAW tail -> requested extended white<br/>fixed-gamma darktable body below K<br/>monotone log-stop Hermite shoulder above K<br/>(single when alpha<=3, subdivided C1 chain beyond)"]
         HRETREAT["HDR-owned RAW clip retreat"]
         HINSET["AgX inset<br/>native extended-white per-channel C1 formation"]
         PATH["HDR color geometry<br/>reference-white vs native chroma path<br/>rho is locally withdrawn by CFA clipping<br/>native curve remains the sole Y authority"]
@@ -340,11 +340,11 @@ flowchart TB
 
     ENCODE --> FORMAT{"Output format"}
     FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
-    FORMAT -->|HDR| BASE["HDR mode SDR base<br/>Display P3, quality 100, 4:4:4<br/>look/filter/highlight-fade disabled"]
-    BASE --> PACKAGE["Core Image ISO 21496-1 writer<br/>RGB auxiliary gain map + content headroom"]
+    FORMAT -->|HDR| BASE["HDR mode SDR base<br/>Display P3; archive q100/4:4:4, share q90/4:2:0<br/>look/filter/highlight-fade disabled"]
+    BASE --> PACKAGE["Core Image ISO 21496-1 writer<br/>RGB auxiliary gain map + content headroom<br/>JPEG or HEIC container"]
     ALT --> PACKAGE
-    PACKAGE --> VERIFY["Read-back verification<br/>P3 profile, 4:4:4, RGB gain map, declared headroom<br/>SDR code error + expanded HDR luminance/chroma error"]
-    VERIFY --> HDRJPEG["Atomic HDR gain-map JPEG"]
+    PACKAGE --> VERIFY["Read-back verification<br/>P3 profile, RGB gain map, declared headroom, archive 4:4:4<br/>SDR code error + HDR block and pixel-chroma gates<br/>calibrated per profile and container"]
+    VERIFY --> HDRJPEG["Atomic HDR gain-map JPEG / HEIC"]
 
     classDef shared fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
     classDef sdrpath fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
@@ -521,6 +521,15 @@ luminance rank. This is an aggregate comparison heuristic, not a claim that a pa
 RAW 9 pixel maps to a particular CFA site: reconstructed pixels still describe highlight
 topology, but cannot set the global white endpoint. The report names the decoder, its
 version, and the opcodes that were executed.
+
+The HDR branch couples to this path through the same evidence rules, pinned by dedicated
+tests: chroma freedom `rho` is capped at 0.25 because no per-pixel CFA mask can withdraw
+it locally, the mask-free formation renders inside `[0, peak]`, and the rank-trimmed
+RAW 9 reliable tail tracks LibRaw's CFA-masked measurement on the same frame (0.09 EV
+apart on the daylight reference, gated at 0.3 EV). Reconstruction differences remain a
+camera-interpretation choice, not an HDR budget leak.
+
+![LibRaw vs Apple RAW 9, same frame through the same AgX plan: the differences are camera interpretation, not pipeline drift](docs/assets/decoder-libraw-vs-raw9.jpg)
 
 Core Image and LibRaw do not expose the same scene unit, and a single fitted correction
 did not generalize across cameras or scenes. The default is therefore
@@ -936,16 +945,23 @@ HDR export; reconstructed highlights and the SDR white endpoint cannot stand in 
 evidence.
 
 That request compiles an HDR curve without rewriting its body. Below K, the darktable-style
-AgX body keeps its historical internal gamma of 2.2. Above K, one cubic Hermite in output
+AgX body keeps its historical internal gamma of 2.2. Above K, a cubic Hermite in output
 stops leaves the actual rendered body with matching value and analytic tangent, reaches the
-scene-earned peak at W, and arrives with zero slope. Monotonicity is accepted only when its
-normalized start tangent `alpha <= 3`. Because W and requested headroom are coupled through
-the same reliable RAW tail, the default contrast-3 policy is bounded at 1.8494 for normal
-scenes and 1.9537 for sparse emitters. Including the full user-adjustable contrast range
-of 1.5-4.5 raises those bounds to 2.7358 and 2.9306, still below 3. A future policy or
-control-range retune that crosses 3 fails closed instead of silently selecting another
-tone shape. There is no global-gamma lift, post-curve
-smootherstep gain, allocation window, or lift-rate heuristic.
+scene-earned peak at W, and arrives with zero slope. With the white tangent pinned at zero,
+a single segment is monotone exactly when its normalized start tangent `alpha <= 3`; at
+display headroom 3 EV the whole production policy stays inside that bound (worst case
+2.9306 across the full contrast range of 1.5-4.5). But display headroom caps the peak
+independently of the tail-driven W, so a low-headroom display with a long reliable tail
+legitimately pushes `alpha` past 3. That request is an ordinary, strongly compressive
+shoulder — the same situation where Blender's HDR AgX bends its shoulder harder — so the
+compiler subdivides it into a monotone Hermite chain under the same structural contract:
+the K anchor and tangent untouched, zero white tangent, C1 joins, per-piece monotonicity,
+validated by the same gate as the single segment. Behaviour stays continuous in the
+headroom control instead of snapping to "no HDR". Fail-closed remains for genuinely
+degenerate input (empty window, non-positive rise, non-finite anchors). There is no
+global-gamma lift, post-curve smootherstep gain, allocation window, or lift-rate heuristic.
+
+![HDR log-stop shoulder: single segment at +3 EV headroom, subdivided chain at +1.5 EV, identical body below K](docs/assets/hdr-shoulder-subdivision.png)
 
 The native HDR curve is the only luminance authority. `rho` mixes chromaticity between a
 reference-white AgX path and the extended-white native path after both are aligned to that
@@ -959,12 +975,42 @@ strict perceptual hue. ACES 2 does the stronger job in a colour-appearance JMh s
 dngscan's current projector is intentionally simpler and remains an HDR calibration boundary.
 
 Core Image only packages the two completed SDR/HDR renditions as an RGB gain map. Every
-written file is expanded again and checked for its P3 profile, 4:4:4 base, RGB auxiliary
-image, declared headroom, and whole-frame pixel/chromaticity error. A failed gate leaves no
-output file. Display looks and filters remain unavailable in HDR because those SDR
-operators do not yet have an independent HDR definition. The equations and acceptance
+written file is expanded again and checked for its P3 profile, RGB auxiliary image,
+declared headroom, SDR base code error, and HDR block-scale plus pixel-scale chromaticity
+error; the archive profile additionally requires a 4:4:4 base. The tolerance sets are
+calibrated per delivery profile and per container (share HEVC loses visibly more than
+share JPEG at the same nominal settings) against the real-frame regression corpus. A
+failed gate leaves no output file. Display looks and filters remain unavailable in HDR
+because those SDR operators do not yet have an independent HDR definition. The equations and acceptance
 gates are documented in
 [`docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md`](docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md).
+
+### Delivery profiles in practice
+
+The two profiles are two measured operating points, not a quality slider. On the
+full-resolution regression corpus (24.5 MP Sigma fp): archive q100/4:4:4 lands at
+~60 MB per frame — a verification-grade master, roughly twice the source DNG, because a
+demosaiced three-channel q100 JPEG plus a gain map is simply a bigger object than a
+losslessly compressed 14-bit Bayer mosaic. Share q90/4:2:0 lands at 11-27 MB with the
+gain map and content headroom fully intact; the worst case (high-ISO stage frame) stays
+inside WeChat's 25 MB original-image cap. There is nothing between them worth buying:
+Core Image's chroma subsampling is emergent from quality, measured 4:4:4 only at exactly
+q100, and fidelity is flat from q90 to q99 while size grows — the loss is dominated by
+4:2:0, not by the quality number.
+
+![Archive vs share full-resolution crop: q100/4:4:4 at 62.8 MB against q90/4:2:0 at 11.5 MB](docs/assets/delivery-archive-vs-share.jpg)
+
+The share operating point is visually transparent at 5.5x smaller on ordinary content;
+its measured cost lives in pixel-scale chroma statistics, which is exactly what the
+per-profile gates watch. For the container choice, prefer JPEG: ISO 21496-1 gain-map
+JPEG is the Apple+Google converged cross-platform format (iOS 18+, Android 15+,
+Chromium), degrades gracefully to its SDR base anywhere else, and Chinese messaging apps
+transcode HEIC to JPEG on most paths, destroying the gain map. Share HEVC also measures
+strictly worse here — larger files and roughly 1.8x the block-scale error at the same
+nominal settings — so `ultrahdr-heic` exists for HEIC-requiring downstreams, not as an
+efficiency upgrade.
+
+![Share JPEG vs share HEIC on the stage frame: HEIC is larger and visibly smoother](docs/assets/delivery-jpeg-vs-heic-share.jpg)
 
 ### HDR comparisons
 
@@ -1000,7 +1046,7 @@ and round-trip verified at full resolution.
 
 ![Native extended-white HDR AgX restaurant-highlight diagnostic](docs/assets/hdr-comparisons/_SDI0133_native_hdr_ab.jpg)
 
-The [earlier comparison gallery](docs/HDR_COMPARISONS.md) records the RAW9/LibRaw and
+The [earlier comparison gallery](docs/archived/HDR_COMPARISONS.md) records the RAW9/LibRaw and
 AgX/neutral experiments made with the retired smootherstep allocator. It is kept as
 development history, not as a current pixel reference. Core Image/ISO delivery round-trips
 on macOS; Android/Chrome

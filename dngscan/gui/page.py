@@ -61,6 +61,13 @@ button.preview:disabled{opacity:.5;cursor:default}
 #previewWrap.loading #spinner{display:block}
 @keyframes spin{to{transform:rotate(360deg)}}
 .dim{opacity:.45;pointer-events:none}
+#deliveryReport{margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;padding:8px 12px;background:#11141a}
+#deliveryReport summary{cursor:pointer;font-size:13px;color:#9aa3b2;user-select:none}
+#deliveryReport[open] summary{margin-bottom:8px}
+.reportGrid{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12.5px}
+.reportGrid dt{color:#9aa3b2;white-space:nowrap}
+.reportGrid dd{margin:0;color:#e6e9f0;font-variant-numeric:tabular-nums}
+.reportGrid dd.warn{color:#f0b35e}
 .chk{display:flex;align-items:center;gap:8px}.chk input{width:auto}
 .outdirRow{display:flex;gap:8px;align-items:stretch}
 .outdirRow input{flex:1}
@@ -271,9 +278,9 @@ GRADE_OPTIONS
     </div>
     <div style="flex:1;min-width:160px">
       <label>交付档</label>
-      <select id="deliveryProfile" title="只影响最后 JPEG 编码。archive=q100/4:4:4；share=更小体积。">
+      <select id="deliveryProfile" title="只影响最后编码，不重算 AgX/HDR。archive=q100/4:4:4 验证级保真（全尺寸约 60MB）；share=q90/4:2:0 流媒体发布档（约 11–27MB，微信原图 25MB 限制内，HDR gain map 完整保留）。">
         <option value="archive">Archive · 保真</option>
-        <option value="share">Share · 更小</option>
+        <option value="share">Share · 流媒体</option>
       </select>
     </div>
     <div style="flex:1;min-width:140px">
@@ -299,7 +306,7 @@ GRADE_OPTIONS
   <div class="row" id="hdrBlock" style="margin-top:12px">
     <div style="min-width:220px">
       <div class="labelRow"><label>HDR 余量上限</label><span class="val" id="hdrHeadroomVal">+3.00 EV</span></div>
-      <input type="range" id="hdrHeadroom" min="1" max="5" step="0.25" value="3">
+      <input type="range" id="hdrHeadroom" min="1" max="MAX_HDR_HEADROOM_ATTR" step="0.02" value="3">
       <div class="muted" id="hdrHint">实际余量由场景决定；只恢复漫反射白以上的真实亮度档数。</div>
     </div>
   </div>
@@ -325,6 +332,10 @@ GRADE_OPTIONS
     <button class="ghost" id="revealBtn" style="display:none">在 Finder 显示</button>
   </div>
   <div id="status"></div>
+  <details id="deliveryReport" style="display:none">
+    <summary>投递报告 · 本次导出的实测真值</summary>
+    <dl class="reportGrid" id="deliveryReportBody"></dl>
+  </details>
   <div id="previewWrap"><img id="preview"><div id="spinner"></div></div>
 </div>
 </div>
@@ -369,13 +380,23 @@ function updateToneCoreUi(){
   $("#coreFacts").innerHTML=facts;
   $("#controlHint").textContent=CONTROL_HINTS[core]||"";
 }
-function applyDeliveryDefaults(){
-  const share=$("#deliveryProfile").value==="share";
-  if(share){$("#quality").value="90";$("#chroma").value="420";}
-  else{$("#quality").value="100";$("#chroma").value="444";}
+function applyDeliveryConstraints(){
+  // Archive pins q100/4:4:4 by contract; share leaves the knobs to the user. Restoring
+  // saved settings must not clobber them, so this only enforces, never fills defaults.
+  // HDR containers additionally pin chroma to what Core Image actually emits at the
+  // profile's quality (q100→4:4:4, share→4:2:0): the control would otherwise promise a
+  // subsampling the encoder cannot honour.
   const archive=$("#deliveryProfile").value==="archive";
+  const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
+  if(archive){$("#quality").value="100";$("#chroma").value="444";}
+  else if(hdr){$("#chroma").value="420";}
   $("#quality").disabled=archive;
-  $("#chroma").disabled=archive;
+  $("#chroma").disabled=archive||hdr;
+}
+function applyDeliveryDefaults(){
+  // Only on an explicit profile switch: seed share's calibrated defaults.
+  if($("#deliveryProfile").value==="share"){$("#quality").value="90";$("#chroma").value="420";}
+  applyDeliveryConstraints();
 }
 function updateFormatUi(){
   const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
@@ -384,7 +405,7 @@ function updateFormatUi(){
   $("#gamut").disabled=hdr;$("#toneCore").disabled=hdr;
   $("#highlightFade").disabled=hdr;
   $("#highlightFadeBlock").title=hdr?"HDR 色彩几何独立处理高光，不使用 SDR 显示侧褪白。":"";
-  applyDeliveryDefaults();
+  applyDeliveryConstraints();
   updateToneCoreUi();
 }
 async function checkHdrBackend(){
@@ -698,9 +719,39 @@ function setPreviewImage(b64, ondone){
   img.src="data:image/jpeg;base64,"+b64;
 }
 
+function fmtMB(bytes){return bytes>=1048576?(bytes/1048576).toFixed(2)+" MB":Math.round(bytes/1024)+" KB";}
+function renderDeliveryReport(j){
+  const box=$("#deliveryReport");const body=$("#deliveryReportBody");
+  const c=j.hdr_container;
+  if(!c||typeof c!=="object"){box.style.display="none";body.innerHTML="";return;}
+  const rows=[];
+  const add=(k,v,warn)=>{if(v!==undefined&&v!==null&&v!=="")rows.push("<dt>"+k+"</dt><dd"+(warn?' class="warn"':"")+">"+v+"</dd>");};
+  add("交付",(c.delivery_profile||"")+" · "+(c.delivery_container==="heic"?"HEIC":"JPEG")+" · q"+c.delivery_quality);
+  if(c.file_size_bytes!==undefined)add("文件大小",fmtMB(c.file_size_bytes));
+  add("主图采样",c.chroma_subsampling,c.chroma_subsampling!=="4:4:4"&&c.delivery_profile==="archive");
+  if(c.rendered_headroom_ev!==undefined){
+    add("HDR 余量","场景挣得 +"+(+c.rendered_headroom_ev).toFixed(2)+" EV · 实际使用 +"+(+c.actual_headroom_ev).toFixed(2)+" EV · 容量 +"+(+c.display_headroom_ev).toFixed(2)+" EV");
+  }
+  if(c.shoulder_segments!==undefined){
+    const shape=c.shoulder_segments<=1?"单段":"细分（"+c.shoulder_segments+" 段）";
+    add("HDR shoulder",shape+(c.shoulder_alpha!==undefined?" · alpha "+(+c.shoulder_alpha).toFixed(3):""));
+  }
+  if(c.block_p99_relative_error!==undefined){
+    add("HDR 回读误差","块级 p99 "+(+c.block_p99_relative_error*100).toFixed(2)+"% · 块级色品 "+(+c.block_chroma_error*100).toFixed(2)+"% · 像素色品 "+(+c.chroma_error*100).toFixed(2)+"%");
+  }
+  if(c.base_mean_code_error!==undefined){
+    add("SDR 底图误差","平均 "+(+c.base_mean_code_error).toFixed(2)+" 码值 · 8×8 p99 "+(+c.base_block_p99_code_error).toFixed(2)+" 码值");
+  }
+  if(c.headroom_error_ev!==undefined)add("声明余量误差",(+c.headroom_error_ev).toFixed(4)+" EV");
+  if(c.channel_separation!==undefined)add("色度自由度 rho",(+c.channel_separation).toFixed(3));
+  if(c.hdr_plan)add("HDR plan",c.hdr_plan);
+  body.innerHTML=rows.join("");
+  box.style.display=rows.length?"block":"none";
+}
 function handleJobResult(j, prefix){
   if(!j.ok)return false;
   applyJobEv(j);
+  renderDeliveryReport(j);
   setStatus(prefix+"：EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+decoderText(j)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j),"ok");
   setPreviewImage(j.preview);
   return true;
@@ -737,6 +788,7 @@ $("#go").onclick=async()=>{
     const j=await postJob("/export",body);
     if(!j.ok){endBusy();setStatus("错误："+j.error,"err");}
     else{applyJobEv(j);setStatus("已保存："+j.saved.join(" · ")+"（"+formatText(j.format)+"，EV "+fmtEv(j.ev)+"，曝光增益 "+j.gain.toFixed(3)+"，高光 "+highlightText(j.highlight)+"，色域 "+gamutText(j.gamut)+decoderText(j)+toneCoreText(j)+sceneTransformText(j)+fullFrameReferenceText(j)+metricText(j)+"）","ok");
+      renderDeliveryReport(j);
       lastSavedPath=j.saved[0]||"";$("#revealBtn").style.display=lastSavedPath?"inline-block":"none";setPreviewImage(j.preview);}
   }catch(e){endBusy();setStatus("请求失败："+e,"err");}
   $("#go").disabled=false;$("#previewBtn").disabled=false;
@@ -796,11 +848,15 @@ def _scene_transform_options_html() -> str:
 
 def render_page(init_dir: str) -> bytes:
     from dngscan import coreimage_decode
+    from dngscan.constants import MAX_HDR_HEADROOM_EV
 
     html = (
         PAGE.replace("INIT_DIR", json.dumps(init_dir))
         .replace("GRADE_OPTIONS", _grade_options_html())
         .replace("SCENE_TRANSFORM_OPTIONS", _scene_transform_options_html())
         .replace("COREIMAGE_AVAILABLE_FLAG", "true" if coreimage_decode.available() else "false")
+        # Keep the slider ceiling on the same source of truth as the CLI's
+        # --hdr-headroom bound (log2(4000/100) = 5.32); step 0.02 lands on it exactly.
+        .replace("MAX_HDR_HEADROOM_ATTR", f"{MAX_HDR_HEADROOM_EV:.2f}")
     )
     return html.encode("utf-8")

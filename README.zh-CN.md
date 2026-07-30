@@ -290,7 +290,7 @@ flowchart TB
 
     subgraph HDR["4B. 独立 HDR AgX 分支 - 仅支持 AgX"]
         direction TB
-        HDRPLAN["编译 HdrAgxPlan<br/>可靠 RAW 尾部 -> 请求扩展白点<br/>K 以下固定 gamma 的 darktable body<br/>K 以上单段单调 log-stop Hermite shoulder"]
+        HDRPLAN["编译 HdrAgxPlan<br/>可靠 RAW 尾部 -> 请求扩展白点<br/>K 以下固定 gamma 的 darktable body<br/>K 以上单调 log-stop Hermite shoulder<br/>（alpha<=3 单段，越界细分为 C1 链）"]
         HRETREAT["HDR 自有 RAW clip retreat"]
         HINSET["AgX inset<br/>原生扩展白逐通道 C1 formation"]
         PATH["HDR 色彩几何<br/>reference-white 与原生色度路径混合<br/>CFA 剪切会局部收回 rho<br/>原生曲线始终是唯一 Y 权威"]
@@ -316,11 +316,11 @@ flowchart TB
 
     ENCODE --> FORMAT{"输出格式"}
     FORMAT -->|SDR| SDRJPEG["SDR JPEG<br/>ICC + quality + 4:4:4 / 4:2:2 / 4:2:0"]
-    FORMAT -->|HDR| BASE["HDR 模式的 SDR 底图<br/>Display P3、quality 100、4:4:4<br/>禁用 look / filter / highlight fade"]
-    BASE --> PACKAGE["Core Image ISO 21496-1 写入<br/>RGB 辅助 gain map + content headroom"]
+    FORMAT -->|HDR| BASE["HDR 模式的 SDR 底图<br/>Display P3；archive q100/4:4:4，share q90/4:2:0<br/>禁用 look / filter / highlight fade"]
+    BASE --> PACKAGE["Core Image ISO 21496-1 写入<br/>RGB 辅助 gain map + content headroom<br/>JPEG 或 HEIC 容器"]
     ALT --> PACKAGE
-    PACKAGE --> VERIFY["回读验证<br/>P3 profile、4:4:4、RGB gain map、声明余量<br/>SDR 码值误差 + 展开后 HDR 亮度/色度误差"]
-    VERIFY --> HDRJPEG["原子替换后的 HDR gain-map JPEG"]
+    PACKAGE --> VERIFY["回读验证<br/>P3 profile、RGB gain map、声明余量、archive 要求 4:4:4<br/>SDR 码值误差 + HDR 块级与像素级色品门禁<br/>按档位与容器分别标定"]
+    VERIFY --> HDRJPEG["原子替换后的 HDR gain-map JPEG / HEIC"]
 
     classDef shared fill:#374151,stroke:#9ca3af,stroke-width:1.5px,color:#f9fafb
     classDef sdrpath fill:#1e3a5f,stroke:#3b82f6,stroke-width:1.5px,color:#eff6ff
@@ -459,6 +459,14 @@ Sigma fp 的 DNG 上是逐平面 `WarpRectilinear` 加一张镜头阴影 `GainMa
 LibRaw 提供。Tone plan 会用实测的剪切 cell 比例，从 RAW 9 亮度排序的最高端剔除等量样本。
 这是聚合层面的对照启发式，不表示某个 RAW 9 像素能对应到某个 CFA site：重建高光仍可描述
 尾部拓扑，但不能反过来定义全局白点。报告会写明解码器、版本，以及被执行的 opcode。
+
+HDR 分支按同一套证据规则接入这条路径，并有专门测试钉住：色度自由度 `rho` 被压在 0.25
+上限（没有逐像素 CFA 掩码可以在局部撤回它）、无掩码 formation 的渲染保持在 `[0, peak]`
+体积内、rank-trim 后的 RAW 9 可靠尾部与 LibRaw 的 CFA 掩码测量在同一帧上对齐（日景参考
+帧实测相差 0.09 EV，门限 0.3 EV）。两条解码线的成像差异属于相机诠释取向，不是 HDR
+预算的泄漏。
+
+![LibRaw 与 Apple RAW 9 走同一条 AgX plan：差异是相机诠释，不是管线漂移](docs/assets/decoder-libraw-vs-raw9.jpg)
 
 Core Image 与 LibRaw 并没有暴露同一个 scene unit，单一固定补偿也无法跨相机、跨场景成立。
 所以默认改为 `--coreimage-scale aligned`：dngscan 会对同一文件快速做一次 half-size LibRaw
@@ -778,13 +786,19 @@ RAW 剪切证据筛过的可靠高光尾部决定。LibRaw 用逐像素 CFA mask
 明确失败，不会用重建高光或 SDR white endpoint 冒充传感器信息。
 
 这个请求会编译成一条不改写 body 的 HDR 曲线。K 以下继续使用 darktable 式 AgX body，内部
-gamma 固定为历史值 2.2；K 以上在 output-stop 坐标中接一段 cubic Hermite，从实际渲染 body
-的数值与解析切线出发，在 W 到达场景挣得的峰值并以零导数结束。只有归一化起点切线
-`alpha <= 3` 才接受。由于 W 和请求 headroom 都来自同一个可靠 RAW 尾部，默认 contrast=3
-时普通场景上界为 1.8494、稀疏光源为 1.9537；把用户可调 contrast=1.5-4.5 的完整范围也
-纳入后，上界分别为 2.7358 与 2.9306，仍低于 3。以后若策略或控制范围重调使它越界，编译会
-明确关闭 HDR，不会静默换用另一种 tone shape。管线里没有整体 gamma 抬升、曲线后 smootherstep gain、
-allocation window 或 lift-rate 启发式。
+gamma 固定为历史值 2.2；K 以上在 output-stop 坐标中接 cubic Hermite，从实际渲染 body
+的数值与解析切线出发，在 W 到达场景挣得的峰值并以零导数结束。白端切线钉零时，单段
+Hermite 单调的充要条件是归一化起点切线 `alpha <= 3`；显示容量 3 EV 下整个生产策略域都在
+界内（用户可调 contrast=1.5-4.5 全范围的最坏值为 2.9306）。但显示容量独立于尾部驱动的 W
+封顶 Z_peak，低容量显示配上很长的可靠尾部会把 `alpha` 合法地推过 3——这不是畸形请求，
+只是一个压缩很强的 shoulder，与 Blender HDR AgX 在同一处境下加大肩部弯折是同一类事。
+此时编译器细分为多段单调 Hermite 链，结构合同与单段完全一致：K 点锚定值与切线不动、
+白端导数为零、段间 C1、逐段单调，由同一个验收函数把关；headroom 控制因此全程连续，
+不会跳到"无 HDR"。严格 fail-closed 只留给真正退化的输入（空窗口、非正上升量、非有限
+锚点）。管线里没有整体 gamma 抬升、曲线后 smootherstep gain、allocation window 或
+lift-rate 启发式。
+
+![HDR log-stop shoulder：+3 EV 容量单段、+1.5 EV 容量细分链，K 以下 body 完全一致](docs/assets/hdr-shoulder-subdivision.png)
 
 原生 HDR 曲线是唯一亮度权威。`rho` 只在 reference-white AgX 色度路径和扩展白原生路径之间
 混合，两条路径先对齐到原生曲线决定的同一 Y。固定为 1.0 的 reference-white endpoint 不与
@@ -795,10 +809,33 @@ allocation window 或 lift-rate 启发式。
 的色相约束；dngscan 当前投影器刻意更简单，这也是 HDR 仍需实机标定的边界之一。
 
 Core Image 只把已完成的 SDR/HDR 两张 rendition 写成 RGB gain map。每个文件写完后
-都会重新展开 HDR 像素，检查 P3 profile、4:4:4、RGB 辅助图、声明 headroom 与全图
-像素/色品误差；任一门禁不过就不会保留输出文件。现在 HDR 不支持 display look/filter，
+都会重新展开 HDR 像素，检查 P3 profile、RGB 辅助图、声明 headroom、SDR 底图码值误差，
+以及 HDR 的块级与像素级色品误差；archive 档额外要求 4:4:4 底图。各容差集按投递档位
+与容器分别在真实样张回归集上标定（share HEVC 在同样名义参数下的损失明显大于 share
+JPEG）；任一门禁不过就不会保留输出文件。现在 HDR 不支持 display look/filter，
 因为这些 SDR 算子还没有独立 HDR 定义。数学约束和验收线在
 [`docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md`](docs/HDR_AGX_V2_IMPLEMENTATION_PLAN.zh-CN.md)。
+
+### 交付档的实测定位
+
+两个交付档是两个被测量过的操作点，不是一根质量滑杆。在全分辨率回归样张（24.5 MP
+Sigma fp）上：archive q100/4:4:4 约 60 MB——验证级母版，约为源 DNG 的两倍，因为去拜耳
+后的三通道 q100 JPEG 加 gain map 本来就比无损压缩的 14-bit 拜耳马赛克大。share
+q90/4:2:0 为 11–27 MB，gain map 与 content headroom 完整保留；最坏情况（高 ISO 舞台帧）
+仍在微信原图 25 MB 上限之内。两档之间没有值得买的中间点：Core Image 的主图色度采样由
+quality 涌现，实测只有恰好 q100 才输出 4:4:4，而 q90 到 q99 保真度几乎不变、体积单调
+增长——损失由 4:2:0 主导，不由 quality 数字主导。
+
+![archive 与 share 全分辨率裁切对比：q100/4:4:4 62.8 MB 对 q90/4:2:0 11.5 MB](docs/assets/delivery-archive-vs-share.jpg)
+
+share 操作点在普通内容上观感透明、体积小 5.5 倍；它的实测代价集中在像素级色品统计——
+这正是按档位标定的门禁所盯的量。容器选择优先 JPEG：ISO 21496-1 gain-map JPEG 是
+Apple 与 Google 收敛后的跨平台格式（iOS 18+、Android 15+、Chromium），在不认识它的
+查看器里优雅退化为 SDR 底图；而国内通讯应用在多数路径上会把 HEIC 转码成 JPEG，gain
+map 随之销毁。share HEVC 在本机实测也严格更差——文件更大、块级误差约 1.8 倍——所以
+`ultrahdr-heic` 是为必须收 HEIC 的下游准备的，不是效率升级。
+
+![舞台帧 share JPEG 对 share HEIC：HEIC 更大且涂抹感可见](docs/assets/delivery-jpeg-vs-heic-share.jpg)
 
 ### HDR 对比
 
@@ -830,7 +867,7 @@ log-stop 亮度比，因此只回答“DRT 把额外亮度放在哪里”，不�
 
 ![原生扩展白 HDR AgX 餐厅高光诊断](docs/assets/hdr-comparisons/_SDI0133_native_hdr_ab.jpg)
 
-[早期对比页](docs/HDR_COMPARISONS.md)保留使用已删除 smootherstep allocator 时做的
+[早期对比页](docs/archived/HDR_COMPARISONS.md)保留使用已删除 smootherstep allocator 时做的
 RAW9/LibRaw 与 AgX/neutral 实验，作为开发记录，不再是当前像素参考。Core Image/ISO 在
 macOS 上已经逐文件 round-trip；Android/Chrome 互认和项目自定色彩参数的 EDR 样张标定仍
 需要真机完成。

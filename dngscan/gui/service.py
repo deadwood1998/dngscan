@@ -655,6 +655,21 @@ def run_export(params: dict) -> dict:
     # Profile owns the encode knobs once resolved (archive forces 100/444).
     quality = int(delivery.quality)
     chroma = str(delivery.chroma)
+    if dg.is_hdr_output_format(output_format):
+        # Mirror the CLI's honesty contract: the HDR container's primary-image
+        # subsampling is emergent from quality inside Core Image, so a request the
+        # encoder cannot honour must fail loudly, not write a contradicting file.
+        # The page constrains its own controls; this guards direct API clients.
+        if chroma == "422":
+            raise ValueError(
+                "HDR gain-map 容器不提供 4:2:2 主图采样；"
+                "Core Image 按 quality 决定采样（q100→4:4:4，share→通常 4:2:0）"
+            )
+        if chroma == "444" and not delivery.is_archive:
+            raise ValueError(
+                "HDR 容器的 4:4:4 只在 q100（archive 档）下产生并被门禁验证；"
+                "请改用 archive 交付档（或让色度采样跟随交付档）"
+            )
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
@@ -772,11 +787,16 @@ def run_export(params: dict) -> dict:
             chroma=chroma,
         )
         hdr_export_info = export_result if isinstance(export_result, dict) else None
+        if hdr_export_info is not None and hdr_export_info.get("output_path"):
+            # The writer corrects a container/suffix mismatch; report the real file.
+            out_path = Path(str(hdr_export_info["output_path"]))
+        if hdr_export_info is not None and out_path.is_file():
+            hdr_export_info["file_size_bytes"] = out_path.stat().st_size
         rendered_u8 = export_result[1] if isinstance(export_result, tuple) else None
         if rendered_u8 is None and output_format == "ultrahdr-heic":
-            from dngscan.gainmap import _read_primary_rgb_u8
+            from dngscan.gainmap import read_primary_rgb_u8
 
-            rendered_u8 = _read_primary_rgb_u8(out_path)
+            rendered_u8 = read_primary_rgb_u8(out_path)
         if rendered_u8 is not None:
             metrics = output_luminance_metrics_u8(rendered_u8, gamut, ev)
         else:
