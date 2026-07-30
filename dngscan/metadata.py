@@ -26,6 +26,33 @@ TAG_SUB_IFDS = 330
 # of a per-image rendering recipe (ProRAW can vary it with scene dynamic range). It is
 # not the shutter/aperture/ISO measurement and does not imply content normalization.
 TAG_BASELINE_EXPOSURE = 50730
+# DNG colour calibration: XYZ -> camera matrices measured under two illuminants, plus
+# the EXIF LightSource codes naming those illuminants. The pair is what makes an
+# arbitrary-CCT white balance a calibrated interpolation instead of a guess.
+TAG_COLOR_MATRIX_1 = 50721
+TAG_COLOR_MATRIX_2 = 50722
+TAG_CALIBRATION_ILLUMINANT_1 = 50778
+TAG_CALIBRATION_ILLUMINANT_2 = 50779
+
+# EXIF LightSource code -> correlated colour temperature (K). Only codes that name a
+# concrete illuminant are mapped; anything else leaves the matrix unpaired.
+_LIGHT_SOURCE_CCT = {
+    1: 5500.0,   # Daylight
+    2: 4200.0,   # Fluorescent (nominal)
+    3: 2856.0,   # Tungsten
+    4: 5500.0,   # Flash (nominal)
+    9: 5500.0,   # Fine weather
+    10: 6500.0,  # Cloudy
+    11: 7500.0,  # Shade
+    17: 2856.0,  # Standard light A
+    18: 4874.0,  # Standard light B
+    19: 6774.0,  # Standard light C
+    20: 5503.0,  # D55
+    21: 6504.0,  # D65
+    22: 7504.0,  # D75
+    23: 5003.0,  # D50
+    24: 3200.0,  # ISO studio tungsten
+}
 
 _TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
 
@@ -208,3 +235,68 @@ def read_dng_shot_info(path: Path) -> DngShotInfo:
     except (OSError, struct.error):
         pass
     return info
+
+
+@dataclass
+class DngColorCalibration:
+    """XYZ->camera matrices under one or two named illuminants (DNG ColorMatrix1/2).
+
+    ``matrix*`` are row-major 3x3 (RGB planes); ``cct*`` are the CCTs of the
+    calibration illuminants. ``matrix2`` may be None (single-calibration files).
+    """
+
+    matrix1: tuple[tuple[float, float, float], ...]
+    cct1: float
+    matrix2: tuple[tuple[float, float, float], ...] | None = None
+    cct2: float | None = None
+
+
+def _matrix_from_values(vals: list) -> tuple[tuple[float, float, float], ...] | None:
+    if len(vals) < 9:
+        return None
+    rows = tuple(
+        (float(vals[r * 3]), float(vals[r * 3 + 1]), float(vals[r * 3 + 2]))
+        for r in range(3)
+    )
+    if all(abs(v) < 1e-12 for row in rows for v in row):
+        return None
+    return rows
+
+
+def read_dng_color_calibration(path: Path) -> DngColorCalibration | None:
+    """Best-effort DNG dual-illuminant colour calibration; None when unavailable."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+            if len(head) < 8 or head[:2] not in (b"II", b"MM"):
+                return None
+            endian = "<" if head[:2] == b"II" else ">"
+            (magic,) = struct.unpack(endian + "H", head[2:4])
+            if magic != 42:
+                return None
+            (ifd0_off,) = struct.unpack(endian + "L", head[4:8])
+            matrices: dict[int, tuple[tuple[float, float, float], ...]] = {}
+            illuminants: dict[int, float] = {}
+            for tag, typ, num, raw in _read_ifd_entries(fh, ifd0_off, endian):
+                if tag in (TAG_COLOR_MATRIX_1, TAG_COLOR_MATRIX_2):
+                    matrix = _matrix_from_values(_entry_values(fh, typ, num, raw, endian))
+                    if matrix is not None:
+                        matrices[1 if tag == TAG_COLOR_MATRIX_1 else 2] = matrix
+                elif tag in (TAG_CALIBRATION_ILLUMINANT_1, TAG_CALIBRATION_ILLUMINANT_2):
+                    vals = _entry_values(fh, typ, num, raw, endian)
+                    if vals:
+                        cct = _LIGHT_SOURCE_CCT.get(int(vals[0]))
+                        if cct is not None:
+                            illuminants[1 if tag == TAG_CALIBRATION_ILLUMINANT_1 else 2] = cct
+    except (OSError, struct.error):
+        return None
+    if 1 in matrices and 1 in illuminants:
+        return DngColorCalibration(
+            matrix1=matrices[1],
+            cct1=illuminants[1],
+            matrix2=matrices.get(2),
+            cct2=illuminants.get(2),
+        )
+    if 2 in matrices and 2 in illuminants:
+        return DngColorCalibration(matrix1=matrices[2], cct1=illuminants[2])
+    return None

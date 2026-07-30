@@ -153,7 +153,7 @@ def tone_plan_sample_scene_rec2020(
     gain = bundle.exposure_gain if exposure_gain is None else exposure_gain
     rec2020 = scene_rec2020_to_float(flat[::step, :3], bundle.scene_scale, gain)
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
+        bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
     return scene_transform_engine.apply_scene_transform_rec2020(
         rec2020, scene_transform, scene_transform_strength, wb_adapt
@@ -181,7 +181,7 @@ def scene_tone_metrics(
     gain = bundle.exposure_gain if plan_exposure_gain is None else plan_exposure_gain
     rec = scene_rec2020_to_float(flat[::step, :3], bundle.scene_scale, gain)
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
+        bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
     rec = scene_transform_engine.apply_scene_transform_rec2020(
         rec, scene_transform, scene_transform_strength, wb_adapt

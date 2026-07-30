@@ -455,7 +455,15 @@ availability check and fallback logic.
 
 `camera` uses the file's AsShot measurement. `daylight` uses LibRaw's calibrated
 daylight multipliers and is useful when a group of images under the same light should
-keep a fixed balance.
+keep a fixed balance. The fixed-Kelvin modes (`6500k` D65 display white, `5500k`
+photographic daylight / daylight film, `3400k`/`3200k` Type A/B tungsten film, `9300k`
+the traditional Japanese broadcast white) are declared references rather than eyeballed
+adjustments: LibRaw solves them through the file's own DNG dual-illuminant calibration
+(ColorMatrix1/2 interpolated in reciprocal CCT, single Adobe matrix as fallback), and
+RAW 9 receives the same declaration through CIRAWFilter's native
+neutralTemperature/neutralTint interface with tint pinned to zero. Both decoders realise
+one declaration with their own calibration; on the Sigma fp reference frame the solved
+6500K multipliers match the manufacturer daylight metadata within 0.1%.
 
 Sun, overcast, and shade lie roughly on a predictable daylight locus, where the camera
 measurement is usually useful. Mixed light, narrow-band LED, fluorescent, and sodium

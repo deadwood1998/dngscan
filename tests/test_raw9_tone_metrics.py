@@ -47,6 +47,7 @@ class ReliableTailAuthorityTests(unittest.TestCase):
             exposure_gain=1.0,
             wb_mode="camera",
             camera_wb=None,
+            applied_wb=None,
             daylight_wb=None,
             clip_masks=np.ones_like(scene),
             scene_decoder="libraw",

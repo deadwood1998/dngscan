@@ -136,7 +136,12 @@ AGX_INSET = agx_engine.AGX_INSET_REC2020
 AGX_OUTSET = agx_engine.AGX_OUTSET_REC2020
 
 
-WB_CHOICES = ("camera", "daylight")
+# As-shot, the LibRaw daylight-metadata anchor (kept for compatibility and as the
+# prefeed calibration reference), and declared fixed-Kelvin standards. Fixed Kelvin is a
+# declaration, not an adjustment: 6500K = D65 display white, 5500K = photographic
+# daylight / daylight-balanced film, 3400K/3200K = Type A/B tungsten film, 9300K = the
+# traditional Japanese broadcast white point.
+WB_CHOICES = ("camera", "daylight", "6500k", "5500k", "3400k", "3200k", "9300k")
 
 
 DEMOSAIC_CHOICES = ("auto", "dht", "dcb", "ahd", "aahd", "vng", "ppg")

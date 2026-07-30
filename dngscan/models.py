@@ -44,6 +44,11 @@ class RawBundle:
     # handoffs clear it inside CIRAWFilter and restore it through scene_scale, so this is
     # normally False for both decoders. Kept explicit to detect fallback API behaviour.
     baseline_exposure_baked_in: bool = False
+    # The WB multipliers actually applied to this decode: camera metadata for as-shot,
+    # daylight metadata for the daylight anchor, or the solved fixed-Kelvin multipliers.
+    # Prefeed window transport reads this so calibrated chromaticity anchors follow the
+    # balance the pixels really received. None means "fall back to camera_wb".
+    applied_wb: list[float] | None = None
     # Half-resolution, orientation-correct RGB soft clip masks in raw/CFA space.
     # Shape is (H, W, 3), aligned to scene_rec2020_render when scene_half_size=True.
     # Full-resolution renders resize this mask to the render buffer on demand.

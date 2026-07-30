@@ -335,6 +335,7 @@ def configure_linear_filter(
     version: str,
     scale_factor: float,
     exposure: float = 0.0,
+    neutral_cct: float | None = None,
 ) -> dict[str, Any]:
     """Put the filter into Apple's linear scene-referred configuration.
 
@@ -364,6 +365,14 @@ def configure_linear_filter(
     # denoiser was mostly this subtraction.
     _set_amount(filt, "setShadowBias_", None, 0.0)
     _set_amount(filt, "setExposure_", None, float(exposure))
+    # A declared fixed-Kelvin white reference goes through CIRAWFilter's native neutral
+    # interface: Apple's own calibration realises the declaration, which is the point of
+    # a declaration (each decoder uses its most accurate implementation). Tint is forced
+    # to zero because as-shot tint residue would otherwise survive the temperature set
+    # and the neutral would sit off the locus. As-shot (None) touches neither property.
+    if neutral_cct is not None:
+        _set_amount(filt, "setNeutralTemperature_", None, float(neutral_cct))
+        _set_amount(filt, "setNeutralTint_", None, 0.0)
     # EDR is a display rendering choice, not part of the custom AgX scene input. Leaving a
     # decoder-dependent default here could place Apple's HDR transform before dngscan's
     # DRT. Older CIRAWFilter versions simply do not expose the setter.
@@ -469,6 +478,8 @@ def configure_linear_filter(
         "extended_dynamic_range_amount": _read_float(
             filt, "extendedDynamicRangeAmount"
         ),
+        "neutral_temperature": _read_float(filt, "neutralTemperature"),
+        "neutral_tint": _read_float(filt, "neutralTint"),
     }
 
 
@@ -712,13 +723,16 @@ def decode_scene_rec2020(
     target_shape: tuple[int, int] | None = None,
     exposure: float = 0.0,
     scale_compensation: float = COREIMAGE_SCALE_COMPENSATION,
+    neutral_cct: float | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Decode to signed float16 HxWx3 linear Rec.2020.
 
     Subjective CIRAW controls are configured for the documented linear handoff (not
     blindly zeroed). ``scale_compensation`` is only the optional legacy fixed multiplier;
     load_raw performs the separate per-file alignment policy.
-    Optional ``target_shape`` resamples after render.
+    Optional ``target_shape`` resamples after render. ``neutral_cct`` declares a fixed
+    white reference in Kelvin through CIRAWFilter's native neutralTemperature/neutralTint
+    interface (tint forced to 0 so the neutral sits on the locus); None keeps as-shot.
     """
     path = Path(path)
     offered = supported_versions(path)
@@ -726,7 +740,11 @@ def decode_scene_rec2020(
     filt = _open_filter(path)
     scale_factor = preview_scale_factor(filt) if half_size else 1.0
     cfg = configure_linear_filter(
-        filt, version=resolved, scale_factor=scale_factor, exposure=float(exposure)
+        filt,
+        version=resolved,
+        scale_factor=scale_factor,
+        exposure=float(exposure),
+        neutral_cct=neutral_cct,
     )
     rgb = _render_linear_rec2020(filt, interactive=bool(half_size))
     if abs(float(scale_compensation) - 1.0) > 1e-12:
@@ -758,6 +776,8 @@ def decode_scene_rec2020(
             "extended_dynamic_range_amount"
         ),
         "exposure": float(exposure),
+        "neutral_temperature": cfg.get("neutral_temperature"),
+        "neutral_tint": cfg.get("neutral_tint"),
         "decoder_runtime_id": decoder_runtime_id(),
     }
     return rgb.astype(np.float16, copy=False), info

@@ -126,11 +126,16 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="ppg">PPG</option>
       </select>
     </div>
-    <div style="flex:1;min-width:150px">
+    <div style="flex:1;min-width:170px">
       <label>白平衡</label>
-      <select id="wb" title="使用拍摄值，或统一到相机日光基准。">
+      <select id="wb" title="拍摄值信相机测光；固定色温是声明的标准参考（经文件自身颜色标定求解），用于胶片模拟等需要整卷一致配平的场景，不是肉眼调整。">
         <option value="camera">拍摄值 · As Shot</option>
-        <option value="daylight">日光基准</option>
+        <option value="6500k">6500K · D65 显示标准</option>
+        <option value="5500k">5500K · 摄影日光/日光卷</option>
+        <option value="3400k">3400K · Type A 钨丝卷</option>
+        <option value="3200k">3200K · Type B 钨丝卷</option>
+        <option value="9300k">9300K · 日本广播白点</option>
+        <option value="daylight">相机日光标定 · 旧</option>
       </select>
     </div>
     <div style="flex:1;min-width:160px">
@@ -514,7 +519,9 @@ function updateDecoderUi(){
     if(highlight.dataset.librawValue){highlight.value=highlight.dataset.librawValue;delete highlight.dataset.librawValue;}
     if(demosaic.dataset.librawValue){demosaic.value=demosaic.dataset.librawValue;delete demosaic.dataset.librawValue;}
   }
-  if(raw9 && $("#wb").value!=="camera"){
+  // RAW 9 accepts fixed-Kelvin declarations natively; only the LibRaw-metadata
+  // "daylight" anchor has no validated mapping there.
+  if(raw9 && $("#wb").value==="daylight"){
     $("#wb").value="camera";
   }
 }

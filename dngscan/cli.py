@@ -208,7 +208,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--wb",
         choices=WB_CHOICES,
         default="camera",
-        help="白平衡: camera=相机 AsShot（默认）；daylight=固定日光配平（胶片式，整卷一致，AsShot 仅作现场光源证词）",
+        help=(
+            "白平衡: camera=相机 AsShot（默认）；daylight=相机日光标定（兼容保留）；"
+            "固定色温声明: 6500k=D65 显示标准白点，5500k=摄影日光/日光卷，"
+            "3400k=Type A 钨丝卷，3200k=Type B 钨丝卷（影棚钨丝灯），"
+            "9300k=日本广播电视传统白点。固定色温经文件自身的颜色标定求解"
+            "（DNG 双光源插值优先），两种解码器都支持"
+        ),
     )
     parser.add_argument(
         "--demosaic",

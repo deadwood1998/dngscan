@@ -413,8 +413,11 @@ def parse_decoder(params: dict) -> tuple[str, str]:
     if decoder == "coreimage" and not coreimage_decode.available():
         raise RuntimeError("Core Image 解码器在此系统不可用（需要 macOS + PyObjC Quartz）")
     wb = str(params.get("wb", "camera"))
-    if decoder == "coreimage" and wb != "camera":
-        raise ValueError("Core Image 解码器目前仅支持拍摄白平衡（As Shot）")
+    if decoder == "coreimage" and wb == "daylight":
+        raise ValueError(
+            "Core Image 解码器不支持“相机日光标定”模式（LibRaw 元数据乘数无验证映射）；"
+            "固定色温声明（如 5500K）与拍摄值均可用"
+        )
     return decoder, version
 
 

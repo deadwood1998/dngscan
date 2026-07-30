@@ -82,6 +82,27 @@ median −3 EV → this is a night scene, don't force the exposure up.
 
 ---
 
+## 3.5 White balance: As Shot vs fixed Kelvin
+
+Besides "As Shot", the white balance selector offers a set of **fixed color
+temperatures**. These are not for balancing by eye — eyeballing neutrality on a screen
+never beats the camera's metering (your eyes chromatically adapt while you look). They
+are **declared standard references**: the values come from industry calibrations, and
+the multipliers are solved precisely from the photo file's own color calibration, with
+no eye in the loop.
+
+| Option | What it is | When |
+|---|---|---|
+| **As Shot** | The balance the camera metered at capture | Default; everyday output |
+| **6500K · D65** | The standard white point of sRGB/Rec.709 displays | Aligning with display-industry standards |
+| **5500K · photographic daylight** | The calibration temperature of daylight-balanced film | **The correct starting point for film simulation**: one fixed 5500K for the whole roll, letting the actual light's warmth or coolness pass through — tungsten light *should* look orange, exactly as real film behaves |
+| **3400K · Type A** | Type A tungsten film (photoflood lamps) | Tungsten film simulation |
+| **3200K · Type B** | Type B tungsten film (3200K studio tungsten/halogen) | Same, the more common tungsten calibration |
+| **9300K · Japanese broadcast white** | The traditional white point of Japanese television (cool blue) | The "old Japanese TV" cool look — for fun |
+
+Fixed Kelvin works on both decoders. A visible color cast after choosing one is
+**expected behavior** — it is precisely how film sees the world, not a malfunction.
+
 ## 4. The other EVs in the interface
 
 - **Exposure EV** (the slider): brightens/darkens everything, +1 = one stop up. 0 keeps

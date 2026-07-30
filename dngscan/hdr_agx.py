@@ -178,7 +178,7 @@ def scene_render_to_hdr_display_linear(
     peak = _pack_peak(hdr_plan)
 
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
+        bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
 
     def render_hdr_chunk(start: int, end: int) -> None:
@@ -285,7 +285,7 @@ def render_ultrahdr_agx_pair(
             raw_guidance = guidance_engine.raw_guidance_for_shape(bundle, (h, w), analysis)
 
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.camera_wb, bundle.daylight_wb
+        bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb
     )
     # Ultrahdr forces look/filter off. HDR copies retreat from the scene plan, so one
     # shared intent strength matches what each branch would have applied alone.

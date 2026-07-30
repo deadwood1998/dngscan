@@ -7,6 +7,7 @@ from typing import Any
 
 from ._deps import np, rawpy
 from . import metadata as dng_metadata
+from .wb import kelvin_mode_cct, solve_kelvin_wb
 from .constants import (
     COREIMAGE_SCALE_DEFAULT_MODE,
     DECODER_CHOICES,
@@ -44,14 +45,65 @@ def highlight_mode_cn(name: str) -> str:
     }.get(name, name)
 
 
-def wb_postprocess_kwargs(wb_mode: str, daylight_wb: list[float] | None) -> dict[str, Any]:
-    """Film-style fixed balance ('daylight', libraw's calibrated daylight multipliers)
-    or the as-shot camera balance (default). One dict so every render agrees."""
+def wb_postprocess_kwargs(
+    wb_mode: str,
+    daylight_wb: list[float] | None,
+    kelvin_wb: list[float] | None = None,
+) -> dict[str, Any]:
+    """Film-style fixed balances or the as-shot camera balance (default).
+
+    'daylight' uses libraw's calibrated daylight multipliers; the fixed-Kelvin modes
+    take pre-solved multipliers from dngscan.wb (declared references, computed through
+    the file's own colour calibration). One dict so every render agrees."""
     if wb_mode == "daylight" and daylight_wb is not None and any(v > 0 for v in daylight_wb[:3]):
         return {"use_camera_wb": False, "user_wb": [float(v) for v in daylight_wb[:4]]}
+    if kelvin_mode_cct(wb_mode) is not None:
+        if kelvin_wb is None or not any(v > 0 for v in kelvin_wb[:3]):
+            raise ValueError(f"kelvin wb mode {wb_mode} requires solved multipliers")
+        return {"use_camera_wb": False, "user_wb": [float(v) for v in kelvin_wb[:4]]}
     if wb_mode not in WB_CHOICES:
         raise ValueError(f"unknown wb mode: {wb_mode}")
     return {"use_camera_wb": True}
+
+
+def _applied_wb_for_mode(
+    wb_mode: str,
+    camera_wb: list[float] | None,
+    daylight_wb: list[float] | None,
+    kelvin_wb: list[float] | None,
+) -> list[float] | None:
+    """The multipliers this decode actually applied, by mode."""
+    if wb_mode == "daylight":
+        return daylight_wb
+    if kelvin_wb is not None:
+        return kelvin_wb
+    return camera_wb
+
+
+def solve_wb_for_mode(
+    wb_mode: str, path: Path, xyz_to_cam: Any | None
+) -> list[float] | None:
+    """Fixed-Kelvin multipliers for this file, or None for non-Kelvin modes.
+
+    DNG dual-illuminant calibration is preferred; LibRaw's single Adobe matrix is the
+    fallback. Failure raises with a clear message instead of decoding with a guessed
+    balance."""
+    cct = kelvin_mode_cct(wb_mode)
+    if cct is None:
+        return None
+    calibration = dng_metadata.read_dng_color_calibration(path)
+    matrix = None
+    if xyz_to_cam is not None:
+        candidate = np.asarray(xyz_to_cam, dtype=np.float64)
+        if candidate.size >= 9 and float(np.abs(candidate[:3, :3]).sum()) > 1e-9:
+            matrix = candidate[:3, :3]
+    try:
+        return solve_kelvin_wb(cct, dng_calibration=calibration, xyz_to_cam=matrix)
+    except ValueError as exc:
+        raise ValueError(
+            f"无法为 {wb_mode} 求解白平衡：{exc}；"
+            "该文件缺少可用的颜色标定，请改用 --wb camera"
+        ) from exc
 
 
 def libraw_wb_headroom_gain(wb_values: list[float] | None) -> float:
@@ -595,8 +647,14 @@ def load_raw(
             camera_wb = list(wb_attr) if wb_attr is not None else []
             camera_white_levels = list(white_pc_attr) if white_pc_attr is not None else []
             color_desc = decode_color_desc(getattr(raw, "color_desc", ""))
+            # Declared fixed-Kelvin balances solve to multipliers through the file's
+            # own calibration; the solve happens here so both decoders and the aligned
+            # reference decode all share one set of numbers.
+            kelvin_wb = solve_wb_for_mode(
+                wb_mode, path, getattr(raw, "rgb_xyz_matrix", None)
+            )
             if decoder == "libraw":
-                wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb)
+                wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb, kelvin_wb)
                 demosaic_alg = resolve_demosaic_algorithm(raw, demosaic)
                 scene_rec2020_render = render_to_scene_rec2020(
                     raw, effective_highlight_mode, scene_half_size, demosaic_alg, wb_kwargs
@@ -606,7 +664,9 @@ def load_raw(
 
                 if np.issubdtype(scene_rec2020_render.dtype, np.integer):
                     encoded_max = float(np.iinfo(scene_rec2020_render.dtype).max)
-                    applied_wb = daylight_wb if wb_mode == "daylight" else camera_wb
+                    applied_wb = _applied_wb_for_mode(
+                        wb_mode, camera_wb, daylight_wb, kelvin_wb
+                    )
                     scene_scale = libraw_scene_scale(
                         encoded_max,
                         effective_highlight_mode,
@@ -636,10 +696,15 @@ def load_raw(
         raise RuntimeError(f"Cannot decode RAW file with rawpy/libraw: {exc}") from exc
 
     if decoder == "coreimage":
-        if wb_mode != "camera":
+        neutral_cct = kelvin_mode_cct(wb_mode)
+        if wb_mode != "camera" and neutral_cct is None:
+            # Fixed-Kelvin modes are declarations CIRAWFilter accepts natively
+            # (neutralTemperature/neutralTint); "daylight" is defined as LibRaw's
+            # metadata multipliers, and that specific mapping remains unvalidated.
             raise ValueError(
-                "Core Image decoder currently supports only --wb camera; "
-                "daylight multipliers have no validated CIRAWFilter mapping yet"
+                "Core Image decoder supports --wb camera and the fixed-Kelvin modes; "
+                "'daylight' (LibRaw's metadata multipliers) has no validated "
+                "CIRAWFilter mapping"
             )
         from . import coreimage_decode
 
@@ -655,6 +720,7 @@ def load_raw(
             scale_compensation=coreimage_decode.scale_compensation_for_mode(
                 coreimage_scale
             ),
+            neutral_cct=neutral_cct,
         )
         scene_rec2020_render, scene_scale = coreimage_decode.scene_float_to_half(ci_float)
         ci_authored_baseline = info.get("baseline_exposure_authored")
@@ -691,13 +757,16 @@ def load_raw(
             try:
                 # A fresh handle: reading the mosaic above leaves this LibRaw handle
                 # unable to postprocess (LibRawOutOfOrderCallError).
+                # The reference must decode under the same declared balance as the
+                # Core Image render, or the green-median alignment would compare two
+                # different illuminant interpretations of one scene.
                 with rawpy.imread(str(path)) as reference_raw:
                     reference_scene = render_to_scene_rec2020(
                         reference_raw,
                         effective_highlight_mode,
                         True,
                         None,
-                        wb_postprocess_kwargs(wb_mode, daylight_wb),
+                        wb_postprocess_kwargs(wb_mode, daylight_wb, kelvin_wb),
                     )
                 # Decode the reference with the same storage-scale contract as the main
                 # LibRaw path. Normalising reconstruct by 65535 would lose its reserved
@@ -705,7 +774,7 @@ def load_raw(
                 reference_scale = libraw_scene_scale(
                     float(np.iinfo(reference_scene.dtype).max),
                     effective_highlight_mode,
-                    daylight_wb if wb_mode == "daylight" else camera_wb,
+                    _applied_wb_for_mode(wb_mode, camera_wb, daylight_wb, kelvin_wb),
                     baseline_exposure=effective_baseline_exposure,
                 )
                 reference_level = scene_green_median(
@@ -774,6 +843,7 @@ def load_raw(
         shot_iso=shot.iso,
         baseline_exposure=effective_baseline_exposure,
         baseline_exposure_baked_in=baseline_exposure_baked_in,
+        applied_wb=_applied_wb_for_mode(wb_mode, camera_wb, daylight_wb, kelvin_wb),
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
         scene_decoder_version=scene_decoder_version,
