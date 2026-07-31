@@ -252,6 +252,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--film-mode",
+        choices=("observe", "full"),
+        default="observe",
+        help=(
+            "胶片分工模式（仅在胶片曲线激活时有意义）。observe=胶片声明观察者看见了"
+            "什么（WB/分离/音调签名），颜色由 AgX 显影（默认，已验证路径）；"
+            "full=胶片显影模型整体接管（逐通道曲线+比率场，实验性：色彩侧无外部"
+            "验证），AgX 只保留交付端色域安全。full 暂仅支持 SDR"
+        ),
+    )
+    parser.add_argument(
         "--demosaic",
         choices=DEMOSAIC_CHOICES,
         default="auto",
@@ -309,6 +320,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             args.scene_transform = combo_st
         if args.film_curve == "none":
             args.film_curve = args.film
+        # Editorial style pairing (observe mode's declared look layer): applied only
+        # to layers left at their defaults — an explicitly given value wins, same as
+        # every other combo expansion. Full mode ignores the pairing: the film
+        # development model owns its own character there.
+        if args.film_mode == "observe":
+            from .film_curve import film_style_pairing
+
+            strength, primaries = film_style_pairing(args.film)
+            if abs(float(args.scene_transform_strength) - 1.0) < 1e-9:
+                args.scene_transform_strength = strength
+            if args.agx_primaries == "base":
+                args.agx_primaries = primaries
+    if (
+        args.film_mode == "full"
+        and args.film_curve != "none"
+        and str(args.output_format).startswith("ultrahdr")
+    ):
+        parser.error(
+            "--film-mode full 暂仅支持 SDR：胶片接管显影没有 HDR 对应物"
+            "（AgX 的 HDR 色彩机制在该模式下已让位）。请改用 --output-format sdr "
+            "或 --film-mode observe"
+        )
     if args.jpeg_quality is not None and not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
     if not 0 <= args.hdr_headroom <= MAX_HDR_HEADROOM_EV + 1e-9:
@@ -524,6 +557,7 @@ def main(argv: list[str]) -> int:
                 args.lum_norm,
                 agx_primaries=args.agx_primaries,
                 film_curve=args.film_curve,
+                film_mode=args.film_mode,
             )
             if jpeg_path is not None
             else None

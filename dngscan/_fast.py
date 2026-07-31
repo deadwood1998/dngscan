@@ -77,13 +77,12 @@ def supports_agx(plan: ToneCompressionPlan) -> bool:
         return False
     if not bool(getattr(plan, "use_c1_endpoints", False)):
         return False
-    from .film_curve import channel_ratio_field
-
-    if channel_ratio_field(str(getattr(plan, "curve_preset", "") or "")) is not None:
-        # The native kernel has no channel-ratio stage: film presets fall back to
-        # the NumPy formation so the measured differential is applied faithfully.
-        # Porting the gain into the C++ kernel is a measured follow-up, not a
-        # correctness requirement.
+    if str(getattr(plan, "film_mode", "observe")) == "full" and str(
+        getattr(plan, "curve_preset", "none")
+    ) != "none":
+        # Film takeover renders through film_develop, not the AgX kernel. In the
+        # default "observe" mode a film preset is just curve parameters — the
+        # native kernel handles it at full speed.
         return False
     if _fast_mode() == "off":
         return False

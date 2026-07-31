@@ -220,6 +220,13 @@ class ToneCompressionPlan:
     # for scene-adaptive compilation. Informational: consumers must read the curve
     # fields themselves, never re-derive behaviour from the name.
     curve_preset: str = "none"
+    # Two-mode film contract: "observe" (default) = the film declares what the
+    # observer saw (WB/separation/tone signature), AgX develops — colour stays with
+    # the pipeline's validated rendering. "full" = the film's development model takes
+    # over per-channel (film_develop core, EXPERIMENTAL: colour side has no external
+    # oracle); AgX keeps only delivery-side gamut safety. Meaningful only while a
+    # curve_preset is active.
+    film_mode: str = "observe"
     # Display-referred dark-scene lift, implemented like darktable's look brightness:
     # it leaves encoded black/white fixed and is never an exposure gain.
     view_brightness: float = 1.0

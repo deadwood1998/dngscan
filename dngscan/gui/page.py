@@ -212,7 +212,7 @@ button.preview:disabled{opacity:.5;cursor:default}
   <div class="row">
     <div style="flex:1;min-width:190px">
       <label>胶片观察位置</label>
-      <select id="film" title="一次设置三层独立声明：白平衡（日光卷 5500K / 钨丝电影卷 3200K）+ 对应光谱前馈 + 对应曲线预设。选中后相关控件同步更新，随时可单独调整——没有任何一层被烘焙。">
+      <select id="film" title="一次设置多层独立声明：白平衡（日光卷 5500K / 钨丝电影卷 3200K）+ 光谱前馈 + 曲线预设 + 风格配对（前馈强度与 AgX 原色几何，编辑初稿可改）。胶片决定观察者看见了什么，AgX 决定怎么显影。选中后相关控件同步更新，随时可单独调整——没有任何一层被烘焙。">
         <option value="none">无 · 场景自适应</option>
 FILM_OPTIONS
       </select>
@@ -643,8 +643,12 @@ $("#film").addEventListener("change",()=>{
     $("#wb").value=combo.wb;
     if([...$("#sceneTransform").options].some(o=>o.value===combo.st))$("#sceneTransform").value=combo.st;
     $("#filmCurve").value=combo.fc;
+    if(combo.sts!==undefined){$("#sceneTransformStrength").value=combo.sts;setSceneTransformStrengthLabel();}
+    if(combo.pr&&[...$("#agxPrimaries").options].some(o=>o.value===combo.pr))$("#agxPrimaries").value=combo.pr;
   }else{
     $("#wb").value="camera";$("#sceneTransform").value="none";$("#filmCurve").value="none";
+    $("#sceneTransformStrength").value=1;setSceneTransformStrengthLabel();
+    $("#agxPrimaries").value="base";
   }
   updateDecoderUi();updateSceneTransformUi();saveSettings();preparePreview();
 });
@@ -952,7 +956,7 @@ def _scene_transform_options_html() -> str:
 
 
 def _film_options_html() -> tuple[str, str, str]:
-    from ..film_curve import FILM_CURVE_PRESETS
+    from ..film_curve import FILM_CURVE_PRESETS, film_style_pairing
     from ..scene_transform import SCENE_TRANSFORMS
 
     film_opts, curve_opts, combos = [], [], {}
@@ -965,10 +969,16 @@ def _film_options_html() -> tuple[str, str, str]:
         curve_opts.append(f'        <option value="{key}" title="{note}">{label}</option>')
         combo = preset.get("combo", {})
         st = str(combo.get("scene_transform", "none"))
+        strength, primaries = film_style_pairing(key)
         combos[key] = {
             "wb": str(combo.get("wb", "5500k")),
             "st": st if st in SCENE_TRANSFORMS else "none",
             "fc": key,
+            # Editorial style pairing (observe mode's declared look layer): the
+            # combo sets these controls visibly, same as the other layers —
+            # nothing baked, everything overridable.
+            "sts": strength,
+            "pr": primaries,
         }
     return "\n".join(film_opts), "\n".join(curve_opts), json.dumps(combos, ensure_ascii=False)
 

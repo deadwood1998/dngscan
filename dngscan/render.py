@@ -184,6 +184,18 @@ def apply_tone_core(
     raw_guidance: Any | None = None,
 ) -> Any:
     core = str(getattr(plan, "tone_core", "agx"))
+    # Film takeover: with a film preset in "full" mode, the film's development
+    # model replaces the AgX formation entirely (EXPERIMENTAL; see film_develop).
+    # Downstream finalize keeps delivery-side gamut safety — the small part AgX
+    # still owns in that mode.
+    if (
+        core == "agx"
+        and str(getattr(plan, "film_mode", "observe")) == "full"
+        and str(getattr(plan, "curve_preset", "none")) != "none"
+    ):
+        from .film_develop import apply_film_core
+
+        return apply_film_core(rgb_rec2020, plan)
     if core == "neutral":
         return neutral_engine.apply_neutral_core(rgb_rec2020, plan)
     if core == "lum":

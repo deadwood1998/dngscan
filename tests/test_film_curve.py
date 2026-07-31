@@ -168,6 +168,26 @@ class ChannelRatioFieldTests(unittest.TestCase):
                 self.assertLess(float(r.max()), 5.0)
 
 
+class StylePairingTests(unittest.TestCase):
+    """The editorial look layer: every preset pairs a declared separation strength
+    with one of AgX's own primaries geometries — declarations, not measurements."""
+
+    def test_every_preset_has_a_pairing_within_bounds(self) -> None:
+        from dngscan.film_curve import FILM_CURVE_PRESETS, film_style_pairing
+
+        for name in FILM_CURVE_PRESETS:
+            with self.subTest(preset=name):
+                strength, primaries = film_style_pairing(name)
+                self.assertTrue(1.0 <= strength <= 3.0, strength)
+                self.assertIn(primaries, ("base", "punchy", "muted", "smooth"))
+
+    def test_unknown_preset_falls_back_conservatively(self) -> None:
+        from dngscan.film_curve import film_style_pairing
+
+        strength, primaries = film_style_pairing("nonexistent")
+        self.assertEqual((strength, primaries), (1.3, "base"))
+
+
 class TheatricalVariantTests(unittest.TestCase):
     """Quotation presets: every dark-surround print chain carries a *_theatrical twin."""
 
@@ -280,15 +300,13 @@ class ApplyPresetTests(unittest.TestCase):
         self.assertEqual(tone.dynamic_range_ev, tone.white_ev - tone.black_ev)
 
 
-class ChannelRatioRuntimeTests(unittest.TestCase):
-    """Phase 2: the formation applies the measured differential; neutrals untouched.
+class FilmModeTests(unittest.TestCase):
+    """The two-mode contract: observe = film declares, AgX develops (no ratio);
+    full = the film development core takes over per-channel (EXPERIMENTAL)."""
 
-    Runtime formula: out_c = C(EV_c) * r_c(EV_c) / r_c(EV_Y), applied after hue
-    restore (the medium's report is not a curve-origin swing for the renderer's hue
-    discipline to moderate) and identically on the SDR and HDR dispatchers.
-    """
+    def _film_plan(self, name: str = "portra400", mode: str = "observe"):
+        from dataclasses import replace
 
-    def _film_plan(self, name: str = "portra400"):
         from dngscan.models import ToneCompressionPlan
 
         base = ToneCompressionPlan(
@@ -299,74 +317,77 @@ class ChannelRatioRuntimeTests(unittest.TestCase):
             chroma_p95=0.0, negative_rgb_pct=0.0, over_rgb_pct=0.0,
             toe_start_ev=-3.0, shoulder_start_ev=0.2, use_c1_endpoints=True,
         )
-        return apply_film_curve_preset(base, name)
+        return replace(apply_film_curve_preset(base, name), film_mode=mode)
 
-    def test_gain_is_exactly_unity_on_the_neutral_axis(self) -> None:
+    def test_observe_mode_disables_the_ratio_gain(self) -> None:
+        """Colour belongs to AgX in observe mode: the ratio field must not leak
+        into the formation, or the film would silently co-own development colour
+        again — the exact hybrid the two-mode contract retired."""
         from dngscan import agx as agx_engine
 
-        plan = self._film_plan()
-        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        plan = self._film_plan(mode="observe")
+        _, outset_mtx = agx_engine.formation_matrices(plan)
+        weights = agx_engine.formation_luma_row(outset_mtx)
+        rgb = np.array([[0.5, 0.2, 0.1]], dtype=np.float32)
+        self.assertIsNone(agx_engine.channel_ratio_gain(rgb, plan, weights))
+
+    def test_full_mode_gain_is_unity_on_the_neutral_axis(self) -> None:
+        from dngscan import agx as agx_engine
+
+        plan = self._film_plan(mode="full")
+        _, outset_mtx = agx_engine.formation_matrices(plan)
         weights = agx_engine.formation_luma_row(outset_mtx)
         neutral = np.repeat(
             np.geomspace(1e-4, 8.0, 64, dtype=np.float32)[:, None], 3, axis=1
         )
         gain = agx_engine.channel_ratio_gain(neutral, plan, weights)
         self.assertIsNotNone(gain)
-        # EV_c == EV_Y exactly in the real-number construction; in float32 the
-        # luminance dot product rounds by <= 1 ulp, so the gain sits within a few
-        # 1e-7 of unity — invisible against 8/10-bit quantization, and pinned here
-        # so a real regression (a window, a bias) cannot hide behind "close to 1".
+        # Exact in real arithmetic; float32's luminance dot product rounds <=1 ulp.
         self.assertLess(float(np.abs(gain - 1.0).max()), 2e-6)
 
-    def test_no_preset_means_no_gain(self) -> None:
-        from dngscan import agx as agx_engine
-        from dataclasses import replace
-
-        plan = replace(self._film_plan(), curve_preset="none")
-        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
-        weights = agx_engine.formation_luma_row(outset_mtx)
-        rgb = np.array([[0.5, 0.2, 0.1]], dtype=np.float32)
-        self.assertIsNone(agx_engine.channel_ratio_gain(rgb, plan, weights))
-
-    def test_neutral_pixels_render_identically_with_and_without_field(self) -> None:
-        """Full formation: the film gain must be invisible on the neutral axis."""
-        from dataclasses import replace
-
+    def test_film_core_preserves_neutrality_and_differs_from_agx(self) -> None:
+        from dngscan.film_develop import apply_film_core
         from dngscan import agx as agx_engine
 
-        plan = self._film_plan()
-        plain = replace(plan, curve_preset="none")  # identical curve, gain off
-        inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
+        plan = self._film_plan(mode="full")
         neutral = np.repeat(
-            np.geomspace(1e-3, 4.0, 48, dtype=np.float32)[:, None], 3, axis=1
+            np.geomspace(1e-3, 4.0, 32, dtype=np.float32)[:, None], 3, axis=1
         )
-        with_field = agx_engine.apply_core(neutral, plan, inset_mtx, outset_mtx)
-        without = agx_engine.apply_core(neutral, plain, inset_mtx, outset_mtx)
-        np.testing.assert_allclose(with_field, without, rtol=0.0, atol=1e-6)
-
-    def test_chromatic_pixels_receive_the_measured_differential(self) -> None:
-        from dataclasses import replace
-
-        from dngscan import agx as agx_engine
-
-        plan = self._film_plan()
-        plain = replace(plan, curve_preset="none")
+        developed = apply_film_core(neutral, plan)
+        # Per-channel identical curve on identical channels: neutrality holds.
+        self.assertLess(float(np.abs(developed - developed[:, :1]).max()), 2e-5)
+        chroma = np.array([[2.4, 0.9, 0.4], [0.05, 0.5, 0.02]], dtype=np.float32)
         inset_mtx, outset_mtx = agx_engine.formation_matrices(plan)
-        chroma = np.array(
-            [[2.4, 0.9, 0.4], [0.3, 1.1, 2.2], [0.05, 0.5, 0.02]], dtype=np.float32
-        )
-        with_field = agx_engine.apply_core(chroma, plan, inset_mtx, outset_mtx)
-        without = agx_engine.apply_core(chroma, plain, inset_mtx, outset_mtx)
-        rel = np.abs(with_field - without) / np.maximum(np.abs(without), 1e-4)
-        self.assertGreater(float(rel.max()), 1e-3)
+        agx_out = agx_engine.apply_core(chroma, plan, inset_mtx, outset_mtx)
+        film_out = apply_film_core(chroma, plan)
+        rel = np.abs(film_out - agx_out) / np.maximum(np.abs(agx_out), 1e-4)
+        self.assertGreater(float(rel.max()), 1e-2)
 
-    def test_fast_backend_declines_film_ratio_plans(self) -> None:
-        """The native kernel has no channel-ratio stage: it must refuse the plan
-        (falling back to the NumPy formation) rather than silently dropping the
-        measured differential."""
+    def test_dispatch_routes_full_mode_to_the_film_core(self) -> None:
+        from dngscan.film_develop import apply_film_core
+        from dngscan.render import apply_tone_core
+
+        plan = self._film_plan(mode="full")
+        rgb = np.array([[0.6, 0.3, 0.15], [0.18, 0.18, 0.18]], dtype=np.float32)
+        via_dispatch = apply_tone_core(rgb, plan)
+        direct = apply_film_core(rgb, plan)
+        np.testing.assert_allclose(via_dispatch, direct, rtol=0.0, atol=1e-6)
+
+    def test_fast_backend_declines_only_full_mode(self) -> None:
+        """Observe-mode film plans are plain curve parameters — native eligible.
+        The refusal must be scoped to the takeover core, not to film in general."""
         from dngscan import _fast as fast_backend
 
-        self.assertFalse(fast_backend.supports_agx(self._film_plan()))
+        self.assertFalse(fast_backend.supports_agx(self._film_plan(mode="full")))
+        observe = self._film_plan(mode="observe")
+        # The film gate specifically must not veto observe mode; overall support
+        # still depends on the extension being present in this environment.
+        self.assertEqual(
+            fast_backend.supports_agx(observe),
+            fast_backend.supports_agx(
+                __import__("dataclasses").replace(observe, curve_preset="none")
+            ),
+        )
 
 
 class FilmPrefeedPresetTests(unittest.TestCase):

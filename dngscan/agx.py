@@ -763,8 +763,14 @@ def channel_ratio_gain(inset: Any, plan: Any, luma_weights: Any) -> Any | None:
     gain map). The [0.25, 4] rail is a safety clamp above the worst measured ratio
     quotient (~3.7, Velvia deep shadows), not a shaping control.
 
-    Returns None when the plan carries no ratio field (non-film renders pay nothing).
+    Returns None when the plan carries no ratio field (non-film renders pay nothing)
+    or when film_mode is not "full": in the default "observe" mode the film declares
+    what the observer saw and AgX owns development colour — the ratio field is the
+    film-takeover development's per-channel transfer, applied only by the film core
+    (film_develop.apply_film_core). This gate is the two-mode contract in one line.
     """
+    if str(getattr(plan, "film_mode", "observe")) != "full":
+        return None
     from .film_curve import channel_ratio_field
 
     field = channel_ratio_field(str(getattr(plan, "curve_preset", "") or ""))

@@ -51,6 +51,52 @@ def validate_film_curve(name: str) -> str:
     )
 
 
+# Editorial style pairings for the observe mode — the declared "look layer" on the
+# validated base (the FilmLight-shaped architecture: a stable house DRT plus a
+# separate look). Each entry pairs a prefeed separation over-drive with one of
+# AgX's own validated primaries geometries. These are EDITORIAL DECLARATIONS by
+# stock reputation, not measurements — first-drafted 2026-07-30, deliberately
+# conservative, and any explicitly given layer value overrides the pairing (the
+# combo rule: nothing is baked). Keys fall back to _DEFAULT_STYLE.
+FILM_STYLE_PAIRINGS: dict[str, tuple[float, str]] = {
+    # Kodak negatives: gentle portrait separation; Ektar is the vivid outlier.
+    "portra160": (1.3, "base"),
+    "portra400": (1.3, "base"),
+    "portra800": (1.3, "base"),
+    "portra800push1": (1.35, "base"),
+    "portra800push2": (1.4, "base"),
+    "ektar100": (1.4, "punchy"),
+    "gold200": (1.4, "base"),
+    "ultramax400": (1.4, "base"),
+    # Fuji negatives: consumer crispness; Pro 400H's airy softness.
+    "superia400": (1.5, "base"),
+    "c200": (1.4, "base"),
+    "pro400h": (1.3, "muted"),
+    # Reversals: Velvia is THE saturated slide; Kodachrome's dense restraint.
+    "provia100f": (1.4, "base"),
+    "velvia100": (1.6, "punchy"),
+    "ektachrome100": (1.4, "base"),
+    "kodachrome64": (1.4, "muted"),
+    # Cine negatives: flat wide-latitude scan look; theatrical quotes get punch.
+    "vision350d": (1.2, "muted"),
+    "vision3250d": (1.2, "muted"),
+    "vision3200t": (1.2, "muted"),
+    "vision3500t": (1.2, "muted"),
+    "verita200d": (1.2, "muted"),
+    "vision350d_theatrical": (1.4, "punchy"),
+    "vision3250d_theatrical": (1.4, "punchy"),
+    "vision3200t_theatrical": (1.4, "punchy"),
+    "vision3500t_theatrical": (1.4, "punchy"),
+    "verita200d_theatrical": (1.4, "punchy"),
+}
+_DEFAULT_STYLE = (1.3, "base")
+
+
+def film_style_pairing(name: str) -> tuple[float, str]:
+    """(separation strength, agx primaries) declared for a film preset."""
+    return FILM_STYLE_PAIRINGS.get(str(name), _DEFAULT_STYLE)
+
+
 _RATIO_FIELD_CACHE: dict[str, tuple[Any, Any] | None] = {}
 
 
