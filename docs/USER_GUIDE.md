@@ -58,6 +58,11 @@ The two decoders have slightly different color personalities (Apple's denoising 
 highlight reconstruction feel more "camera-manufacturer"); both produce SDR and HDR
 normally. When in doubt, use the default LibRaw.
 
+This setting changes scene reconstruction only. Sensor Evidence is always acquired by
+the same LibRaw provider, so switching between LibRaw and Apple RAW cannot change the
+analysis inputs. A file that LibRaw cannot open therefore cannot bypass the Evidence
+requirement by selecting Apple RAW.
+
 ---
 
 ## 2. Basic workflow

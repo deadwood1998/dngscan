@@ -56,7 +56,7 @@ rawpy**：其 sdist 自带"编译并捆绑 external/LibRaw"的官方构建机制
 验证过的 commit；换钉必须全套回归 + 若解码输出漂移则重基线 SDR 冻结/金标）。
 
 本机已按此路径升级并验证：`rawpy.libraw_version = (0, 22, 0)`（master 线），
-soname 26，A7 V 入表；**全套 411 项测试零漂移通过**——master 对既有机型
+soname 26，A7 V 入表；**全套 431 项测试零漂移通过**——master 对既有机型
 （fp/iPhone 样张）的解码逐字节兼容，SDR 冻结与金标均未失效。
 
 两层的分工从此明确：**LibRaw 升级**解决"LibRaw 内部色彩转换缺矩阵"（回退表
@@ -80,13 +80,11 @@ X-E5 借 X100VI 矩阵、A7R VI 待上游、GR IV 走 DNG 自带标签）。0.22
 1. **Adobe DNG Converter**（免费，持有 TicoRAW 授权）把 HE NEF 转 DNG——
    转换后本工具全功能可用（含 CFA 证据层与 HDR）；
 2. 相机内改用**无损压缩** RAW；
-3. **Apple RAW 独立解码路径（规划中）**：Z50 II 等新机在
-   [Apple 的 RAW 兼容名单](https://support.apple.com/en-us/122870)上，
-   Core Image 可以解这些文件——但当前架构里 coreimage 分支仍依赖 LibRaw
-   提供证据层（聚合统计、对齐参考），LibRaw 打不开则整体失败。独立路径需要
-   "无证据分析"降级形态（analysis 层约 21 处原始数据依赖的重构）+ 真实 HE
-   样张做端到端验证，已立项；落地后此类文件可用 RAW9 出片（SDR 优先，HDR
-   预算因无 CFA 证据将如实拒绝或降级）。
+3. **切换 Apple RAW 不能绕过格式缺口**：Apple RAW 只替换 scene decoder，
+   `RawEvidence` 仍固定由 LibRaw 获取。这样不论选择哪条 scene 管线，分析依据都完全
+   相同；代价是 LibRaw 无法打开的文件会在 Evidence 阶段一致失败。Z50 II 等机型即使
+   位于 [Apple 的 RAW 兼容名单](https://support.apple.com/en-us/122870)，也需要先转 DNG
+   或改拍无损压缩 RAW。
 
 Apple 覆盖注记：Z50 II 在 macOS Sequoia/26 名单上（标准 NEF 确认；HE 变体的
 Apple 原生解码覆盖待真实样张验证——第三方如 RAW Power 以自带扩展解码支持
@@ -100,7 +98,8 @@ GUI 选中文件后同一报告显示在解码器控件下方）：
 
 ```text
 机型：SIGMA SIGMA fp
-LibRaw：✓ 完整支持（文件自带 DNG 双光源标定）
+Evidence（LibRaw）：✓ 完整支持（文件自带 DNG 双光源标定）
+LibRaw 场景解码：✓ 完整支持（文件自带 DNG 双光源标定）
 Apple RAW：✓ RAW 9（最新解码模型）
 传感器先验：✓ 有（PhotonsToPhotos 实测标尺）
 ```
@@ -108,8 +107,8 @@ Apple RAW：✓ RAW 9（最新解码模型）
 分层定义——LibRaw：`✗ 格式缺口`（打不开，回退表无效，如 HE NEF）→
 `△ 色彩无锚`（可解码、零标定）→ `△ 回退矩阵`（WB 已代偿、内部转换仍缺）→
 `✓ DNG 自带标定` / `✓ 矩阵在表`；Apple RAW：`✗ 不支持` → `△ 仅 RAW 7/8`
-（可显式降级）→ `✓ RAW 9`，另有 `⚠ 证据层依赖 LibRaw` 的耦合标记（格式缺口
-文件即使 Apple 支持也整体不可用，直到独立路径落地）；传感器先验单列（只影响
+（可显式降级）→ `✓ RAW 9`，另有 `⚠ 统一 Evidence 策略要求 LibRaw` 的标记（格式缺口
+文件即使 Apple 支持也整体不可用）；传感器先验单列（只影响
 分析标尺，不影响渲染）。格式缺口的报错信息与本探针互链。
 
 ## iPhone 双解码对照

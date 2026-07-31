@@ -376,6 +376,17 @@ LibRaw 会把 `blend` 和 `reconstruct` 的 uint16 整幅缩暗，倍数正好�
 
 ## 解码器：LibRaw 与可选的 Core Image / RAW 9
 
+RAW 入口现在显式分成两层：`RawEvidence` 先且只由 LibRaw 获取传感器 mosaic、CFA、
+黑白电平、白平衡证词与颜色矩阵；随后 scene decoder 才选择 LibRaw 或 Apple RAW 生成
+scene-linear RGB。`acquire_raw_evidence(path)` 刻意没有 decoder 参数，因此切换 scene
+decoder 不会改变 Evidence 的来源、数值、版本记录或失败条件。`RawBundle` 暂时保留旧的
+扁平字段作为兼容外观，同时携带同一份 `evidence` 对象与 provider provenance。
+
+两层各自打开解码句柄，LibRaw scene 的 GainMap / postprocess 不可能回写 Evidence 副本。
+Apple 的 `aligned` 模式额外做的 half-size LibRaw RGB 渲染只是 scene scale A/B 对照，
+不是 Evidence，也不会替换 `RawEvidence`。因此“Apple scene + LibRaw Evidence”就是默认
+组合，而不是研究开关。
+
 `--decoder coreimage` 是另一种 capture decoder，与 tone core 的选择彼此独立；它不是
 默认画质升级。解码前，dngscan 会查询当前文件的
 `CIRAWFilter.supportedDecoderVersions()`，不会把相机型号名单当作文件必然支持 RAW 9 的
@@ -416,7 +427,7 @@ Core Image 与 LibRaw 并没有暴露同一个 scene unit，单一固定补偿�
 重建，再用两种解码结果的绿色通道中位比，对 RAW 9 整幅乘一个标量。以前解释里引入的 RAW
 green 项会在分子分母中严格约掉；这里得到的是逐文件解码器 A/B 标尺，不是传感器绝对标定。
 它不会把中位数拉到 18% 灰，也不改变画面内部的光比，但解码器色彩、几何和重建都会影响
-这个统计量。
+这个统计量；它与上文的 Evidence 获取是两个独立调用和数据契约。
 
 `--coreimage-scale unity` 会跳过该比较，保留 Core Image 原生单位；`measured` 只应用旧的
 Sigma fp 固定 `1/1.0293` 倍率，用来复现早期 A/B。三个模式现在在效果上互斥，固定倍率不会
@@ -1010,4 +1021,3 @@ LUT 可以放进 `dngscan_assets/vendor_luts/` 下对应路径，GUI 会自动�
 使用距剪切的 stops，纵轴为峰值归一化线性密度；图上的密度曲线会轻微平滑以便阅读，
 clip%、中位、分位和其他统计始终从未平滑的原始样本计算。SNR 与动态范围是单帧估计，不是
 完整 photon-transfer 测量；容器 bit depth 也不等于可用动态范围。
-

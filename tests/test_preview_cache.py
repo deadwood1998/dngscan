@@ -8,6 +8,8 @@ import unittest
 from dngscan._deps import np
 from dngscan.gui.preview_cache import (
     PreviewEntry,
+    _cache_identity,
+    _evidence_cache_identity,
     _read_disk_entry,
     _write_disk_entry,
     build_proxy_entry,
@@ -83,10 +85,23 @@ def _bundle() -> RawBundle:
         scene_decoder_runtime="Version 27.0 (Build TEST)",
         scene_align_factor=0.875,
         scene_opcode_names=("WarpRectilinear", "GainMap"),
+        evidence_provider_version="rawpy 0.27.0/LibRaw 0.22.0",
     )
 
 
 class PreviewCacheTest(unittest.TestCase):
+    def test_evidence_identity_is_scene_decoder_independent(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source:
+            path = Path(source.name)
+            evidence_key = _evidence_cache_identity(path)
+            libraw_key, _ = _cache_identity(path, "clip", "camera", "libraw", "auto")
+            apple_key, _ = _cache_identity(
+                path, "reconstruct", "camera", "coreimage", "9"
+            )
+        self.assertEqual(libraw_key[:4], evidence_key)
+        self.assertEqual(apple_key[:4], evidence_key)
+        self.assertNotEqual(libraw_key, apple_key)
+
     def test_round_trip_keeps_compact_proxy_and_guidance(self) -> None:
         entry = build_proxy_entry(_bundle(), _analysis())
         entry.bundle.raw_guidance = RawGuidanceMaps(
@@ -118,6 +133,11 @@ class PreviewCacheTest(unittest.TestCase):
         self.assertEqual(restored.bundle.scene_align_factor, 0.875)
         self.assertEqual(
             restored.bundle.scene_opcode_names, ("WarpRectilinear", "GainMap")
+        )
+        self.assertEqual(restored.bundle.evidence_provider, "libraw")
+        self.assertEqual(
+            restored.bundle.evidence_provider_version,
+            "rawpy 0.27.0/LibRaw 0.22.0",
         )
         assert restored.bundle.raw_guidance is not None
         np.testing.assert_array_equal(

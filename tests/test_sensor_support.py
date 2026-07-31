@@ -147,7 +147,8 @@ class DecodeSupportProbeTests(unittest.TestCase):
         self.assertTrue(report["coreimage"]["blocked_by_libraw"])
         joined = "\n".join(report["lines"])
         self.assertIn("格式缺口", joined)
-        self.assertIn("证据层依赖 LibRaw", joined)
+        self.assertIn("统一 Evidence 策略要求 LibRaw", joined)
+        self.assertEqual(report["evidence"]["provider"], "libraw")
 
     def test_full_support_reads_clean(self) -> None:
         report = self._probe(

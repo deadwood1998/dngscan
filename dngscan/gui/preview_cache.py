@@ -19,7 +19,7 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 4
+PREVIEW_CACHE_VERSION = 5
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
 
@@ -75,8 +75,21 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v4"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v4"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v5"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v5"
+
+
+def _evidence_cache_identity(path: Path) -> tuple[str, int, int, str]:
+    """Decoder-independent identity for the Evidence input and provider."""
+    from dngscan.evidence import libraw_runtime_id
+
+    stat = path.stat()
+    return (
+        str(path.resolve()),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+        str(libraw_runtime_id() or "libraw-unknown"),
+    )
 
 
 def _cache_identity(
@@ -85,12 +98,10 @@ def _cache_identity(
     wb: str,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
-) -> tuple[tuple[str, int, int, str, str, str, str], str]:
-    stat = path.stat()
+) -> tuple[tuple[str, int, int, str, str, str, str, str], str]:
+    evidence_key = _evidence_cache_identity(path)
     key = (
-        str(path.resolve()),
-        int(stat.st_mtime_ns),
-        int(stat.st_size),
+        *evidence_key,
         highlight,
         wb,
         str(decoder),
@@ -136,6 +147,12 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
         "shot_iso": bundle.shot_iso,
         "baseline_exposure": bundle.baseline_exposure,
         "baseline_exposure_baked_in": bool(bundle.baseline_exposure_baked_in),
+        "evidence_provider": str(
+            getattr(bundle, "evidence_provider", "libraw") or "libraw"
+        ),
+        "evidence_provider_version": getattr(
+            bundle, "evidence_provider_version", None
+        ),
         "scene_decoder": str(getattr(bundle, "scene_decoder", "libraw") or "libraw"),
         "scene_decoder_version": getattr(bundle, "scene_decoder_version", None),
         "scene_decoder_runtime": getattr(bundle, "scene_decoder_runtime", None),
@@ -191,6 +208,10 @@ def _bundle_from_cache(
         baseline_exposure_baked_in=bool(
             metadata.get("baseline_exposure_baked_in", False)
         ),
+        evidence_provider=str(
+            metadata.get("evidence_provider", "libraw") or "libraw"
+        ),
+        evidence_provider_version=metadata.get("evidence_provider_version"),
         clip_masks=masks,
         raw_guidance=guidance,
         _raw_guidance_has_sensor_snr=(
@@ -367,7 +388,9 @@ class PreviewCache:
     """One in-memory proxy plus a bounded, validated on-disk cache."""
 
     def __init__(self) -> None:
-        self.entries: dict[tuple[str, int, int, str, str, str, str], PreviewEntry] = {}
+        self.entries: dict[
+            tuple[str, int, int, str, str, str, str, str], PreviewEntry
+        ] = {}
         self.lock = threading.Lock()
         self.build_lock = threading.Lock()
 
