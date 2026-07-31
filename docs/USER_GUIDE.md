@@ -113,13 +113,20 @@ Fixed Kelvin works on both decoders. A visible color cast after choosing one is
 
 ## 3.7 Film observation positions (20 stocks + 5 theatrical variants)
 
-The **film observation position** selector (imaging card) sets three independent
+The division of labour in one sentence: **the film decides what the observer saw;
+AgX decides how to develop it onto your screen.**
+
+The **film observation position** selector (imaging card) sets several independent
 declarations at once: white balance locked to the stock's calibration temperature
 (5500K for daylight stocks, 3200K for tungsten cine stocks), the spectral prefeed
-(how that stock's layers separated colour, from manufacturer datasheets), and the
-curve preset (that stock plus its paired display medium, as a fitted coordinate).
-The three underlying controls visibly update when you pick one — **nothing is
-baked**; adjust any layer individually at any time.
+(how that stock's layers separated colour, from manufacturer datasheets), the
+development curve (the stock plus its paired display medium's tone signature,
+externally cross-validated), and a **style pairing** (separation strength + AgX
+primaries geometry — Velvia pairs with stronger separation and punchy primaries,
+for instance). Every underlying control visibly updates when you pick one —
+**nothing is baked**; adjust any layer individually at any time. The style
+pairings are editorial first drafts by stock reputation, not measurements — if one
+isn't to your taste, just move the sliders.
 
 The library covers four families (all data digitized from datasheets by the
 spektrafilm project, CC BY-SA 4.0):
@@ -136,19 +143,23 @@ spektrafilm project, CC BY-SA 4.0):
 Slides and cinema prints were designed for **dark projection rooms** and are built
 about 1.5× contrastier than bright-environment media; when delivering to an everyday
 screen the tool translates that difference away using the classic viewing-condition
-constants, so they *look* right on your display rather than merely being numerically
-faithful. If you want the raw high-contrast "2383 print on a monitor" appearance
-(the look colorists get from stock 2383 LUTs), pick the **· theatrical** variants.
+constants (including the standard viewing flare of reflection prints), so they
+*look* right on your display rather than merely being numerically faithful. For the
+raw high-contrast "2383 print on a monitor" appearance, pick the **· theatrical**
+variants.
 
-Each preset also carries the stock's measured **per-channel saturation
-differential** — e.g. highlights drifting warm as the blue-sensitive layer saturates
-first. It is solved from the characteristic curves, not a slider; neutral grays are
-mathematically untouched, so it can never become a hidden white balance.
+**Two modes** (CLI `--film-mode`): the default **observe** is everything described
+above — stable, with colour handled by AgX, the pipeline's most thoroughly
+validated rendering; use it day to day. **full** is experimental: the film's
+development model takes over per-channel colour entirely (stronger character, but
+the colour reconstruction has no measured ground truth yet and can drift
+unnaturally); SDR only — switch it on when you want to see the complete film
+reconstruction as an experiment.
 
 It adds no grain and no vignette — it changes *how the camera saw the world*: how
 colours separate, how highlights roll off, where shadows rest against the display
-medium's deepest black. **HDR keeps working**: a film body plus genuinely measured
-highlight headroom, a combination no other film tool offers.
+medium's deepest black. **HDR keeps working** (observe mode): a film body plus
+genuinely measured highlight headroom, a combination no other film tool offers.
 
 **Lens filters** (RAW decode card) are the companion control: Wratten conversion
 glass simulated from Kodak's published parameters (85B daylight-to-tungsten, 80A the

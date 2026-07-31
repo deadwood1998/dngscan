@@ -909,26 +909,41 @@ flowchart LR
   calibrator as "another camera" — datasheet layer sensitivities are its SSF; material
   windows, neutral-axis preservation, confidence weighting and von Kries window
   transport all carry over.
-- **Development curve + viewing translation** (layer 2): the datasheet characteristic
-  curve (negative + paired display medium end to end) solved by least squares into a
-  named AgX coordinate; whole-roll consistency (scene adaptation off while active),
-  the EV0 -> 0.18 anchor by construction, and the medium's floor (paper/slide Dmax,
-  luminance-composed) entering through `target_black_linear`. The translation is
-  **viewing-condition complete**: dark-surround media (slides, the Vision3 -> 2383
-  projection chain) are converted to the average-surround delivery through the classic
-  surround constants (dark 1.5 / dim 1.2 / average 1.0; Bartleson-Breneman, Fairchild
-  2013). The raw "2383 print on a monitor" appearance is the `*_theatrical` quotation
-  variant — the contract separates **translation** from **quotation**, and quotations
-  do not occupy the stock's name.
-- **Per-channel ratio field** (layer 3): the layer-saturation differential solved from
-  the same characteristic curves, `r_c(EV) = T_c / T_neutral` (e.g. highlights drifting
-  warm as the blue-sensitive layer saturates first), applied at runtime as
-  `r_c(EV_c)/r_c(EV_Y)` after hue restore and before the outset: exactly 1 on the
-  neutral axis (exact in real arithmetic, ~1e-7 in float32, pinned by tests), so it
-  cannot decay into a hidden white balance; it emerges with chroma and has no
-  hand-tuned constants. SDR and HDR apply the identical gain at the same choke point;
-  out-of-domain interpolation clamps toward 1 so extended highlights stay neutral —
-  verified live by an Ultra HDR film export passing the archive-tier chroma gate.
+- **Development curve + viewing translation** (layer 2): the end-to-end target is a
+  **spectral contact print** — the negative dye stack's transmittance spectrum, times
+  the paper's own spectral sensitivity under a 3200K enlarger (the TH-KG3
+  convention), developed through the paper's per-dye curves, then read as relative
+  colorimetry under the declared viewing illuminant — solved by least squares into a
+  named AgX coordinate. Whole-roll consistency (scene adaptation off while active);
+  the EV0 -> 0.18 anchor holds through a global exposure solve (light-meter
+  semantics); the medium's floor enters through `target_black_linear`. The
+  translation is **viewing-condition complete**: viewing flare routed by medium
+  (reflection prints 1.0% per IEC 61966-2-1; dark-surround projection 0), and
+  dark-surround media (slides, the Vision3 -> 2383 projection chain) converted to
+  the average-surround delivery through the classic surround constants (dark 1.5 /
+  dim 1.2 / average 1.0; Bartleson-Breneman, Fairchild 2013). The raw "2383 print on
+  a monitor" appearance is the `*_theatrical` quotation variant — the contract
+  separates **translation** from **quotation**; quotations occupy neither the
+  stock's name nor its viewing translation.
+- **Per-channel ratio field** (full mode only): the layer-saturation differential
+  solved from the same characteristic curves, `r_c(EV) = T_c / T_neutral`, applied
+  as `r_c(EV_c)/r_c(EV_Y)` (exactly 1 on the neutral axis by construction). It is
+  the carrier of "film takes over development colour" — and the colour dimension of
+  the reconstruction has **no external oracle** (the tone dimension does), so it is
+  off by default.
+
+**The two-mode division** (`--film-mode`; contract, spectral-print/two-mode
+section): **observe (default)** = the film declares what the observer saw
+(WB/separation/tone signature) and AgX develops — the division drawn at the data's
+trust boundary; a film preset is then just curve parameters and the native kernel
+accelerates as usual. **full (experimental)** = the film's development model takes
+over (the `film_develop` core: per-channel curve x ratio field, no AgX colour
+geometry); AgX keeps only delivery-side gamut safety; SDR only for now. With
+`--film` off the pipeline is pure AgX. Per-channel rolloff IS a colour operation —
+which is the structural reason "AgX for stretch/rolloff, film for colour" cannot be
+split down the middle and had to become a two-pole switch.
+
+![observe vs full, same frame: Portra 400 / Kodachrome 64 / Vision3 theatrical](assets/film-mode-observe-vs-full.jpg)
 
 One fp frame through the four families plus the theatrical quotation (picked at
 random from a real shooting card, all rendered by the current pipeline):
@@ -954,21 +969,22 @@ layer can be overridden individually — **nothing is baked**. Every preset reco
 `source`, `fit.rms_stop` and `fit.pinned` (bound-pinned parameters = declared
 out-of-domain extrapolation); profile data is spektrafilm's under CC BY-SA 4.0
 (provenance chain in NOTICE.md and `dngscan_assets/spectral/spektrafilm/README.md`).
-Current fit levels: negatives rms 0.019-0.067 stop; reversals 0.013-0.022 (all four
-are pin-free interior solutions since the luminance-composed floor fix); theatrical
-quotations 0.059-0.105 (the declared cost of quoting outside design conditions).
+Current fit levels (post spectral print): all 25 presets at rms <= 0.061 —
+negatives 0.012-0.033, reversals 0.028-0.053, theatrical quotations 0.026-0.061;
+out-of-domain black-end pins are gone entirely (the flare floor gives the toe a
+real landing, so black_ev is data-determined).
 
 ### External validation
 
 `tools/crosscheck_2383.py` cross-checks the density-domain composition against an
 independent implementation (DiVERE's Kodak 2383 curve, its curve-domain convention
-verified line-by-line from source). Within the two declared freedoms (printer light,
-contrast scale) the R/G channels converge to rms <= 0.14 stop — the Cineon black
-anchor, the print curve shape and Dmin-relative transmittance are confirmed by an
-independent path. The remaining blue residual (~0.4 stop) plus a wavelength-monotone
-scale ladder form the spectral signature of Status M densitometry differing from
-effective printing density, quantifying that declared simplification (details in the
-contract's external-validation section).
+verified line-by-line from source) — and the same external ruler has now been used
+twice. Round one located the old channel shortcut's defect (blue rms 0.383 with a
+wavelength-monotone scale ladder 0.75/0.84/0.96 — the spectral signature of
+misread printing density). After the spectral-print upgrade, round two passes: the
+ladder vanishes and blue collapses to 0.048, all three channels converging at
+<= 0.086 stop. Details in the contract's external-validation and spectral-print
+sections.
 
 The root difference from other film tools: every declaration lives on the
 scene-referred side, so film character survives into Ultra HDR delivery — a film body
