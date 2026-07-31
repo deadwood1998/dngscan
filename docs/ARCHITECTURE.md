@@ -974,18 +974,33 @@ and stays an independent control. The full three-pipeline correspondence
 (observe ~= FilmLight, full ~= Kelly) is argued in the
 [design contract](FILM_OBSERVATION_PLAN.zh-CN.md).
 
-How much each lever moves (one daylight frame, Velvia 100; top row the separation
-axis at x1.0/x1.6/x2.2, bottom row the punch axis at 0/0.75/1.5 — punch scales the
-scene-adaptive purity compensation and zeroes itself on night scenes, hence the
-daylight demonstration):
+How much the levers move — conclusion first: **fine-adjustment scale, not
+restyling scale**. Being indistinguishable in full-frame thumbnails is a fact
+about the magnitude, not a failure of presentation. The documentation therefore
+uses two instruments: the full frame for compositional context, and 1:1 crops
+with declared-gain difference maps (x6; precedent: the HDR allocation map) for
+the difference itself and where it lives.
 
-![Style axes: three steps each of separation strength and punch intensity, Velvia 100, same frame](assets/film-style-axes.jpg)
+Full-frame context (daylight frame, Velvia 100; separation x1.0/x1.6/x2.2 on
+top, punch 0/0.75/1.5 below — punch scales the scene-adaptive purity
+compensation and zeroes itself on night scenes):
 
-The same two axes on an indoor dense-colour scene (tungsten-lit can wall) — the
-separation axis opens up much wider here, and punch is measurably active on this
-frame (p99 ~13 codes) while staying deliberately subtle:
+![Style axes, full-frame context: three steps each of separation and punch](assets/film-style-axes.jpg)
 
-![Style axes, indoor dense colour: the same six cells on the tungsten can-wall scene](assets/film-style-axes-indoor.jpg)
+The difference itself (max-difference region of the indoor dense-colour frame,
+1:1 crops + x6 difference maps, measured numbers printed in-image): the
+separation axis steps mean 3.3 / p99 33 / max 77 codes at x1.6-vs-x1.0 and
+mean 6.4 / p99 64 / max 114 at x2.2 — concentrated in the bottle labels' colour
+separation; the punch axis spans mean 1.3 / p99 28 / max 51 from 0 to 1.5, a
+deliberately fine adjustment:
+
+![Style axes, instrumented: 1:1 max-difference crops and x6 difference maps with measured numbers](assets/film-style-axes-indoor.jpg)
+
+(Erratum on record: the first two versions of this plate rendered the "x1.0"
+cells at the pairing default x1.6 — the pairing used to treat value-equals-
+default as unset, silently rewriting an explicit x1.0. An all-zero difference
+map exposed the bug; fixed with None-sentinel semantics plus a regression test,
+see engineering notes case 9, third addendum.)
 
 One fp frame through the four families plus the theatrical quotation (picked at
 random from a real shooting card, all rendered by the current pipeline):

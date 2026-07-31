@@ -218,6 +218,36 @@ class TheatricalVariantTests(unittest.TestCase):
                 self.assertGreater(float(span_q), float(span_t) + 0.5)
 
 
+class PairingSentinelTests(unittest.TestCase):
+    """Pairings fill only ABSENT values, encoded as None sentinels — never value
+    equality. 'The value equals the default' and 'the user did not set it' are
+    different intents; the old equality test silently rewrote an explicit x1.0
+    into the pairing's x1.6 and mislabeled two documentation plates."""
+
+    def _parse(self, *extra):
+        from dngscan.cli import parse_args
+
+        return parse_args(["/tmp/x.dng", *extra])
+
+    def test_pairing_fills_absent_values(self) -> None:
+        args = self._parse("--film", "velvia100")
+        self.assertAlmostEqual(args.scene_transform_strength, 1.6)
+        self.assertEqual(args.agx_primaries, "punchy")
+
+    def test_explicit_default_values_survive_the_pairing(self) -> None:
+        args = self._parse(
+            "--film", "velvia100",
+            "--scene-transform-strength", "1.0", "--agx-primaries", "base",
+        )
+        self.assertAlmostEqual(args.scene_transform_strength, 1.0)
+        self.assertEqual(args.agx_primaries, "base")
+
+    def test_no_film_resolves_to_documented_defaults(self) -> None:
+        args = self._parse()
+        self.assertAlmostEqual(args.scene_transform_strength, 1.0)
+        self.assertEqual(args.agx_primaries, "base")
+
+
 class ShadowFloorCodeTests(unittest.TestCase):
     """Film floors are the digital D-min: deep shadows must never pile at u8 code 0.
 

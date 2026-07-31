@@ -169,8 +169,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--scene-transform-strength",
         type=float,
-        default=1.0,
-        help="scene transform 强度 0-3（默认 1.0；0=关闭效果；>1 用于诊断/强化 A/B）",
+        default=None,
+        help=(
+            "scene transform 强度 0-3（默认 1.0；0=关闭效果；>1 用于诊断/强化 A/B）。"
+            "显式给出的值总是生效——包括显式的 1.0（胶片风格配对只填充未给出的层）"
+        ),
     )
     parser.add_argument(
         "--punch",
@@ -192,8 +195,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--agx-primaries",
         choices=AGX_PRIMARIES_CLI_CHOICES,
-        default="base",
-        help="仅 tone-core=agx 的 AgX 原色几何：base=固定版本 darktable scene 默认；smooth=darktable smooth；punchy/muted=纯度变化参考",
+        default=None,
+        help=(
+            "仅 tone-core=agx 的 AgX 原色几何：base=固定版本 darktable scene 默认；"
+            "smooth=darktable smooth；punchy/muted=纯度变化参考。默认 base；显式给出"
+            "的值总是生效——包括显式的 base（胶片风格配对只填充未给出的层）"
+        ),
     )
     parser.add_argument(
         "--tone-core",
@@ -313,7 +320,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
     if args.coreimage_scale is None:
         args.coreimage_scale = COREIMAGE_SCALE_DEFAULT_MODE
-    args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
+    if args.agx_primaries is not None:
+        args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
     if args.margin < 0:
         parser.error("--margin must be >= 0")
     # A film combo expands to three independent declarations; a non-default value on
@@ -329,17 +337,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if args.film_curve == "none":
             args.film_curve = args.film
         # Editorial style pairing (observe mode's declared look layer): applied only
-        # to layers left at their defaults — an explicitly given value wins, same as
-        # every other combo expansion. Full mode ignores the pairing: the film
-        # development model owns its own character there.
+        # to layers the user did not give — encoded as a None SENTINEL, never as
+        # value equality. "The value happens to equal the default" and "the user did
+        # not set it" are different intents: the old equality test silently turned an
+        # explicit ×1.0 into the pairing's ×1.6, which mislabeled two documentation
+        # plates before a diff map caught it. Full mode ignores the pairing: the
+        # film development model owns its own character there.
         if args.film_mode == "observe":
             from .film_curve import film_style_pairing
 
             strength, primaries = film_style_pairing(args.film)
-            if abs(float(args.scene_transform_strength) - 1.0) < 1e-9:
+            if args.scene_transform_strength is None:
                 args.scene_transform_strength = strength
-            if args.agx_primaries == "base":
+            if args.agx_primaries is None:
                 args.agx_primaries = primaries
+    # Sentinel resolution: anything the combo/pairing did not fill falls back to
+    # the documented defaults here, in one place, before validation.
+    if args.scene_transform_strength is None:
+        args.scene_transform_strength = 1.0
+    if args.agx_primaries is None:
+        args.agx_primaries = "base"
+    args.agx_primaries = resolve_agx_primaries(args.agx_primaries)
     if (
         args.film_mode == "full"
         and args.film_curve != "none"
