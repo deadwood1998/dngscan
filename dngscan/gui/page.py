@@ -11,13 +11,16 @@ PAGE = """<!doctype html>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;background:#15171c;color:#e7e9ee}
-.wrap{max-width:1480px;margin:0 auto;padding:22px}
-h1{font-size:17px;font-weight:600;margin:0 0 16px}
-.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:16px;margin-bottom:14px}
+.wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
+h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
+.topBar{display:flex;gap:16px;align-items:center;margin:0 0 12px}
+.topBar input[type=file]{flex:1;width:auto;max-width:460px}
+.topBar .ctlFact{flex:1;min-width:260px}
+.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
 .secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}
-.workspace{display:grid;grid-template-columns:minmax(360px,480px) minmax(0,1fr);gap:14px;align-items:start}
+.workspace{display:grid;grid-template-columns:minmax(360px,460px) minmax(0,1fr);gap:12px;align-items:start}
 .controlPanel{min-width:0}
-.previewCard{position:sticky;top:16px;min-height:calc(100vh - 44px);display:flex;flex-direction:column}
+.previewCard{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;margin-bottom:0}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 label{display:block;font-size:12px;color:#9aa1b0;margin:0 0 6px}
 input[type=text],input[type=number],select{width:100%;background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#e7e9ee;padding:8px 10px;font:inherit}
@@ -50,15 +53,15 @@ button.preview:disabled{opacity:.5;cursor:default}
 .coreFacts b{color:#e7e9ee;font-weight:500}
 #controlHint{margin-top:10px;color:#9aa7c0;font-size:12px;line-height:1.55;min-height:0}
 #controlHint:empty{display:none}
-#status{margin-top:10px;min-height:20px;white-space:pre-line}
+#status{margin-top:8px;white-space:pre-line}
+#status:empty{display:none}
 .err{color:#ff8a8a}.ok{color:#8ae08a}.warn{color:#ffc46b}
 .browserList{display:none;margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;max-height:260px;overflow:auto;background:#12141a}
 .browserList div{padding:6px 10px;cursor:pointer;border-bottom:1px solid #20242e;font-size:13px}
 .browserList div:hover{background:#1a2233}
 .browserList div.pick{color:#8ae08a;font-weight:600;position:sticky;top:0;background:#12141a}
-#previewWrap{position:relative;margin-top:12px;min-height:420px;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
-#previewWrap.loading{min-height:420px}
-#preview{max-width:100%;max-height:calc(100vh - 190px);border-radius:8px;display:none;transition:opacity .15s ease;object-fit:contain}
+#previewWrap{position:relative;margin-top:10px;min-height:260px;flex:1;overflow:hidden;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
+#preview{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;transition:opacity .15s ease}
 #previewWrap.loading #preview{opacity:.4}
 #spinner{display:none;position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border:3px solid rgba(255,255,255,.22);border-top-color:#eef2ff;border-radius:50%;animation:spin .8s linear infinite}
 #previewWrap.loading #spinner{display:block}
@@ -71,24 +74,25 @@ button.preview:disabled{opacity:.5;cursor:default}
 .reportGrid dt{color:#9aa3b2;white-space:nowrap}
 .reportGrid dd{margin:0;color:#e6e9f0;font-variant-numeric:tabular-nums}
 .reportGrid dd.warn{color:#f0b35e}
+.ctlFact{margin-top:6px;color:#8fa0c4;font-size:11.5px;line-height:1.5;font-variant-numeric:tabular-nums;white-space:pre-line}
+.ctlFact:empty{display:none}
+.ctlFact.warn{color:#f0b35e}
 .chk{display:flex;align-items:center;gap:8px}.chk input{width:auto}
 .outdirRow{display:flex;gap:8px;align-items:stretch}
 .outdirRow input{flex:1}
 @media (max-width:980px){
   .wrap{padding:14px}
+  .topBar{flex-wrap:wrap}
   .workspace{display:block}
-  .previewCard{position:static;min-height:0}
-  #previewWrap{min-height:260px}
-  #preview{max-height:none}
+  .previewCard{position:static;height:auto;min-height:60vh}
   .modes button .d{display:none}
 }
 </style></head>
 <body><div class="wrap">
-<h1>dngscan · RAW 分析与转换</h1>
-
-<div class="card">
-  <label>RAW 文件</label>
-  <input type="file" id="filePicker" accept="RAW_ACCEPT">
+<div class="topBar">
+  <h1>dngscan · RAW 分析与转换</h1>
+  <input type="file" id="filePicker" accept="RAW_ACCEPT" title="RAW 文件">
+  <div class="ctlFact" id="fileFact" style="margin-top:0"></div>
   <input type="hidden" id="input">
 </div>
 
@@ -104,7 +108,6 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="libraw">LibRaw · 默认</option>
         <option value="coreimage">Apple RAW · 9 优先</option>
       </select>
-      <div id="decodeSupport" class="muted" style="font-size:11px;line-height:1.5;margin-top:4px;white-space:pre-line"></div>
     </div>
     <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
       <label>CI 版本</label>
@@ -127,6 +130,8 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="ppg">PPG</option>
       </select>
     </div>
+    <div class="ctlFact" id="decodeTierFact" style="flex-basis:100%;margin-top:0"></div>
+    <div class="ctlFact" id="decoderFact" style="flex-basis:100%;margin-top:0"></div>
     <div style="flex:1;min-width:170px">
       <label>白平衡</label>
       <select id="wb" title="拍摄值信相机测光；固定色温是声明的标准参考（经文件自身颜色标定求解），用于胶片模拟等需要整卷一致配平的场景，不是肉眼调整。">
@@ -146,6 +151,7 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="blend">通道混合 · 温和</option>
         <option value="reconstruct">邻域重建 · 完整</option>
       </select>
+      <div class="ctlFact" id="clipFact"></div>
     </div>
     <div style="flex:1;min-width:170px">
       <label>镜前滤镜</label>
@@ -158,13 +164,8 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="82a">82A · 轻度冷化</option>
       </select>
     </div>
+    <div class="ctlFact" id="wbFact" style="flex-basis:100%;margin-top:0"></div>
   </div>
-</div>
-
-<div class="card">
-  <div class="secTitle">检测参数</div>
-  <dl class="reportGrid" id="detectedParams"><dt class="muted">选择文件后显示</dt><dd></dd></dl>
-  <div class="muted" style="margin-top:6px">来自渲染将实际使用的同一套场景分析（预览分辨率）；调整曝光与明暗前先看这里。</div>
 </div>
 
 <div class="card">
@@ -180,6 +181,7 @@ button.preview:disabled{opacity:.5;cursor:default}
         <button type="button" data-ev="1.00"><span class="m">+1.00</span></button>
         <button type="button" id="evReferenceBtn" title="将可靠主体中位对齐 18% 灰，并限制高光溢出。"><span class="m">亮度参考</span></button>
       </div>
+      <div class="ctlFact" id="evFact"></div>
     </div>
   </div>
 </div>
@@ -206,6 +208,7 @@ button.preview:disabled{opacity:.5;cursor:default}
       <input type="range" id="highlightTransition" min="-1" max="1" step="0.05" value="0" title="向左更直接，向右更柔和。">
     </div>
   </div>
+  <div class="ctlFact" id="toneFact"></div>
 </div>
 
 <div class="card">
@@ -318,6 +321,7 @@ FILM_CURVE_OPTIONS
     <div style="min-width:220px">
       <div class="labelRow"><label>HDR 余量上限</label><span class="val" id="hdrHeadroomVal">+3.00 EV</span></div>
       <input type="range" id="hdrHeadroom" min="1" max="MAX_HDR_HEADROOM_ATTR" step="0.02" value="3">
+      <div class="ctlFact" id="hdrSceneFact"></div>
       <div class="muted" id="hdrHint">实际余量由场景决定；只恢复漫反射白以上的真实亮度档数。</div>
     </div>
   </div>
@@ -332,6 +336,7 @@ FILM_CURVE_OPTIONS
   <div class="chk" style="margin-top:12px">
     <input type="checkbox" id="png"><label for="png" style="margin:0">附带分析图</label>
   </div>
+  <div class="ctlFact" id="priorsFact"></div>
 </div>
 
 <div class="card">
@@ -789,31 +794,64 @@ async function ensureRaw9Support(body){
   }
   return true;
 }
+let DETECTED_READY=false;
+function setFact(sel,text,isWarn){const el=$(sel);el.textContent=text||"";el.classList.toggle("warn",!!isWarn);}
 function renderDetectedParams(d){
-  const box=$("#detectedParams");
-  if(!d||typeof d!=="object"){box.innerHTML='<dt class="muted">该文件暂无检测结果</dt><dd></dd>';return;}
-  const rows=[];
-  const add=(k,v)=>{if(v!==undefined&&v!==null&&v!=="")rows.push("<dt>"+k+"</dt><dd>"+v+"</dd>");};
-  const warn=(k,v)=>{if(v)rows.push('<dt style="color:#e0a437">'+k+'</dt><dd style="color:#e0a437">'+v+"</dd>");};
-  warn("⚠ 机型数据",d.data_support);
-  warn("⚠ 白平衡",d.wb_degradation);
+  // Measured scene facts land NEXT TO the control they inform, so the number
+  // is in view while the hand is on the slider — never a scroll away.
+  DETECTED_READY=!!(d&&typeof d==="object");
+  if(!DETECTED_READY){
+    ["#decoderFact","#wbFact","#clipFact","#evFact","#toneFact","#hdrSceneFact"].forEach(s=>setFact(s,""));
+    return;
+  }
   const ev=v=>(v>=0?"+":"")+(+v).toFixed(2)+" EV";
-  if(d.raw_clip_union_pct!==null)add("RAW 剪切",(+d.raw_clip_union_pct).toFixed(2)+"%（≥1 通道）");
-  if(d.reliable_tail_ev!==null)add("可靠高光尾部",ev(d.reliable_tail_ev)+"（p99.99，剪切样本已剔除）");
-  else add("可靠高光尾部","不可用 · HDR 余量将为 0");
-  if(d.hdr_earned_ev!==null)add("HDR 可挣余量","+"+(+d.hdr_earned_ev).toFixed(2)+" EV（超出参考白的部分）");
-  if(d.body_median_ev!==null)add("主体中位",ev(d.body_median_ev));
-  add("场景类型",d.sparse_emitter?"稀疏光源（夜景/舞台策略）":"普通");
-  if(d.black_ev!==null&&d.white_ev!==null)add("编译曲线",ev(d.black_ev)+" .. "+ev(d.white_ev)+(d.contrast!==null?" · 对比 "+(+d.contrast).toFixed(2):""));
-  box.innerHTML=rows.join("")||'<dt class="muted">该文件暂无检测结果</dt><dd></dd>';
+  setFact("#decoderFact",d.data_support?"⚠ 机型数据："+d.data_support:"",true);
+  setFact("#wbFact",d.wb_degradation?"⚠ 白平衡："+d.wb_degradation:"",true);
+  setFact("#clipFact",d.raw_clip_union_pct!==null?"实测 RAW 剪切 "+(+d.raw_clip_union_pct).toFixed(2)+"%（≥1 通道）":"");
+  const evBits=[];
+  if(d.body_median_ev!==null)evBits.push("实测主体中位 "+ev(d.body_median_ev));
+  if(d.sparse_emitter)evBits.push("稀疏光源 · 夜景/舞台策略");
+  setFact("#evFact",evBits.join(" · "));
+  const toneBits=[];
+  if(d.black_ev!==null&&d.white_ev!==null)toneBits.push("编译曲线 "+ev(d.black_ev)+" .. "+ev(d.white_ev));
+  if(d.contrast!==null)toneBits.push("对比 "+(+d.contrast).toFixed(2));
+  setFact("#toneFact",toneBits.join(" · "));
+  if(d.reliable_tail_ev!==null){
+    const bits=["实测可靠尾部 "+ev(d.reliable_tail_ev)+"（p99.99）"];
+    if(d.hdr_earned_ev!==null)bits.push("场景可挣余量 +"+(+d.hdr_earned_ev).toFixed(2)+" EV");
+    setFact("#hdrSceneFact",bits.join(" · "));
+  }else{
+    setFact("#hdrSceneFact","⚠ 可靠尾部不可用 · HDR 余量将为 0",true);
+  }
+}
+// Each probe line lands next to the control it informs: file identity and the
+// Evidence tier by the picker, the two decoder tiers by the decoder select,
+// the sensor-priors state by the analysis-plates toggle. Unrecognized lines
+// (e.g. probe failures) fall through to the decoder slot as warnings.
+const SUPPORT_ROUTE=[["机型：","#fileFact"],["Evidence（LibRaw）：","#fileFact"],
+  ["LibRaw 场景解码：","#decodeTierFact"],["Apple RAW：","#decodeTierFact"],
+  ["传感器先验：","#priorsFact"]];
+function renderDecodeSupport(lines){
+  const buckets=new Map();
+  for(const line of lines||[]){
+    const hit=SUPPORT_ROUTE.find(([p])=>line.startsWith(p));
+    const sel=hit?hit[1]:"#decodeTierFact";
+    if(!buckets.has(sel))buckets.set(sel,[]);
+    buckets.get(sel).push(line);
+  }
+  for(const [prefix,sel] of SUPPORT_ROUTE)if(!buckets.has(sel))buckets.set(sel,[]);
+  for(const [sel,rows] of buckets){
+    const joined=sel==="#fileFact"?rows.join(" · "):rows.join("\\n");
+    setFact(sel,joined,/[✗⚠]|失败/.test(joined));
+  }
 }
 async function fetchDecodeSupport(input){
-  // The per-file two-decoder tier report; fire-and-forget, never blocks the flow.
+  // The per-file support probe; fire-and-forget, never blocks the flow.
   try{
     const key=input;
     let j=RAW9_PROBES.get(key);
     if(!j){j=await postJob("/raw9-support",{input:key});if(j.ok)RAW9_PROBES.set(key,j);}
-    if(j&&j.support_lines)$("#decodeSupport").innerText=j.support_lines.join("\\n");
+    if(j&&j.support_lines)renderDecodeSupport(j.support_lines);
   }catch(_){/* probe display is best-effort */}
 }
 async function preparePreview(){
@@ -880,7 +918,7 @@ $("#previewBtn").onclick=async()=>{
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   // Keep the detection card in step even when the path was pasted without a change
   // event; the proxy session is already warm so this costs one cached lookup.
-  if($("#detectedParams").innerText.indexOf("EV")<0)preparePreview();
+  if(!DETECTED_READY)preparePreview();
   $("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在生成预览…","");
   try{
     const j=await postJob("/preview",body);

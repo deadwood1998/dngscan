@@ -36,6 +36,42 @@ class PageInformationDisplayTests(unittest.TestCase):
         prepare = prepare[:prepare.index("\n}")]
         self.assertIn("fetchDecodeSupport(body.input);", prepare)
 
-    def test_decode_support_block_exists_and_wraps_lines(self) -> None:
-        start = PAGE.index('id="decodeSupport"')
-        self.assertIn("white-space:pre-line", PAGE[start:PAGE.index(">", start)])
+    def test_layout_targets_desktop_landscape(self) -> None:
+        # This GUI ships desktop/laptop web only (16:9/16:10 landscape): the
+        # canvas opens wide, the preview column owns the viewport height, and
+        # the image fills its box instead of guessing a max-height.
+        self.assertIn("max-width:1900px", PAGE)
+        self.assertIn("height:calc(100vh - 24px)", PAGE)
+        self.assertIn("object-fit:contain", PAGE)
+        self.assertNotIn("max-height:calc(100vh", PAGE)
+
+    def test_measured_facts_sit_next_to_their_controls(self) -> None:
+        # Data-to-function adjacency: each measured fact renders inside the
+        # block whose control consumes it, not in a separate overview card the
+        # user must scroll back to while dragging a slider.
+        for fact_id, anchor in (
+            ("hdrSceneFact", 'id="hdrHeadroom"'),   # scene headroom by the HDR slider
+            ("evFact", 'id="evReferenceBtn"'),      # body median by the EV controls
+            ("wbFact", 'id="lensFilter"'),          # WB degradation closes the WB row
+            ("clipFact", 'id="highlight"'),         # clip share by highlight recovery
+            ("toneFact", 'id="highlightTransition"'),  # compiled curve by tone sliders
+        ):
+            with self.subTest(fact=fact_id):
+                gap = PAGE[PAGE.index(anchor):PAGE.index('id="%s"' % fact_id)]
+                self.assertLess(len(gap), 600, f"{fact_id} not adjacent to {anchor}")
+        self.assertNotIn("detectedParams", PAGE)  # the overview card is gone
+
+    def test_support_probe_lines_route_to_their_controls(self) -> None:
+        # The probe report is not one block: file identity + Evidence tier by
+        # the picker, decoder tiers by the decoder select, priors by the
+        # analysis-plates toggle. No consolidated support panel remains.
+        for fact_id, anchor in (
+            ("fileFact", 'id="filePicker"'),
+            ("decodeTierFact", 'id="demosaic"'),
+            ("priorsFact", 'id="png"'),
+        ):
+            with self.subTest(fact=fact_id):
+                gap = PAGE[PAGE.index(anchor):PAGE.index('id="%s"' % fact_id)]
+                self.assertLess(len(gap), 700, f"{fact_id} not adjacent to {anchor}")
+        self.assertIn("SUPPORT_ROUTE", PAGE)
+        self.assertNotIn("decodeSupport", PAGE)
