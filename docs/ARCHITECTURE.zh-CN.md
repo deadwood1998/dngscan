@@ -790,6 +790,12 @@ theatrical 系→(×1.4, punchy)、Portra 系→(×1.3, base) 等。三条属性
 词汇内，保持为独立控制。三管线对照与原型对应（observe≈FilmLight、
 full≈Kelly）的完整论证见[设计合同](FILM_OBSERVATION_PLAN.zh-CN.md)。
 
+两个杠杆的量感（同一日光帧，Velvia 100；上排分离强度轴 ×1.0/×1.6/×2.2，
+下排 punch 轴 0/0.75/1.5——注意 punch 是场景自适应纯度补偿的倍率，夜景
+自动归零，故用日光帧演示）：
+
+![风格双轴：分离强度与 punch 浓度各三档，Velvia 100 同帧对照](assets/film-style-axes.jpg)
+
 同一帧 fp 样张过四个家族与影院引用（随机选自真实拍摄卡，全部现行管线渲染）：
 
 ![同帧对比：AgX 基线与七款胶片预设（柯达/富士负片、反转片、电影卷及影院引用）](assets/film-families.jpg)

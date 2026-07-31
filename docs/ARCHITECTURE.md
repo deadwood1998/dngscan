@@ -974,6 +974,13 @@ and stays an independent control. The full three-pipeline correspondence
 (observe ~= FilmLight, full ~= Kelly) is argued in the
 [design contract](FILM_OBSERVATION_PLAN.zh-CN.md).
 
+How much each lever moves (one daylight frame, Velvia 100; top row the separation
+axis at x1.0/x1.6/x2.2, bottom row the punch axis at 0/0.75/1.5 — punch scales the
+scene-adaptive purity compensation and zeroes itself on night scenes, hence the
+daylight demonstration):
+
+![Style axes: three steps each of separation strength and punch intensity, Velvia 100, same frame](assets/film-style-axes.jpg)
+
 One fp frame through the four families plus the theatrical quotation (picked at
 random from a real shooting card, all rendered by the current pipeline):
 
