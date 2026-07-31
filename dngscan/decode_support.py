@@ -19,9 +19,9 @@ Core Image tiers:
     unsupported          Core Image does not accept this file
     raw7 / raw8          accepted, but only by an older decode model
     raw9                 the newest decode model is offered
-    (+ blocked_by_libraw flag: the current architecture still sources the
-     evidence layer from LibRaw, so a format LibRaw cannot open is not usable
-     through Core Image either until the standalone path lands.)
+    (+ blocked_by_libraw flag: the evidence policy always sources sensor facts
+     from LibRaw, so a format LibRaw cannot open is intentionally unavailable
+     through every scene decoder.)
 
 Sensor priors presence is reported alongside (analysis-scale trust, not colour).
 Surfaces: `--support` in the CLI, the GUI decoder card, and the format-gap error.
@@ -113,11 +113,24 @@ def probe_decode_support(path: Path) -> dict[str, Any]:
     blocked = libraw["status"] == "unsupported_format"
     coreimage = _coreimage_tier(path, blocked)
     priors = find_priors(shot.make, shot.model) is not None
+    from .evidence import libraw_runtime_id
+
+    evidence = {
+        "provider": "libraw",
+        "provider_version": libraw_runtime_id(),
+        "status": libraw["status"],
+        "detail": libraw["detail"],
+    }
 
     ident = f"{shot.make or '?'} {shot.model or '?'}".strip()
     lines = [f"机型：{ident}"]
     lines.append(
-        "LibRaw：" + _LIBRAW_LABELS[libraw["status"]].format(detail=libraw["detail"])
+        "Evidence（LibRaw）："
+        + _LIBRAW_LABELS[libraw["status"]].format(detail=libraw["detail"])
+    )
+    lines.append(
+        "LibRaw 场景解码："
+        + _LIBRAW_LABELS[libraw["status"]].format(detail=libraw["detail"])
     )
     ci = coreimage["status"]
     if ci == "raw9":
@@ -129,7 +142,7 @@ def probe_decode_support(path: Path) -> dict[str, Any]:
     else:
         ci_line = "Apple RAW：✗ 此系统无 Core Image 解码器"
     if coreimage["blocked_by_libraw"]:
-        ci_line += "；⚠ 但证据层依赖 LibRaw，该文件当前整体不可用（独立路径开发中）"
+        ci_line += "；⚠ 但统一 Evidence 策略要求 LibRaw，该文件当前整体不可用"
     lines.append(ci_line)
     lines.append(
         "传感器先验：" + ("✓ 有（PhotonsToPhotos 实测标尺）" if priors
@@ -139,6 +152,7 @@ def probe_decode_support(path: Path) -> dict[str, Any]:
         "make": shot.make,
         "model": shot.model,
         "libraw": libraw,
+        "evidence": evidence,
         "coreimage": coreimage,
         "priors": priors,
         "lines": lines,

@@ -10,6 +10,32 @@ from typing import Any
 
 from .constants import DEFAULT_HDR_PEAK_NITS, HDR_REFERENCE_WHITE_NITS
 
+
+@dataclass(frozen=True)
+class RawEvidence:
+    """Decoder-independent sensor evidence acquired through LibRaw.
+
+    Scene decoders consume this contract but never choose or mutate its provider.
+    Keeping the evidence handle explicit prevents an Apple/LibRaw scene switch from
+    changing the mosaic, levels, CFA identity, or provider provenance used by analysis.
+    """
+
+    path: Path
+    raw_image: Any
+    raw_colors: Any
+    white_level: int
+    black_levels: list[float]
+    camera_wb: list[float]
+    daylight_wb: list[float] | None
+    color_desc: str
+    raw_pattern: list[list[int]]
+    camera_white_levels: list[float]
+    orientation_flip: int
+    xyz_to_cam: Any | None
+    provider: str = "libraw"
+    provider_version: str | None = None
+
+
 @dataclass
 class RawBundle:
     path: Path
@@ -104,6 +130,11 @@ class RawBundle:
     # (y0, x0, y1, x1). None means the full evidence frame maps onto the scene (pure scale).
     scene_geometry_crop: tuple[float, float, float, float] | None = None
     scene_geometry_corr: float | None = None
+    # Explicit evidence-layer contract. The flattened fields above remain as a
+    # compatibility facade for analysis/render callers while they migrate.
+    evidence: RawEvidence | None = None
+    evidence_provider: str = "libraw"
+    evidence_provider_version: str | None = None
 
 
 @dataclass
