@@ -50,7 +50,7 @@ button.preview:disabled{opacity:.5;cursor:default}
 .coreFacts b{color:#e7e9ee;font-weight:500}
 #controlHint{margin-top:10px;color:#9aa7c0;font-size:12px;line-height:1.55;min-height:0}
 #controlHint:empty{display:none}
-#status{margin-top:10px;min-height:20px}
+#status{margin-top:10px;min-height:20px;white-space:pre-line}
 .err{color:#ff8a8a}.ok{color:#8ae08a}.warn{color:#ffc46b}
 .browserList{display:none;margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;max-height:260px;overflow:auto;background:#12141a}
 .browserList div{padding:6px 10px;cursor:pointer;border-bottom:1px solid #20242e;font-size:13px}
@@ -822,7 +822,8 @@ async function preparePreview(){
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   try{
     const j=await postJob("/prepare",body);
-    if(j&&j.ok)renderDetectedParams(j.detected);
+    if(j&&j.ok){renderDetectedParams(j.detected);}
+    else if(j&&j.error){setStatus(j.error,"err");renderDetectedParams(null);}
   }catch(_){/* Preview remains available on demand. */}
 }
 function beginBusy(){const w=$("#previewWrap");w.classList.add("loading");}
