@@ -64,6 +64,54 @@ soname 26，A7 V 入表；**全套 411 项测试零漂移通过**——master �
 X-E5 借 X100VI 矩阵、A7R VI 待上游、GR IV 走 DNG 自带标签）。0.22.1 已知
 机型的回退条目（A7S III/X100VI/Zf）永不触发，保留作老构建环境的防御层。
 
+## 解码格式支持：颜色表缺口 vs 格式缺口（2026-07-30）
+
+新机型解码失败分两类，处置完全不同：
+
+- **颜色表缺口**（文件能解包、缺机型矩阵）：走上文的标定阶梯优雅降级，回退表
+  可补——A7 V、X-E5 这类属于此类。
+- **格式缺口**（LibRaw 根本打不开文件）：回退表无能为力，升级 LibRaw 也未必
+  有用。**典型案例：尼康高效压缩（HE/HE\*）NEF**——Z9/Z8/Z6III/Z50II 世代的
+  HE 格式使用 intoPIX **TicoRAW** 编码，授权原因 LibRaw（连 master）与
+  darktable 的 rawspeed 都无法解码。同机身的『无损压缩』NEF 不受影响。
+
+格式缺口的处置（`raw_io._unsupported_format_guidance`，报错即引导）：
+
+1. **Adobe DNG Converter**（免费，持有 TicoRAW 授权）把 HE NEF 转 DNG——
+   转换后本工具全功能可用（含 CFA 证据层与 HDR）；
+2. 相机内改用**无损压缩** RAW；
+3. **Apple RAW 独立解码路径（规划中）**：Z50 II 等新机在
+   [Apple 的 RAW 兼容名单](https://support.apple.com/en-us/122870)上，
+   Core Image 可以解这些文件——但当前架构里 coreimage 分支仍依赖 LibRaw
+   提供证据层（聚合统计、对齐参考），LibRaw 打不开则整体失败。独立路径需要
+   "无证据分析"降级形态（analysis 层约 21 处原始数据依赖的重构）+ 真实 HE
+   样张做端到端验证，已立项；落地后此类文件可用 RAW9 出片（SDR 优先，HDR
+   预算因无 CFA 证据将如实拒绝或降级）。
+
+Apple 覆盖注记：Z50 II 在 macOS Sequoia/26 名单上（标准 NEF 确认；HE 变体的
+Apple 原生解码覆盖待真实样张验证——第三方如 RAW Power 以自带扩展解码支持
+HE/HE\*，说明系统级覆盖可能不完整）。
+
+## 逐文件支持探针（`--support`）
+
+"支持"不再是一个模糊词：`dngscan <文件> --support` 输出该文件在两条解码线上的
+**逐档确定性报告**（`decode_support.probe_decode_support`，只读元数据不解码；
+GUI 选中文件后同一报告显示在解码器控件下方）：
+
+```text
+机型：SIGMA SIGMA fp
+LibRaw：✓ 完整支持（文件自带 DNG 双光源标定）
+Apple RAW：✓ RAW 9（最新解码模型）
+传感器先验：✓ 有（PhotonsToPhotos 实测标尺）
+```
+
+分层定义——LibRaw：`✗ 格式缺口`（打不开，回退表无效，如 HE NEF）→
+`△ 色彩无锚`（可解码、零标定）→ `△ 回退矩阵`（WB 已代偿、内部转换仍缺）→
+`✓ DNG 自带标定` / `✓ 矩阵在表`；Apple RAW：`✗ 不支持` → `△ 仅 RAW 7/8`
+（可显式降级）→ `✓ RAW 9`，另有 `⚠ 证据层依赖 LibRaw` 的耦合标记（格式缺口
+文件即使 Apple 支持也整体不可用，直到独立路径落地）；传感器先验单列（只影响
+分析标尺，不影响渲染）。格式缺口的报错信息与本探针互链。
+
 ## iPhone 双解码对照
 
 同一 iPhone 16 Pro ProRAW 帧、同一 AgX plan：LibRaw 施加文件内的 DNG `GainMap`，

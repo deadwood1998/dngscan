@@ -120,6 +120,107 @@ class WbDegradationTests(unittest.TestCase):
         self.assertIsNone(note)
 
 
+class DecodeSupportProbeTests(unittest.TestCase):
+    """The per-file two-decoder tier report: deterministic labels per tier."""
+
+    def _probe(self, libraw_tier, ci_probe):
+        from unittest import mock
+
+        from dngscan import decode_support
+
+        with mock.patch.object(decode_support, "_libraw_tier", return_value=libraw_tier), \
+             mock.patch("dngscan.coreimage_decode.probe_raw9_support",
+                        return_value=ci_probe), \
+             mock.patch("dngscan.dng_metadata.read_dng_shot_info") as shot, \
+             mock.patch("dngscan.priors.find_priors", return_value=None), \
+             mock.patch.object(Path, "is_file", return_value=True):
+            shot.return_value.make = "NIKON CORPORATION"
+            shot.return_value.model = "Z50_2"
+            return decode_support.probe_decode_support(Path("/x/DSC_0001.NEF"))
+
+    def test_format_gap_blocks_coreimage_and_says_so(self) -> None:
+        report = self._probe(
+            {"status": "unsupported_format", "detail": "TicoRAW"},
+            {"coreimage_available": True, "raw9_supported": True,
+             "versions_offered": ("9",), "fallback_version": None, "error": None},
+        )
+        self.assertTrue(report["coreimage"]["blocked_by_libraw"])
+        joined = "\n".join(report["lines"])
+        self.assertIn("格式缺口", joined)
+        self.assertIn("证据层依赖 LibRaw", joined)
+
+    def test_full_support_reads_clean(self) -> None:
+        report = self._probe(
+            {"status": "full", "detail": "机型颜色矩阵在 LibRaw 表内"},
+            {"coreimage_available": True, "raw9_supported": True,
+             "versions_offered": ("9", "8"), "fallback_version": None, "error": None},
+        )
+        joined = "\n".join(report["lines"])
+        self.assertIn("✓ 完整支持", joined)
+        self.assertIn("RAW 9", joined)
+        self.assertFalse(report["coreimage"]["blocked_by_libraw"])
+
+    def test_downgrade_tier_names_the_available_version(self) -> None:
+        report = self._probe(
+            {"status": "fallback_matrix", "detail": "回退表"},
+            {"coreimage_available": True, "raw9_supported": False,
+             "versions_offered": ("8",), "fallback_version": "8", "error": None},
+        )
+        joined = "\n".join(report["lines"])
+        self.assertIn("仅 RAW 8", joined)
+        self.assertIn("△ 可用", joined)
+
+
+class UnsupportedFormatGuidanceTests(unittest.TestCase):
+    """Format gaps (files LibRaw cannot open) get a precise diagnosis, not a
+    generic 'unsupported' — the canonical case being Nikon HE/HE* TicoRAW NEFs."""
+
+    def _shot(self, make="NIKON CORPORATION", model="Z50_2"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(make=make, model=model)
+
+    def test_nef_guidance_names_the_cause_and_the_outs(self) -> None:
+        from dngscan.raw_io import _unsupported_format_guidance
+
+        msg = _unsupported_format_guidance(
+            Path("/x/DSC_0001.NEF"), self._shot(), RuntimeError("Unsupported file format")
+        )
+        self.assertIn("TicoRAW", msg)
+        self.assertIn("DNG Converter", msg)
+        self.assertIn("无损压缩", msg)
+        self.assertIn("Z50_2", msg)
+
+    def test_other_formats_point_to_the_master_upgrade(self) -> None:
+        from dngscan.raw_io import _unsupported_format_guidance
+
+        msg = _unsupported_format_guidance(
+            Path("/x/photo.arw"), self._shot("SONY", "ILCE-9M4"),
+            RuntimeError("Unsupported file format"),
+        )
+        self.assertIn("build_libraw_master", msg)
+        self.assertNotIn("TicoRAW", msg)
+
+    def test_load_raw_surfaces_the_guidance(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        import rawpy
+
+        from dngscan import raw_io
+
+        with tempfile.NamedTemporaryFile(suffix=".NEF") as tmp:
+            tmp.write(b"II*\x00")  # minimal TIFF magic so shot-info parsing no-ops
+            tmp.flush()
+            with mock.patch.object(
+                rawpy, "imread",
+                side_effect=rawpy.LibRawFileUnsupportedError("Unsupported file format"),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    raw_io.load_raw(Path(tmp.name))
+        self.assertIn("TicoRAW", str(ctx.exception))
+
+
 class DataSupportMarkerTests(unittest.TestCase):
     """The consolidated per-body marker: truthful label, never a gate."""
 

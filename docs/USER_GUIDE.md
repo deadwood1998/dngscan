@@ -38,6 +38,13 @@ results may deviate, while the photo exports normally. Several new bodies
 (A7 V / A7S III / A7R VI / GR IV / Nikon Zf / X100VI / X-E5) already ship with
 measured sensor data and colour matrices, matching the established-camera experience.
 
+**One known exception: Nikon High Efficiency (HE/HE\*) NEFs.** If a Z9/Z8/Z6III/
+Z50II-generation body shot with "High Efficiency" compression, that format cannot be
+decoded by LibRaw for codec-licensing reasons (true of all open-source tools); the
+error message gives specific guidance. Fixes: convert to DNG with the free Adobe DNG
+Converter (full functionality after conversion), or switch the camera to "Lossless
+Compression" RAW. Lossless NEFs from the same bodies work normally.
+
 **The Apple RAW decoder (optional — set "解码器 / Decoder" to Apple RAW)** uses the RAW
 engine built into macOS. Its coverage follows Apple's official camera RAW compatibility
 list — mainstream Canon, Nikon, Sony, Fujifilm, Panasonic and Sigma bodies plus iPhone

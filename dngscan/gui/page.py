@@ -104,6 +104,7 @@ button.preview:disabled{opacity:.5;cursor:default}
         <option value="libraw">LibRaw · 默认</option>
         <option value="coreimage">Apple RAW · 9 优先</option>
       </select>
+      <div id="decodeSupport" class="muted" style="font-size:11px;line-height:1.5;margin-top:4px;white-space:pre-line"></div>
     </div>
     <div style="flex:1;min-width:140px;display:none" id="coreimageVersionBlock">
       <label>CI 版本</label>
@@ -806,8 +807,18 @@ function renderDetectedParams(d){
   if(d.black_ev!==null&&d.white_ev!==null)add("编译曲线",ev(d.black_ev)+" .. "+ev(d.white_ev)+(d.contrast!==null?" · 对比 "+(+d.contrast).toFixed(2):""));
   box.innerHTML=rows.join("")||'<dt class="muted">该文件暂无检测结果</dt><dd></dd>';
 }
+async function fetchDecodeSupport(input){
+  // The per-file two-decoder tier report; fire-and-forget, never blocks the flow.
+  try{
+    const key=input;
+    let j=RAW9_PROBES.get(key);
+    if(!j){j=await postJob("/raw9-support",{input:key});if(j.ok)RAW9_PROBES.set(key,j);}
+    if(j&&j.support_lines)$("#decodeSupport").innerText=j.support_lines.join("\\n");
+  }catch(_){/* probe display is best-effort */}
+}
 async function preparePreview(){
   const body=payload();if(!body)return;
+  fetchDecodeSupport(body.input);
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   try{
     const j=await postJob("/prepare",body);

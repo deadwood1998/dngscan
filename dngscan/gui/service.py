@@ -284,7 +284,12 @@ def raw9_support(params: dict) -> dict:
     if not inp.is_file():
         raise FileNotFoundError(f"文件不存在：{inp}")
     from dngscan import coreimage_decode
+    from dngscan.decode_support import probe_decode_support
 
+    try:
+        support_lines = probe_decode_support(inp)["lines"]
+    except Exception as exc:  # the probe must never block the GUI flow
+        support_lines = [f"支持探测失败：{exc}"]
     probe = coreimage_decode.probe_raw9_support(inp)
     offered = [str(value) for value in probe["versions_offered"]]
     fallback = probe["fallback_version"]
@@ -301,6 +306,7 @@ def raw9_support(params: dict) -> dict:
         message = f"此文件不支持 Apple RAW 9，也没有可用的 RAW 8/7 降级路径（报告版本：{detail}）。"
     return {
         "ok": True,
+        "support_lines": support_lines,
         "coreimage_available": bool(probe["coreimage_available"]),
         "raw9_supported": bool(probe["raw9_supported"]),
         "versions_offered": offered,

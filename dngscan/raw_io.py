@@ -686,6 +686,41 @@ def refresh_clip_masks_from_fullwell(
     return True
 
 
+def _unsupported_format_guidance(path: Path, shot: Any, exc: Exception) -> str:
+    """A targeted refusal for files LibRaw cannot open — name the cause, give outs.
+
+    New-body decode failures split into two classes. Colour-table gaps degrade
+    gracefully elsewhere (SENSOR_SUPPORT ladder); FORMAT gaps stop the decoder
+    cold, and the honest response is a precise diagnosis instead of a generic
+    "unsupported". The canonical case: Nikon High Efficiency (HE/HE*) NEFs use
+    intoPIX TicoRAW, which LibRaw (and darktable's rawspeed) cannot licence —
+    even LibRaw master fails on them, so the fallback matrix table cannot help.
+    """
+    ident = f"{shot.make or '?'} {shot.model or '?'}".strip()
+    lines = [
+        f"LibRaw 无法打开此文件（机型 {ident}，{path.suffix or '无后缀'}）：{exc}",
+    ]
+    if path.suffix.lower() == ".nef":
+        lines += [
+            "若这是较新的尼康机身（Z9/Z8/Z6III/Z50II 世代）且拍摄时选择了"
+            "高效压缩（HE/HE*），则该格式使用 intoPIX TicoRAW 编码，LibRaw "
+            "因授权无法解码——升级 LibRaw 也无济于事。可用的出路：",
+            "  1. 用 Adobe DNG Converter（免费，支持 HE）把 NEF 转成 DNG，"
+            "转换后本工具全功能可用；",
+            "  2. 相机内改用『无损压缩』RAW（同世代机身的无损 NEF 可正常解码）；",
+            "  3. Apple RAW 独立解码路径在开发中（当前 --decoder coreimage "
+            "仍依赖 LibRaw 提供证据层，对此格式暂同样不可用）。",
+        ]
+    else:
+        lines += [
+            "若这是较新的机型，可尝试 tools/build_libraw_master.sh 升级到 "
+            "LibRaw master 快照；仍失败请反馈样张（机型支持策略见 "
+            "docs/SENSOR_SUPPORT.zh-CN.md）。",
+        ]
+    lines.append("用 `--support` 可查看此文件在两条解码线上的逐档支持报告。")
+    return "\n".join(lines)
+
+
 def load_raw(
     path: Path,
     scene_highlight_mode: str = "clip",
@@ -862,8 +897,13 @@ def load_raw(
                 )
     except FileNotFoundError:
         raise
+    except rawpy.LibRawFileUnsupportedError as exc:
+        raise RuntimeError(_unsupported_format_guidance(path, shot, exc)) from exc
     except Exception as exc:
-        raise RuntimeError(f"Cannot decode RAW file with rawpy/libraw: {exc}") from exc
+        message = f"Cannot decode RAW file with rawpy/libraw: {exc}"
+        if "unsupported file format" in str(exc).lower():
+            message = _unsupported_format_guidance(path, shot, exc)
+        raise RuntimeError(message) from exc
 
     if decoder == "coreimage":
         neutral_cct = kelvin_mode_cct(wb_mode)

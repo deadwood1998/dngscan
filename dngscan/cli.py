@@ -252,6 +252,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--support",
+        action="store_true",
+        help=(
+            "只探测不解码：逐档报告此文件在 LibRaw 与 Apple RAW 两条解码线上的"
+            "支持程度（格式/颜色标定/RAW 9 版本/传感器先验），然后退出"
+        ),
+    )
+    parser.add_argument(
         "--film-mode",
         choices=("observe", "full"),
         default="observe",
@@ -441,6 +449,12 @@ def main(argv: list[str]) -> int:
         if not args.path.is_file():
             raise FileNotFoundError(f"Input path is not a file: {args.path}")
         require_dependencies()
+        if args.support:
+            from .decode_support import probe_decode_support
+
+            for line in probe_decode_support(args.path)["lines"]:
+                print(line)
+            return 0
         if is_hdr_output_format(args.output_format):
             from .gainmap import apple_gainmap_backend_status
 
