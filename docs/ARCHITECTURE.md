@@ -981,6 +981,12 @@ daylight demonstration):
 
 ![Style axes: three steps each of separation strength and punch intensity, Velvia 100, same frame](assets/film-style-axes.jpg)
 
+The same two axes on an indoor dense-colour scene (tungsten-lit can wall) — the
+separation axis opens up much wider here, and punch is measurably active on this
+frame (p99 ~13 codes) while staying deliberately subtle:
+
+![Style axes, indoor dense colour: the same six cells on the tungsten can-wall scene](assets/film-style-axes-indoor.jpg)
+
 One fp frame through the four families plus the theatrical quotation (picked at
 random from a real shooting card, all rendered by the current pipeline):
 

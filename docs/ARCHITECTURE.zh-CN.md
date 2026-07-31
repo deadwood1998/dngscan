@@ -796,6 +796,11 @@ full≈Kelly）的完整论证见[设计合同](FILM_OBSERVATION_PLAN.zh-CN.md)�
 
 ![风格双轴：分离强度与 punch 浓度各三档，Velvia 100 同帧对照](assets/film-style-axes.jpg)
 
+同样的双轴在室内密集色场景（钨丝暖光罐墙）——分离轴的拉开幅度大得多，punch
+在此场景实测活跃（p99 约 13 codes）但依旧克制：
+
+![风格双轴·室内密集色：同样六格在钨丝罐墙场景](assets/film-style-axes-indoor.jpg)
+
 同一帧 fp 样张过四个家族与影院引用（随机选自真实拍摄卡，全部现行管线渲染）：
 
 ![同帧对比：AgX 基线与七款胶片预设（柯达/富士负片、反转片、电影卷及影院引用）](assets/film-families.jpg)
