@@ -767,6 +767,29 @@ AgX。逐通道滚降本身就是颜色操作——这就是"AgX 只管拉伸滚
 
 ![observe 与 full 两模式同帧对照：Portra 400 / Kodachrome 64 / Vision3 theatrical](assets/film-mode-observe-vs-full.jpg)
 
+### 风格配对——observe 模式的 look 层
+
+observe 模式的完整结构正是 FilmLight 的原型：**稳定的自家 DRT（AgX）坐镇渲染槽，
+风格作为分离的 look 层叠加**——look 不改 DRT，DRT 不含 look。观感评估的结论是
+"observe 稳而淡、full 浓而坏"，缺的味道由 look 层补足，且只用两个**已验证机制**
+做词汇：
+
+- **前馈分离超驱动**（`--scene-transform-strength` >1）：把胶片感色分离（二手
+  datasheet 数据、有界矩阵、中性保持）推过校准强度——加的是"这卷胶片怎么分
+  颜色"的味；
+- **AgX 原色几何**（`--agx-primaries` punchy/muted）：AgX 自家被验证的纯度
+  词汇——加的是密度与饱和的"浓"。
+
+`FILM_STYLE_PAIRINGS`（film_curve.py）按卷口碑给每个预设一组
+（强度, 几何）配对：Velvia→(×1.6, punchy)、Ektar→(×1.4, punchy)、
+Kodachrome→(×1.4, muted)、Pro 400H→(×1.3, muted)、Vision3 系→(×1.2, muted)、
+theatrical 系→(×1.4, punchy)、Portra 系→(×1.3, base) 等。三条属性：**编辑
+决定，不冒充测量**（A/B 样张标定的初稿，用户观感为终裁）；combo 只覆盖仍处
+默认值的层，显式给出的值优先，GUI 控件同步可见——没有烘焙；full 模式不吃
+配对（胶片显影模型自带性格）。`--punch`（场景自适应纯度补偿）暂不在配对
+词汇内，保持为独立控制。三管线对照与原型对应（observe≈FilmLight、
+full≈Kelly）的完整论证见[设计合同](FILM_OBSERVATION_PLAN.zh-CN.md)。
+
 同一帧 fp 样张过四个家族与影院引用（随机选自真实拍摄卡，全部现行管线渲染）：
 
 ![同帧对比：AgX 基线与七款胶片预设（柯达/富士负片、反转片、电影卷及影院引用）](assets/film-families.jpg)

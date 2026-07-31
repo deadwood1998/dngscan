@@ -945,6 +945,35 @@ split down the middle and had to become a two-pole switch.
 
 ![observe vs full, same frame: Portra 400 / Kodachrome 64 / Vision3 theatrical](assets/film-mode-observe-vs-full.jpg)
 
+### Style pairings — observe mode's look layer
+
+Observe mode's complete structure is the FilmLight archetype: **a stable house DRT
+(AgX) holds the rendering slot, and style rides as a separated look layer** — the
+look never modifies the DRT, the DRT carries no look. Visual assessment read
+"observe stable but mild, full strong but broken"; the missing flavour is supplied
+by the look layer using only two **validated mechanisms** as its vocabulary:
+
+- **Prefeed separation over-drive** (`--scene-transform-strength` > 1): pushing the
+  film's spectral separation (second-hand datasheet data, bounded matrices,
+  neutral-preserving) past calibration strength — this adds "how this stock
+  separates colour";
+- **AgX primaries geometry** (`--agx-primaries` punchy/muted): AgX's own validated
+  purity vocabulary — this adds density and saturation.
+
+`FILM_STYLE_PAIRINGS` (film_curve.py) assigns each preset a (strength, geometry)
+pair by stock reputation: Velvia -> (x1.6, punchy), Ektar -> (x1.4, punchy),
+Kodachrome -> (x1.4, muted), Pro 400H -> (x1.3, muted), the Vision3 family ->
+(x1.2, muted), theatrical quotes -> (x1.4, punchy), the Portra family ->
+(x1.3, base), and so on. Three properties: **editorial declarations, never
+measurements** (first-drafted against an A/B plate; the user's eye is the final
+judge); the combo fills only layers still at their defaults, explicit values win,
+and the GUI controls update visibly — nothing is baked; full mode ignores the
+pairings (the film development model carries its own character). `--punch`
+(scene-adaptive purity compensation) is deliberately not in the pairing vocabulary
+and stays an independent control. The full three-pipeline correspondence
+(observe ~= FilmLight, full ~= Kelly) is argued in the
+[design contract](FILM_OBSERVATION_PLAN.zh-CN.md).
+
 One fp frame through the four families plus the theatrical quotation (picked at
 random from a real shooting card, all rendered by the current pipeline):
 

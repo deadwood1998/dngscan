@@ -113,53 +113,59 @@ Fixed Kelvin works on both decoders. A visible color cast after choosing one is
 
 ## 3.7 Film observation positions (20 stocks + 5 theatrical variants)
 
-The division of labour in one sentence: **the film decides what the observer saw;
-AgX decides how to develop it onto your screen.**
+Up front: **this is not a one-tap filter**. It decomposes "how a roll of film saw
+the world" into independent, declared layers. The payoff is that every layer can
+be understood and adjusted on its own; the price is two minutes to build the
+mental model. These paragraphs are those two minutes.
 
-The **film observation position** selector (imaging card) sets several independent
-declarations at once: white balance locked to the stock's calibration temperature
-(5500K for daylight stocks, 3200K for tungsten cine stocks), the spectral prefeed
-(how that stock's layers separated colour, from manufacturer datasheets), the
-development curve (the stock plus its paired display medium's tone signature,
-externally cross-validated), and a **style pairing** (separation strength + AgX
-primaries geometry — Velvia pairs with stronger separation and punchy primaries,
-for instance). Every underlying control visibly updates when you pick one —
-**nothing is baked**; adjust any layer individually at any time. The style
-pairings are editorial first drafts by stock reputation, not measurements — if one
-isn't to your taste, just move the sliders.
+### The mental model: film decides what was seen; AgX decides how to develop it
 
-The library covers four families (all data digitized from datasheets by the
-spektrafilm project, CC BY-SA 4.0):
+Picking a stock sets five controls at once (**all visible, all adjustable —
+nothing is baked**):
 
-- **Kodak negatives** — Portra 160/400/800 (plus push 1/2), Ektar 100, Gold 200,
-  Ultramax 400 — printed on Endura paper;
-- **Fujifilm negatives** — Superia X-TRA 400, C200, Pro 400H — printed on Crystal
-  Archive paper;
-- **Reversal (slide) film** — Provia 100F, Velvia 100, Ektachrome 100,
-  Kodachrome 64 — the slide is its own display medium;
-- **Cinema negatives** — Vision3 50D/250D/200T/500T, Verita 200D — printed on 2383
-  theatrical stock.
+| Layer | What it does | When to touch it |
+|---|---|---|
+| **White balance** (RAW decode card) | Locks the stock's calibration temperature: 5500K daylight, 3200K tungsten cine | Orange tungsten scenes are **by design** (real film behaves this way); switch back to As Shot if you don't want it |
+| **Spectral prefeed** (prefeed card) | How this stock's layers **separate** colour (its skin/foliage character), from datasheets | Usually leave it; set to none to drop the stock's colour separation entirely |
+| **Separation strength** (slider) | Intensity of that separation. The combo sets a per-stock suggestion (Velvia ×1.6) | **Too mild → push up; too strong → pull down.** 1.0 = calibration strength; the suggestion is editorial taste, not measurement |
+| **Development curve** (tone card) | The stock + paired medium's tone signature: black floor, latitude, highlight rolloff. Fixed per roll, no scene adaptation | Usually leave it; the tone trims still stack on top |
+| **AgX primaries** (imaging card) | The density/saturation "punch": base/punchy/muted. Paired per stock (Velvia→punchy, Kodachrome→muted) | **The bigger style lever** — switch here for more bite or more restraint |
 
-Slides and cinema prints were designed for **dark projection rooms** and are built
-about 1.5× contrastier than bright-environment media; when delivering to an everyday
-screen the tool translates that difference away using the classic viewing-condition
-constants (including the standard viewing flare of reflection prints), so they
-*look* right on your display rather than merely being numerically faithful. For the
-raw high-contrast "2383 print on a monitor" appearance, pick the **· theatrical**
-variants.
+How colour finally *develops* onto your screen (path-to-white, hue behaviour)
+always belongs to AgX — the most thoroughly validated part of the pipeline, and
+the reason this film simulation stays stable.
 
-**Two modes** (CLI `--film-mode`): the default **observe** is everything described
-above — stable, with colour handled by AgX, the pipeline's most thoroughly
-validated rendering; use it day to day. **full** is experimental: the film's
-development model takes over per-channel colour entirely (stronger character, but
-the colour reconstruction has no measured ground truth yet and can drift
-unnaturally); SDR only — switch it on when you want to see the complete film
-reconstruction as an experiment.
+### Three steps to start
 
-It adds no grain and no vignette — it changes *how the camera saw the world*: how
-colours separate, how highlights roll off, where shadows rest against the display
-medium's deepest black. **HDR keeps working** (observe mode): a film body plus
-genuinely measured highlight headroom, a combination no other film tool offers.
+1. Pick a stock and export — the combo already carries its suggested style;
+2. Adjust to taste: **too mild** → raise separation strength or switch primaries
+   to punchy; **too strong** → the reverse; **dislike the colour-temperature
+   cast** → set WB back to As Shot (keeping only the separation and curve);
+3. Want the no-film baseline? Set film to none — pure AgX.
+
+### Common intents
+
+- Rich landscape chrome → Velvia 100 (ships punchy + ×1.6)
+- Soft portraits → Portra 400 (switch to muted for softer still)
+- Restrained vintage → Kodachrome 64
+- The raw high-contrast "2383 print on a monitor" look → the **theatrical** variants
+- Flat wide-latitude cine scans → the Vision3 family
+- Film tone only, no colour separation → prefeed none, keep the curve preset
+
+### Boundaries worth knowing
+
+- Slides and cinema prints target **dark projection rooms** (~1.5× contrastier);
+  delivery to an everyday screen translates that away using the classic
+  viewing-condition constants (including standard reflection-print viewing flare)
+  — *looking* right on your display outranks being numerically raw;
+- **Two modes** (CLI `--film-mode`): the default **observe** is everything above —
+  use it day to day. **full** is experimental: the film development model takes
+  over per-channel colour entirely (stronger character, but the colour
+  reconstruction has no measured ground truth and can drift unnaturally); SDR
+  only;
+- No grain, no vignette — it changes *how the camera saw the world*;
+- **HDR keeps working** (observe mode): a film body plus genuinely measured
+  highlight headroom — a combination no other film tool offers.
 
 **Lens filters** (RAW decode card) are the companion control: Wratten conversion
 glass simulated from Kodak's published parameters (85B daylight-to-tungsten, 80A the
