@@ -13,9 +13,9 @@ PAGE = """<!doctype html>
 body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;background:#15171c;color:#e7e9ee}
 .wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
 h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
-.topBar{display:flex;gap:16px;align-items:center;margin:0 0 12px}
-.topBar input[type=file]{flex:1;width:auto;min-width:260px}
-.topBar .ctlFact{flex:1;min-width:260px}
+.topBar{display:flex;flex-direction:column;gap:8px;align-items:stretch;margin:0 0 12px}
+.topBar input[type=file]{width:100%;min-width:260px}
+.topBar .ctlFact{min-width:260px}
 .card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
 .secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}
 .workspace{display:grid;grid-template-columns:minmax(360px,460px) minmax(0,1fr);gap:12px;align-items:start}
@@ -88,7 +88,6 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
 .dialogActions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid #2b2f3a}
 @media (max-width:980px){
   .wrap{padding:14px}
-  .topBar{flex-wrap:wrap}
   .workspace{display:block}
   .previewCard{position:static;height:auto;min-height:60vh}
   .modes button .d{display:none}

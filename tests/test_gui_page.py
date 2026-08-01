@@ -45,10 +45,21 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn("object-fit:contain", PAGE)
         self.assertNotIn("max-height:calc(100vh", PAGE)
 
-    def test_file_picker_uses_available_top_bar_width(self) -> None:
+    def test_file_picker_sits_below_title_and_uses_full_width(self) -> None:
+        top_bar = PAGE[
+            PAGE.index('<div class="topBar">'):
+            PAGE.index("</div>", PAGE.index('<div class="topBar">'))
+        ]
+        self.assertLess(top_bar.index("<h1>"), top_bar.index('id="filePicker"'))
+
+        top_bar_start = PAGE.index(".topBar{")
+        top_bar_rule = PAGE[top_bar_start:PAGE.index("}", top_bar_start)]
+        self.assertIn("flex-direction:column", top_bar_rule)
+        self.assertIn("align-items:stretch", top_bar_rule)
+
         start = PAGE.index(".topBar input[type=file]{")
         rule = PAGE[start:PAGE.index("}", start)]
-        self.assertIn("flex:1", rule)
+        self.assertIn("width:100%", rule)
         self.assertNotIn("max-width", rule)
 
     def test_measured_facts_sit_next_to_their_controls(self) -> None:
