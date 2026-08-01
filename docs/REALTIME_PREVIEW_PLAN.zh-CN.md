@@ -126,7 +126,7 @@ seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。现�
 
 | 子阶段 | NEF | A7M5 | 分析 |
 | --- | ---: | ---: | --- |
-| 全分辨率 gamut metrics | 732.51 ms | 2052.23 ms | analysis 最大项，约 60–62%；预览无需为每个 WB 重扫所有像素/全部色域 |
+| 全分辨率 gamut metrics | 732.51 ms | 2052.23 ms | analysis 最大项，约 60–62%；应以融合 native kernel 保留同一全分辨率算法 |
 | EV percentiles | 160.15 ms | 336.85 ms | 大数组 `log2` + percentile |
 | RAW noise floor | 74.22 ms | 180.20 ms | WB 无关，可按 capture 复用 |
 | clip percentage | 59.10 ms | 159.81 ms | WB 无关，可按 capture 复用 |
@@ -136,7 +136,7 @@ seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。现�
 | luminance buffer | 17.91 ms | 48.06 ms | 场景相关 |
 | 其余/对象构建 | 58.80 ms | 214.72 ms | 父阶段余量 |
 
-`diagnostics=False` 已经跳过 SNR 曲线和 RAW health，仍有 1.22 / 3.30 秒，说明下一步应拆分 analysis 数据依赖，而不是再关闭诊断项。传感器 evidence 派生结果按文件缓存；场景 gamut/EV 只对 1920px 代理或确定性抽样计算，并用全分辨率参考设一致性门禁。
+`diagnostics=False` 已经跳过 SNR 曲线和 RAW health，仍有 1.22 / 3.30 秒，说明下一步应拆分 analysis 数据依赖，而不是再关闭诊断项。传感器 evidence 派生结果按文件缓存；WB 相关的全分辨率 gamut/EV 则用一个并行 native pass 融合 Rec.2020→XYZ、luminance/EV、gamut test 和统计，避免 NumPy 为每个指标重扫及物化大数组。百分位定义、输入像素与最终 RenderPlan 都保持不变，不用 1920px 近似替换导出依据。
 
 #### 代理与 RenderPlan
 
@@ -167,7 +167,7 @@ Portra 400 的稳定热帧明显更差：NEF p50/p95 230.74/233.28 ms，A7M5 为
 #### 按收益排序的改造边界
 
 1. **P0 冷路径拆分**：建立以文件/decoder/demosaic/highlight 为键的 capture evidence cache，把 ceiling、noise、clip、CFA metrics 与 full-size mask 从 WB 代理中移出；WB 变化不得再执行这些 0.49 / 1.27 秒的工作。
-2. **P0 analysis 降采样但不分叉算法**：gamut/EV 使用随后必然生成的 1920px 线性代理或固定抽样，计算公式、矩阵和阈值与导出一致；用全尺寸参考检查 plan 参数与最终 RGB8 门禁。预计先消除 0.9 / 2.4 秒量级重复扫描。
+2. **P0 全分辨率 analysis native 融合**：保留同一像素集、矩阵、阈值与 percentile 定义，把 gamut/EV 的多次 NumPy 扫描和中间数组合成一个并行 native pass；目标是压缩当前 0.9 / 2.4 秒工作，而不是用低分辨率近似制造预览/导出分叉。
 3. **P0 胶片 transformed-scene cache/native kernel**：缓存与 EV 无关的色度窗口权重，或将 scene transform 与 exposure 融合为 native/Metal/CUDA kernel；不能缓存已经乘过 EV 的最终像素。目标是把约 300 ms 累计 CPU 工作移出每帧。
 4. **P1 共享 RenderPlan sample**：一次 transformed sample 同时供 scene metrics 与 tone plan，降低首次胶片计划的约 80–110 ms 重复工作。
 5. **P1 设备常驻整条热管线**：Metal/CUDA 常驻 scene/mask/noise，只传小参数、只回读 RGB8；普通 AgX 的目标是移除 50 ms 左右 CPU pixel critical path。JPEG 仍是约 8–14 ms 的下限，后续单独评估平台编码器。
