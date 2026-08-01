@@ -69,7 +69,10 @@ variants are described in the [architecture notes](docs/ARCHITECTURE.md).
 
 ## Quick start
 
-Python 3.10 or newer is required.
+Python 3.10 or newer is required. The validated rawpy/LibRaw dependency is built
+from its pinned source revision on first install, so Git and a native compiler
+are also required (Xcode Command Line Tools on macOS, or the standard build
+toolchain on Linux).
 
 ### GUI
 
