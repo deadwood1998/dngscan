@@ -87,6 +87,94 @@ seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。现�
 
 两个 CPU 实验未进入产品：把 AgX 到 finalizer 合成单个全帧 CPU 调用后，NEF p50 为 74.37 ms，破坏了现有 chunk 间的流水重叠；改用 libdispatch 常驻全局池后连续 p50 没有实质变化（64.68→64.45 ms），p95 与首帧反而变为 68.16 和 270.94 ms。它们说明 CPU 下一步不是继续扩大并行度或做全帧串行融合。
 
+### 完整管线 profile：白平衡与首次胶片模拟
+
+用户可感知的「调整白平衡需要数秒」不是 1920px 热渲染造成的。当前页面在白平衡变化时调用 `preparePreview()`；选择胶片组合还会先把 WB 改成 5500K/3200K，再调用同一个冷准备入口。WB 是代理缓存键的一部分，因此一个尚未缓存的新 WB 会完整执行 evidence、全分辨率解拜耳、分析、Lanczos 代理和 RenderPlan。胶片预设随后才开始第一帧热渲染。
+
+以下为 M4 Max 上空代理缓存的单次实测。时间是嵌套调用的 wall time；表内大阶段可相加，子阶段仅解释父阶段，不能重复相加。
+
+| 空缓存首次操作 | Nikon NEF 1920×1275 | A7M5 ARW 1920×1281 | 判断 |
+| --- | ---: | ---: | --- |
+| WB 5500K：完整 prepare | 2999.58 ms | 7756.76 ms | 冷路径 |
+| ├ RAW load/decode | 1543.32 ms | 4020.99 ms | 51.5% / 51.8% |
+| ├ capture analysis | 1217.91 ms | 3304.26 ms | 40.6% / 42.6% |
+| ├ 1920px proxy build | 170.44 ms | 356.02 ms | 5.7% / 4.6% |
+| ├ baseline RenderPlan | 59.80 ms | 67.25 ms | 2.0% / 0.9% |
+| └ proxy disk write | 7.74 ms | 7.94 ms | 可忽略 |
+| WB 5500K：第一帧 | 103.25 ms | 105.03 ms | prepare 完成后才执行 |
+| **WB 到可见图像** | **3102.83 ms** | **7861.79 ms** | 与「数秒」体感吻合 |
+| Portra 400：完整 prepare | 3153.34 ms | 7915.92 ms | 同样先创建 5500K 冷代理 |
+| Portra 400：第一帧 | 274.07 ms | 279.26 ms | 含光谱前馈与胶片曲线 |
+| **首次胶片到可见图像** | **3427.41 ms** | **8195.18 ms** | 当前最差交互路径 |
+
+冷准备的资源计数进一步排除了 I/O：WB profile 的 CPU 时间分别为 2996.27 / 7695.20 ms，CPU/wall 为 0.997 / 0.991；两份样张的 filesystem input blocks、major page faults 都为 0。这里的文件页已经在系统缓存中，因此不能代表机械盘首次读取，但它能说明应用内这 3–8 秒几乎全部是单核计算与数组分配，不是等待磁盘。
+
+#### RAW load/decode 子阶段
+
+| 子阶段 | NEF | A7M5 | 分析 |
+| --- | ---: | ---: | --- |
+| evidence 读取/复制 | 113.63 ms | 311.48 ms | WB 无关，当前每个 WB 重做 |
+| LibRaw 解拜耳 + postprocess | 987.01 ms | 2518.20 ms | decode 最大项；需要保留所选算法与高光语义 |
+| Rec.2020→XYZ 分析缓冲 | 98.99 ms | 254.28 ms | 大型全帧矩阵与分配 |
+| 全分辨率 clip mask | 236.89 ms | 618.93 ms | evidence 派生，WB 无关，当前每个 WB 重做 |
+| WB 求解 | 0.17 ms | 0.13 ms | 不是瓶颈 |
+| 其余元数据/尺度/分配 | 106.69 ms | 318.22 ms | 父阶段减去已列子阶段 |
+
+直接可复用的是 evidence、full-well/clip 证据和 mask；真正必须随 WB 改变的是场景颜色解码。短期只缓存磁盘代理会隐藏第二次等待，但不能解决第一次。
+
+#### Capture analysis 子阶段
+
+| 子阶段 | NEF | A7M5 | 分析 |
+| --- | ---: | ---: | --- |
+| 全分辨率 gamut metrics | 732.51 ms | 2052.23 ms | analysis 最大项，约 60–62%；预览无需为每个 WB 重扫所有像素/全部色域 |
+| EV percentiles | 160.15 ms | 336.85 ms | 大数组 `log2` + percentile |
+| RAW noise floor | 74.22 ms | 180.20 ms | WB 无关，可按 capture 复用 |
+| clip percentage | 59.10 ms | 159.81 ms | WB 无关，可按 capture 复用 |
+| ceiling detection | 55.77 ms | 151.15 ms | WB 无关，可按 capture 复用 |
+| CFA cell metrics | 38.07 ms | 101.18 ms | WB 无关，可按 capture 复用 |
+| refresh clip masks | 22.37 ms | 60.12 ms | 与前面的全尺寸 mask 构建重复接触大数组 |
+| luminance buffer | 17.91 ms | 48.06 ms | 场景相关 |
+| 其余/对象构建 | 58.80 ms | 214.72 ms | 父阶段余量 |
+
+`diagnostics=False` 已经跳过 SNR 曲线和 RAW health，仍有 1.22 / 3.30 秒，说明下一步应拆分 analysis 数据依赖，而不是再关闭诊断项。传感器 evidence 派生结果按文件缓存；场景 gamut/EV 只对 1920px 代理或确定性抽样计算，并用全分辨率参考设一致性门禁。
+
+#### 代理与 RenderPlan
+
+1920px 代理构建由全分辨率线性 Rec.2020 Lanczos（100.98 / 204.85 ms）和 clip-mask resize（68.93 / 150.67 ms）几乎完全组成。画质要求决定保留 Lanczos；在解码/分析拆分完成前，这里不是最高收益项。
+
+已有磁盘代理时，普通计划约 60–75 ms；Portra 400 计划仍为 216.29 / 224.27 ms，其中 `scene_tone_metrics` 为 107.34 / 110.47 ms，tone-plan 内的第二次 scene sample 为 79.11 / 79.23 ms。两者对同一最多 80 万像素样本重复执行光谱前馈。计划编译应先生成一次不可变 transformed sample，scene metrics 与 tone plan 共享；这项不改变颜色算法，只消除重复计算。
+
+#### 稳定热路径
+
+普通 AgX 连续变参 40 帧的端到端 p50/p95 为 NEF 65.53/68.85 ms、A7M5 63.57/65.36 ms。同一帧内两个 render worker 与 native kernel 的线程会重叠，所以下表的「累计」是 CPU 工作量，不能横向相加；`pixel pipeline` 和端到端才是关键路径 wall time。
+
+| 热阶段 | NEF | A7M5 | 分析 |
+| --- | ---: | ---: | --- |
+| cache/session/key/plan lookup | ≤0.06 ms | ≤0.06 ms | 已不是瓶颈 |
+| scene intent（累计） | 7.93 ms | 7.77 ms | 存储尺度/曝光展开 |
+| clip retreat（累计） | 10.71 ms | 18.15 ms | 内容相关 |
+| native AgX（累计） | 60.44 ms | 53.00 ms | 其中隔离测量的 base/C1 为约 29–30 ms，hue restore 为约 6–13 ms |
+| native output（累计） | 19.82 ms | 15.40 ms | NEF 的 16 轮 output gamut-fit 更重 |
+| **pixel pipeline wall p50/p95** | **53.66/57.34 ms** | **49.79/51.82 ms** | 主关键路径 |
+| JPEG q95 4:4:4 | 10.98 ms | 13.61 ms | pixel 后串行 |
+| ICC | 0.18 ms | 0.18 ms | 可忽略 |
+| **端到端 p50/p95** | **65.53/68.85 ms** | **63.57/65.36 ms** | 无 I/O；CPU/wall 约 7.0/6.6 核 |
+
+Portra 400 的稳定热帧明显更差：NEF p50/p95 230.74/233.28 ms，A7M5 为 237.09/239.75 ms；pixel pipeline 分别为 221.58/224.46 ms。scene transform 的跨 chunk 累计 CPU 工作约 298.49 / 299.87 ms，是首要瓶颈；tone core 约 47.32 / 51.15 ms，clip retreat 10.14 / 16.90 ms，native finalizer 约 5.5 ms，JPEG 8.36 / 12.07 ms。胶片场景前馈按每个 EV 帧重新计算色度窗口、高斯权重和区域矩阵，解释了「首次之后调整也仍慢」。
+
+精确帧回访缓存命中只需 0.13–0.16 ms；它只能覆盖参数完全相同的帧，无法帮助连续调 EV 或胶片强度。因此继续增加最终帧 cache 不是主要解法。
+
+#### 按收益排序的改造边界
+
+1. **P0 冷路径拆分**：建立以文件/decoder/demosaic/highlight 为键的 capture evidence cache，把 ceiling、noise、clip、CFA metrics 与 full-size mask 从 WB 代理中移出；WB 变化不得再执行这些 0.49 / 1.27 秒的工作。
+2. **P0 analysis 降采样但不分叉算法**：gamut/EV 使用随后必然生成的 1920px 线性代理或固定抽样，计算公式、矩阵和阈值与导出一致；用全尺寸参考检查 plan 参数与最终 RGB8 门禁。预计先消除 0.9 / 2.4 秒量级重复扫描。
+3. **P0 胶片 transformed-scene cache/native kernel**：缓存与 EV 无关的色度窗口权重，或将 scene transform 与 exposure 融合为 native/Metal/CUDA kernel；不能缓存已经乘过 EV 的最终像素。目标是把约 300 ms 累计 CPU 工作移出每帧。
+4. **P1 共享 RenderPlan sample**：一次 transformed sample 同时供 scene metrics 与 tone plan，降低首次胶片计划的约 80–110 ms 重复工作。
+5. **P1 设备常驻整条热管线**：Metal/CUDA 常驻 scene/mask/noise，只传小参数、只回读 RGB8；普通 AgX 的目标是移除 50 ms 左右 CPU pixel critical path。JPEG 仍是约 8–14 ms 的下限，后续单独评估平台编码器。
+6. **不作为主方案**：扩大 proxy/frame LRU 可以改善来回切换，预热 5500K/3200K 可以隐藏部分等待，但都会增加内存/后台计算，且不能降低首次真实计算量。
+
+所有改造继续遵守同一算法契约：预览与导出共享公式、16 轮 gamut-fit、边界与量化门禁；允许改变数据依赖、采样载体和执行设备，不允许建立另一套预览颜色数学。
+
 ### Metal / CUDA 异构热路径
 
 下一阶段把冷代理作为统一设备边界，而不是只把 finalizer 搬到 GPU。仅 offload 输出阶段仍会保留约 50 ms CPU 像素管线，并为每帧增加约 28 MiB float 输入传输，收益上限太低。Metal 与 CUDA 共用以下逻辑契约：
