@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "dngscan_fast/agx_core.h"
+#include "dngscan_fast/output_core.h"
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 #include <stdexcept>
+#include <string>
 
 namespace py = pybind11;
 
@@ -72,6 +74,33 @@ dngscan_fast::NativeAgxPlan plan_from_py(const py::object& obj) {
   return plan;
 }
 
+dngscan_fast::NativeOutputPlan output_plan_from_py(const py::object& obj) {
+  dngscan_fast::NativeOutputPlan plan{};
+  copy_matrix9(obj.attr("rec2020_to_output"), plan.rec2020_to_output);
+  copy_matrix9(obj.attr("output_to_lms"), plan.output_to_lms);
+  copy_matrix9(obj.attr("lms_to_output"), plan.lms_to_output);
+  copy_matrix9(obj.attr("oklab_m2"), plan.oklab_m2);
+  copy_matrix9(obj.attr("oklab_m2_inv"), plan.oklab_m2_inv);
+  plan.alpha = read_float(obj, "alpha");
+  return plan;
+}
+
+void require_rgb_array(const py::array& array, const char* name) {
+  if (array.ndim() != 2 || array.shape(1) != 3) {
+    throw std::invalid_argument(std::string(name) + " must be (N, 3)");
+  }
+}
+
+void require_same_shape(
+    const py::array& input,
+    const py::array& other,
+    const char* name) {
+  require_rgb_array(other, name);
+  if (other.shape(0) != input.shape(0)) {
+    throw std::invalid_argument(std::string(name) + " must match rgb shape");
+  }
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_dngscan_fast, m) {
@@ -97,6 +126,116 @@ PYBIND11_MODULE(_dngscan_fast, m) {
         return out;
       },
       py::arg("rgb"),
+      py::arg("plan"));
+
+  m.def(
+      "fit_output_gamut_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<float>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::fit_output_gamut_f32(
+            rgb.data(), out.mutable_data(), static_cast<std::size_t>(n), plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("plan"));
+
+  m.def(
+      "finalize_rec2020_u8_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise_a,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise_b,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise_a, "noise_a");
+        require_same_shape(rgb, noise_b, "noise_b");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_rec2020_u8_f32(
+            rgb.data(),
+            noise_a.data(),
+            noise_b.data(),
+            out.mutable_data(),
+            static_cast<std::size_t>(n),
+            plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise_a"),
+      py::arg("noise_b"),
+      py::arg("plan"));
+
+  m.def(
+      "finalize_output_u8_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise_a,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise_b,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise_a, "noise_a");
+        require_same_shape(rgb, noise_b, "noise_b");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_output_u8_f32(
+            rgb.data(),
+            noise_a.data(),
+            noise_b.data(),
+            out.mutable_data(),
+            static_cast<std::size_t>(n),
+            plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise_a"),
+      py::arg("noise_b"),
+      py::arg("plan"));
+
+  m.def(
+      "finalize_rec2020_u8_noise_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise, "noise");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_rec2020_u8_noise_f32(
+            rgb.data(), noise.data(), out.mutable_data(),
+            static_cast<std::size_t>(n), plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise"),
+      py::arg("plan"));
+
+  m.def(
+      "finalize_output_u8_noise_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise, "noise");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_output_u8_noise_f32(
+            rgb.data(), noise.data(), out.mutable_data(),
+            static_cast<std::size_t>(n), plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise"),
       py::arg("plan"));
 
   m.def(
@@ -131,6 +270,28 @@ PYBIND11_MODULE(_dngscan_fast, m) {
         float in[3] = {0.18f, 0.18f, 0.18f};
         float out[3] = {};
         dngscan_fast::apply_agx_core_f32(in, out, 1, plan);
-        return out[0] >= 0.0f && out[1] >= 0.0f && out[2] >= 0.0f;
+        dngscan_fast::NativeOutputPlan output_plan{};
+        output_plan.rec2020_to_output[0] = 1.0f;
+        output_plan.rec2020_to_output[4] = 1.0f;
+        output_plan.rec2020_to_output[8] = 1.0f;
+        output_plan.output_to_lms[0] = 1.0f;
+        output_plan.output_to_lms[4] = 1.0f;
+        output_plan.output_to_lms[8] = 1.0f;
+        output_plan.lms_to_output[0] = 1.0f;
+        output_plan.lms_to_output[4] = 1.0f;
+        output_plan.lms_to_output[8] = 1.0f;
+        output_plan.oklab_m2[0] = 1.0f;
+        output_plan.oklab_m2[4] = 1.0f;
+        output_plan.oklab_m2[8] = 1.0f;
+        output_plan.oklab_m2_inv[0] = 1.0f;
+        output_plan.oklab_m2_inv[4] = 1.0f;
+        output_plan.oklab_m2_inv[8] = 1.0f;
+        output_plan.alpha = 0.05f;
+        float noise[3] = {};
+        std::uint8_t encoded[3] = {};
+        dngscan_fast::finalize_output_u8_f32(
+            in, noise, noise, encoded, 1, output_plan);
+        return out[0] >= 0.0f && out[1] >= 0.0f && out[2] >= 0.0f &&
+               encoded[0] > 0 && encoded[1] > 0 && encoded[2] > 0;
       });
 }

@@ -15,6 +15,11 @@ try:
 except Exception as exc:  # pragma: no cover - exercised only on missing deps
     rawpy = None  # type: ignore[assignment]
     IMPORT_ERRORS.append(f"rawpy: {exc}")
+else:
+    from .libraw_policy import rawpy_runtime_problem
+
+    if problem := rawpy_runtime_problem(rawpy):
+        IMPORT_ERRORS.append(f"rawpy: {problem}")
 
 try:
     import matplotlib

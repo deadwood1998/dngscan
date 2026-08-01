@@ -9,14 +9,20 @@ import multiprocessing as mp
 import threading
 from queue import Empty
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import dngscan as dg
 from dngscan.debug_util import maybe_print_exc
 from dngscan.grade import RENDER_MODE, resolve_grade_params
 
-from .constants import RAW_EXTS
+from .constants import (
+    PROXY_LONG_EDGE,
+    RAW_EXTS,
+    REALTIME_PREVIEW_JPEG_QUALITY,
+    REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+)
 from .preview_cache import PREVIEW_STORE, PreviewEntry, downsample_mean
+from .preview_scheduler import PREVIEW_COORDINATOR
 
 
 # Kept as aliases for callers/tests that clear the in-process proxy cache.
@@ -25,17 +31,29 @@ PREVIEW_CACHE_LOCK = PREVIEW_STORE.lock
 RENDER_LOCK = threading.Lock()
 
 
-def make_preview_b64(path: Path, width: int | None = 1280, icc_profile: bytes | None = None) -> str:
+class PreviewSuperseded(RuntimeError):
+    """The browser has already requested a newer parameter generation."""
+
+
+def make_preview_b64(
+    path: Path,
+    width: int | None = PROXY_LONG_EDGE,
+    icc_profile: bytes | None = None,
+) -> str:
     from PIL import Image
 
     with Image.open(path) as src:
         if icc_profile is None:
             icc_profile = src.info.get("icc_profile")
         im = src.convert("RGB")
-    if width is not None and im.width > width:
-        im = im.resize((width, round(im.height * width / im.width)))
+    if width is not None and max(im.size) > width:
+        im.thumbnail((width, width), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    save_kwargs = {"format": "JPEG", "quality": 85}
+    save_kwargs = {
+        "format": "JPEG",
+        "quality": REALTIME_PREVIEW_JPEG_QUALITY,
+        "subsampling": REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+    }
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
     im.save(buf, **save_kwargs)
@@ -50,10 +68,14 @@ def preview_b64_from_u8(
     from PIL import Image
 
     im = Image.fromarray(rgb_u8, "RGB")
-    if width is not None and im.width > width:
-        im = im.resize((width, round(im.height * width / im.width)))
+    if width is not None and max(im.size) > width:
+        im.thumbnail((width, width), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    save_kwargs = {"format": "JPEG", "quality": 85}
+    save_kwargs = {
+        "format": "JPEG",
+        "quality": REALTIME_PREVIEW_JPEG_QUALITY,
+        "subsampling": REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+    }
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
     im.save(buf, **save_kwargs)
@@ -406,6 +428,118 @@ def parse_agx_primaries(params: dict) -> str:
     return resolved
 
 
+def _cache_float(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _adjustment_key(adjustments: dg.RenderAdjustments | None) -> tuple[float, ...]:
+    if adjustments is None:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+    return tuple(
+        _cache_float(value)
+        for value in (
+            adjustments.midtone_brightness,
+            adjustments.midtone_contrast,
+            adjustments.shadow_transition,
+            adjustments.highlight_transition,
+            adjustments.highlight_fade,
+        )
+    )
+
+
+def _cached_render_plan(
+    cached: PreviewEntry,
+    bundle: dg.RawBundle,
+    gamut: str,
+    scene_transform: str,
+    scene_transform_strength: float,
+    punch_scale: float,
+    tone_core: str,
+    lum_norm: str,
+    agx_primaries: str,
+    film_curve: str,
+    adjustments: dg.RenderAdjustments | None,
+) -> dg.RenderPlan:
+    """Compile expensive scene statistics once, then apply cheap UI biases."""
+    key = (
+        gamut,
+        scene_transform,
+        _cache_float(scene_transform_strength),
+        _cache_float(punch_scale),
+        tone_core,
+        lum_norm,
+        agx_primaries,
+        film_curve,
+        str(getattr(bundle, "lens_filter", "none")),
+    )
+    base = cached.get_or_build_plan(
+        key,
+        lambda: dg.build_render_plan(
+            bundle,
+            cached.analysis,
+            RENDER_MODE,
+            gamut,
+            scene_transform,
+            scene_transform_strength,
+            punch_scale,
+            tone_core,
+            lum_norm,
+            agx_primaries=agx_primaries,
+            film_curve=film_curve,
+            adjustments=None,
+        ),
+    )
+    return dg.apply_render_adjustments(base, adjustments)
+
+
+def _preview_pixel_key(
+    bundle: dg.RawBundle,
+    gamut: str,
+    ev: float,
+    look: str,
+    look_strength: float,
+    display_filter: str,
+    filter_strength: float,
+    scene_transform: str,
+    scene_transform_strength: float,
+    punch_scale: float,
+    tone_core: str,
+    lum_norm: str,
+    agx_primaries: str,
+    lens_filter: str,
+    film_curve: str,
+    adjustments: dg.RenderAdjustments | None,
+) -> tuple[Any, ...]:
+    return (
+        gamut,
+        _cache_float(ev),
+        look,
+        _cache_float(look_strength),
+        display_filter,
+        _cache_float(filter_strength),
+        scene_transform,
+        _cache_float(scene_transform_strength),
+        _cache_float(punch_scale),
+        tone_core,
+        lum_norm,
+        agx_primaries,
+        lens_filter,
+        film_curve,
+        _adjustment_key(adjustments),
+        # Exposure is represented by ``ev`` above; the scale contract guards against
+        # accidentally sharing frames across decoder/cache versions.
+        _cache_float(getattr(bundle, "scene_scale", 1.0)),
+        str(getattr(bundle, "scene_decoder_runtime", "") or ""),
+    )
+
+
+def _preview_frame_key(
+    pixel_key: tuple[Any, ...], include_metrics: bool
+) -> tuple[Any, ...]:
+    """Exact browser representation layered on top of reusable rendered pixels."""
+    return (*pixel_key, bool(include_metrics))
+
+
 def parse_decoder(params: dict) -> tuple[str, str]:
     from dngscan.constants import COREIMAGE_VERSION_CHOICES, DECODER_CHOICES
     from dngscan import coreimage_decode
@@ -425,6 +559,15 @@ def parse_decoder(params: dict) -> tuple[str, str]:
             "固定色温声明（如 5500K）与拍摄值均可用"
         )
     return decoder, version
+
+
+def parse_demosaic(params: dict, decoder: str) -> str:
+    from dngscan.constants import DEMOSAIC_CHOICES
+
+    demosaic = str(params.get("demosaic", "auto"))
+    if demosaic not in DEMOSAIC_CHOICES:
+        raise ValueError(f"未知解拜耳算法：{demosaic}")
+    return "auto" if decoder == "coreimage" else demosaic
 
 
 def export_preview_jpeg(
@@ -450,16 +593,31 @@ def export_preview_jpeg(
     adjustments: dg.RenderAdjustments | None = None,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
+    demosaic: str = "auto",
     lens_filter: str = "none",
     film_curve: str = "none",
+    include_metrics: bool = True,
+    is_current: Callable[[], bool] | None = None,
 ) -> dict:
     dg.require_dependencies()
     if decoder == "coreimage":
         highlight = "reconstruct"
     if cached is None:
         cached = PREVIEW_STORE.get(
-            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
         )
+
+    def ensure_current() -> None:
+        if is_current is not None and not is_current():
+            raise PreviewSuperseded()
+
+    ensure_current()
 
     proxy_bundle = dg.with_intent_exposure(
         cached.bundle, user_ev=ev, tone_core=tone_core
@@ -470,37 +628,71 @@ def export_preview_jpeg(
         import dataclasses as _dc
 
         proxy_bundle = _dc.replace(proxy_bundle, lens_filter=lens_filter)
+    pixel_key = _preview_pixel_key(
+        proxy_bundle,
+        gamut,
+        ev,
+        look,
+        look_strength,
+        display_filter,
+        filter_strength,
+        scene_transform,
+        scene_transform_strength,
+        punch_scale,
+        tone_core,
+        lum_norm,
+        agx_primaries,
+        lens_filter,
+        film_curve,
+        adjustments,
+    )
+    frame_key = _preview_frame_key(pixel_key, include_metrics)
+    if auto_ev is None:
+        frame = cached.get_frame(frame_key)
+        if frame is not None:
+            ensure_current()
+            frame["cache_hit"] = True
+            return frame
     with RENDER_LOCK:
-        render_plan = dg.build_render_plan(
-            proxy_bundle,
-            cached.analysis,
-            RENDER_MODE,
-            gamut,
-            scene_transform,
-            scene_transform_strength,
-            punch_scale,
-            tone_core,
-            lum_norm,
-            agx_primaries=agx_primaries,
-            film_curve=film_curve,
-            adjustments=adjustments,
-        )
+        ensure_current()
+        rgb_u8 = cached.get_pixels(pixel_key) if auto_ev is None else None
+        pixel_cache_hit = rgb_u8 is not None
+        if rgb_u8 is None:
+            render_plan = _cached_render_plan(
+                cached,
+                proxy_bundle,
+                gamut,
+                scene_transform,
+                scene_transform_strength,
+                punch_scale,
+                tone_core,
+                lum_norm,
+                agx_primaries,
+                film_curve,
+                adjustments,
+            )
+            ensure_current()
+            rgb_u8 = dg.render_output_u8(
+                proxy_bundle, cached.analysis, gamut, render_plan,
+                look, look_strength, display_filter, filter_strength,
+                scene_transform, scene_transform_strength,
+                tone_core, lum_norm, agx_primaries,
+                dither_noise=cached.get_or_build_dither_noise(),
+            )
+            ensure_current()
+            if auto_ev is None:
+                rgb_u8 = cached.put_pixels(pixel_key, rgb_u8)
         icc_profile = dg.output_icc_profile_bytes(gamut)
-        rgb_u8 = dg.render_output_u8(
-            proxy_bundle, cached.analysis, gamut, render_plan,
-            look, look_strength, display_filter, filter_strength,
-            scene_transform, scene_transform_strength,
-            tone_core, lum_norm, agx_primaries,
-        )
         if auto_ev is not None:
             rgb_u8 = annotate_preview_rgb_u8(rgb_u8, dg.auto_ev_overlay_lines(auto_ev))
-        metrics = preview_metrics_from_u8(rgb_u8, gamut)
+        metrics = preview_metrics_from_u8(rgb_u8, gamut) if include_metrics else {}
         preview = preview_b64_from_u8(rgb_u8, icc_profile=icc_profile)
+        ensure_current()
     payload = {
         "ok": True,
         "preview": preview,
         "metrics": metrics,
-        "metrics_kind": "preview",
+        "metrics_kind": "preview" if include_metrics else "deferred",
         "gain": proxy_bundle.exposure_gain,
         "ev": ev,
         "highlight": dg.highlight_mode_cn(highlight),
@@ -512,7 +704,11 @@ def export_preview_jpeg(
         "decoder": str(getattr(proxy_bundle, "scene_decoder", decoder) or decoder),
         "decoder_version": getattr(proxy_bundle, "scene_decoder_version", None),
         "ev_auto": auto_ev_payload(auto_ev),
+        "cache_hit": False,
+        "pixel_cache_hit": pixel_cache_hit,
     }
+    if auto_ev is None:
+        cached.put_frame(frame_key, payload)
     return payload
 
 
@@ -530,70 +726,96 @@ def parse_film_params(params: dict) -> tuple[str, str]:
 
 def run_preview(params: dict) -> dict:
     inp, highlight, gamut, output_format, ev, _, quality, _, _, ev_auto = parse_job_params(params)
+    try:
+        generation = int(params.get("generation", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("generation 必须是整数") from exc
+    session = str(params.get("previewSession", "") or f"legacy:{inp}")
+    if not PREVIEW_COORDINATOR.register(session, generation):
+        return {"ok": True, "superseded": True, "generation": generation}
+
+    def is_current() -> bool:
+        return PREVIEW_COORDINATOR.is_current(session, generation)
+
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    demosaic = parse_demosaic(params, decoder)
     if decoder == "coreimage":
         highlight = "reconstruct"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
     scene_transform, scene_transform_strength = parse_scene_transform(params)
     punch_scale = parse_punch(params)
     adjustments = parse_render_adjustments(params)
-    if dg.is_hdr_output_format(output_format) and abs(float(adjustments.highlight_fade)) > 1e-9:
-        raise RuntimeError("HDR 尚未定义显示侧高光褪白；请将该项恢复为自动")
     tone_core, lum_norm = parse_tone_core(params)
-    if dg.is_hdr_output_format(output_format) and tone_core != "agx":
-        raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     lens_filter, film_curve = parse_film_params(params)
-    cached = PREVIEW_STORE.get(
-        inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
-    )
-    auto_ev_result = None
-    if ev_auto:
-        auto_ev_result = dg.compute_auto_ev(
-            cached.bundle,
-            cached.analysis,
+    try:
+        cached = PREVIEW_STORE.get(
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
+        )
+        if not is_current():
+            raise PreviewSuperseded()
+        auto_ev_result = None
+        if ev_auto:
+            auto_ev_result = dg.compute_auto_ev(
+                cached.bundle,
+                cached.analysis,
+                gamut,
+                look=look,
+                look_strength=look_strength,
+                display_filter=display_filter,
+                filter_strength=filter_strength,
+                scene_transform=scene_transform,
+                scene_transform_strength=scene_transform_strength,
+                punch_scale=punch_scale,
+                tone_core=tone_core,
+                lum_norm=lum_norm,
+                agx_primaries=agx_primaries,
+                adjustments=adjustments,
+            )
+            if not is_current():
+                raise PreviewSuperseded()
+            ev = auto_ev_result.ev
+        result = export_preview_jpeg(
+            inp,
+            highlight,
             gamut,
+            ev,
+            min(quality, 95),
+            wb=wb,
             look=look,
             look_strength=look_strength,
             display_filter=display_filter,
             filter_strength=filter_strength,
             scene_transform=scene_transform,
             scene_transform_strength=scene_transform_strength,
+            auto_ev=auto_ev_result,
             punch_scale=punch_scale,
             tone_core=tone_core,
             lum_norm=lum_norm,
             agx_primaries=agx_primaries,
+            cached=cached,
             adjustments=adjustments,
+            decoder=decoder,
+            coreimage_version=coreimage_version,
+            demosaic=demosaic,
+            lens_filter=lens_filter,
+            film_curve=film_curve,
+            include_metrics=bool(params.get("includeMetrics", True)),
+            is_current=is_current,
         )
-        ev = auto_ev_result.ev
-    return export_preview_jpeg(
-        inp,
-        highlight,
-        gamut,
-        ev,
-        min(quality, 95),
-        wb=wb,
-        look=look,
-        look_strength=look_strength,
-        display_filter=display_filter,
-        filter_strength=filter_strength,
-        scene_transform=scene_transform,
-        scene_transform_strength=scene_transform_strength,
-        auto_ev=auto_ev_result,
-        punch_scale=punch_scale,
-        tone_core=tone_core,
-        lum_norm=lum_norm,
-        agx_primaries=agx_primaries,
-        cached=cached,
-        adjustments=adjustments,
-        decoder=decoder,
-        coreimage_version=coreimage_version,
-        lens_filter=lens_filter,
-        film_curve=film_curve,
-    )
+        result["generation"] = generation
+        return result
+    except PreviewSuperseded:
+        return {"ok": True, "superseded": True, "generation": generation}
 
 
 def _finite_or_none(value: object) -> float | None:
@@ -605,7 +827,11 @@ def _finite_or_none(value: object) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def detected_scene_params(bundle: dg.RawBundle, analysis: dg.Analysis) -> dict:
+def detected_scene_params(
+    bundle: dg.RawBundle,
+    analysis: dg.Analysis,
+    plan: dg.RenderPlan | None = None,
+) -> dict:
     """Measured scene facts that inform the user's later adjustments.
 
     Compiled from the same plan machinery the render will use, at the proxy decode's
@@ -613,7 +839,7 @@ def detected_scene_params(bundle: dg.RawBundle, analysis: dg.Analysis) -> dict:
     that budgets HDR, the clipping share that withdraws chroma freedom, the compiled
     curve endpoints — surfaced before any slider is touched.
     """
-    plan = dg.build_render_plan(bundle, analysis, RENDER_MODE, "p3")
+    plan = plan if plan is not None else dg.build_render_plan(bundle, analysis, RENDER_MODE, "p3")
     scene = plan.scene
     tone = plan.tone
     reliable_tail = _finite_or_none(getattr(scene, "reliable_tail_ev_p9999", None))
@@ -636,23 +862,55 @@ def detected_scene_params(bundle: dg.RawBundle, analysis: dg.Analysis) -> dict:
 
 
 def prepare_preview(params: dict) -> dict:
-    """Warm a proxy session after file selection without rendering an image."""
-    inp, highlight, _, _, _, _, _, _, _, _ = parse_job_params(params)
+    """Warm the fixed proxy and current immutable base plan after selection."""
+    inp, highlight, gamut, _, _, _, _, _, _, _ = parse_job_params(params)
     wb = str(params.get("wb", "camera"))
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    demosaic = parse_demosaic(params, decoder)
     if decoder == "coreimage":
         highlight = "reconstruct"
-    tone_core, _ = parse_tone_core(params)
+    tone_core, lum_norm = parse_tone_core(params)
+    scene_transform, scene_transform_strength = parse_scene_transform(params)
+    punch_scale = parse_punch(params)
+    adjustments = parse_render_adjustments(params)
+    agx_primaries = parse_agx_primaries(params)
+    lens_filter, film_curve = parse_film_params(params)
     # Do not compete with the full-resolution export worker for memory bandwidth.
     with RENDER_LOCK:
         entry = PREVIEW_STORE.get(
-            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
+        )
+        proxy_bundle = entry.bundle
+        if lens_filter != "none":
+            import dataclasses as _dc
+
+            proxy_bundle = _dc.replace(proxy_bundle, lens_filter=lens_filter)
+        # Compile the plan the automatic first frame will consume.  UI-only tone
+        # adjustments are applied after this immutable base plan and stay sub-ms.
+        detected_plan = _cached_render_plan(
+            entry,
+            proxy_bundle,
+            gamut,
+            scene_transform,
+            scene_transform_strength,
+            punch_scale,
+            tone_core,
+            lum_norm,
+            agx_primaries,
+            film_curve,
+            adjustments,
         )
     height, width = entry.bundle.scene_rec2020_render.shape[:2]
     try:
-        detected = detected_scene_params(entry.bundle, entry.analysis)
+        detected = detected_scene_params(entry.bundle, entry.analysis, detected_plan)
     except Exception:
         # Detection is guidance, not a gate: a plan-compile failure here must not
         # block the preview session it decorates.
@@ -900,7 +1158,9 @@ def run_export(params: dict) -> dict:
             )
         )
         preview = (
-            preview_b64_from_u8(rendered_u8, icc_profile=icc_profile, width=1280)
+            preview_b64_from_u8(
+                rendered_u8, icc_profile=icc_profile, width=PROXY_LONG_EDGE
+            )
             if rendered_u8 is not None
             else make_preview_b64(out_path, icc_profile=icc_profile)
         )
@@ -914,7 +1174,9 @@ def run_export(params: dict) -> dict:
             annotated = annotate_preview_rgb_u8(
                 rendered_u8, dg.auto_ev_overlay_lines(auto_ev_result)
             )
-            preview = preview_b64_from_u8(annotated, icc_profile=icc_profile, width=1280)
+            preview = preview_b64_from_u8(
+                annotated, icc_profile=icc_profile, width=PROXY_LONG_EDGE
+            )
         saved = [str(out_path)]
 
         if want_png:

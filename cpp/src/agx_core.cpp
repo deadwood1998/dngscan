@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <thread>
+#include <vector>
 
 namespace dngscan_fast {
 namespace {
@@ -333,12 +335,39 @@ void apply_agx_core_f32(
     float* output,
     std::size_t pixel_count,
     const NativeAgxPlan& plan) {
-  for (std::size_t i = 0; i < pixel_count; ++i) {
-    const Rgb in{input[i * 3 + 0], input[i * 3 + 1], input[i * 3 + 2]};
-    const Rgb out = process_pixel(in, plan);
-    output[i * 3 + 0] = out.r;
-    output[i * 3 + 1] = out.g;
-    output[i * 3 + 2] = out.b;
+  const auto process_range = [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      const Rgb in{input[i * 3 + 0], input[i * 3 + 1], input[i * 3 + 2]};
+      const Rgb out = process_pixel(in, plan);
+      output[i * 3 + 0] = out.r;
+      output[i * 3 + 1] = out.g;
+      output[i * 3 + 2] = out.b;
+    }
+  };
+
+  // The fixed realtime preview is large enough for the pow-heavy AgX core to benefit
+  // from bounded row-independent parallelism, but small buffers should avoid thread
+  // startup overhead. Cap workers so preview never monopolizes the machine.
+  constexpr std::size_t kParallelThreshold = 128 * 1024;
+  const unsigned available = std::max(1u, std::thread::hardware_concurrency());
+  const unsigned worker_count =
+      pixel_count >= kParallelThreshold ? std::min(available, 8u) : 1u;
+  if (worker_count <= 1) {
+    process_range(0, pixel_count);
+    return;
+  }
+
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count - 1);
+  const std::size_t block = (pixel_count + worker_count - 1) / worker_count;
+  for (unsigned worker = 1; worker < worker_count; ++worker) {
+    const std::size_t begin = std::min(pixel_count, std::size_t(worker) * block);
+    const std::size_t end = std::min(pixel_count, begin + block);
+    workers.emplace_back(process_range, begin, end);
+  }
+  process_range(0, std::min(pixel_count, block));
+  for (auto& worker : workers) {
+    worker.join();
   }
 }
 

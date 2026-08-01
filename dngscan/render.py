@@ -36,9 +36,58 @@ STREAM_THREAD_MIN_PIXELS = 2_000_000
 
 def dither_quantize_u8(encoded: Any, rng: Any) -> Any:
     """Quantize display-domain [0,1] floats to uint8 with 1-LSB TPDF dither."""
+    noise_a, noise_b = generate_dither_noise(rng, encoded.shape)
+    return dither_quantize_u8_with_noise(encoded, noise_a, noise_b)
+
+
+def generate_dither_noise(rng: Any, shape: Any) -> tuple[Any, Any]:
+    """Generate the authoritative deterministic TPDF source planes.
+
+    Kept as a named stage so profiling can distinguish RNG/memory traffic from the
+    fused output kernel without putting timers in the production render path.
+    """
+    return (
+        rng.random(shape, dtype=np.float32),
+        rng.random(shape, dtype=np.float32),
+    )
+
+
+def dither_quantize_u8_with_noise(
+    encoded: Any, noise_a: Any, noise_b: Any
+) -> Any:
+    """Reference quantizer with explicit noise for deterministic native parity."""
+    noise = np.asarray(noise_a, dtype=np.float32) - np.asarray(
+        noise_b, dtype=np.float32
+    )
+    return dither_quantize_u8_with_tpdf(encoded, noise)
+
+
+def dither_quantize_u8_with_tpdf(encoded: Any, noise: Any) -> Any:
+    """Quantize with an already-combined TPDF plane."""
     scaled = encoded.astype(np.float32, copy=False) * np.float32(255.0)
-    noise = rng.random(scaled.shape, dtype=np.float32) - rng.random(scaled.shape, dtype=np.float32)
     return np.clip(np.floor(scaled + np.float32(0.5) + noise), 0, 255).astype(np.uint8)
+
+
+def deterministic_dither_plane(shape: Any) -> Any:
+    """Build the exact seed-0 TPDF plane consumed by streamed SDR rendering.
+
+    The quantize-group ordering is part of the historical pixel contract. Preview
+    sessions reuse this immutable plane because shape and RNG seed do not change
+    between interactive frames; full-resolution exports keep their streamed path.
+    """
+    dimensions = tuple(int(value) for value in shape)
+    if len(dimensions) != 3 or dimensions[-1] != 3:
+        raise ValueError("dither shape must be (H, W, 3)")
+    pixel_count = dimensions[0] * dimensions[1]
+    flat = np.empty((pixel_count, 3), dtype=np.float32)
+    rng = np.random.default_rng(0)
+    for start in range(0, pixel_count, STREAM_QUANTIZE_CHUNK):
+        end = min(start + STREAM_QUANTIZE_CHUNK, pixel_count)
+        first, second = generate_dither_noise(rng, (end - start, 3))
+        np.subtract(first, second, out=flat[start:end])
+    result = flat.reshape(dimensions)
+    result.setflags(write=False)
+    return result
 
 
 def output_linear_to_u8(
@@ -108,27 +157,47 @@ def finalize_output_linear(
     chunk = 1_000_000
     for start in range(0, flat.shape[0], chunk):
         end = min(start + chunk, flat.shape[0])
-        piece = np.nan_to_num(flat[start:end].astype(np.float32, copy=False), nan=0.0, posinf=1e6, neginf=-1e6)
-        if look != "none":
-            # Optional project/local chromatic field in Oklab, before gamut fit.
-            lab_l, lab_a, lab_b = rgb_to_oklab(piece, output_gamut)
-            lab_l, lab_a, lab_b = look_engine.apply_look_oklab(lab_l, lab_a, lab_b, look, look_strength)
-            piece = oklab_to_output_rgb(lab_l, lab_a, lab_b, output_gamut)
-        if (
-            color_plan is not None
-            and abs(float(color_plan.display_highlight_chroma_retreat)) > 1e-9
-        ):
-            piece = _apply_display_highlight_chroma_retreat(
-                piece,
-                output_gamut,
-                float(color_plan.display_highlight_chroma_retreat),
-                float(color_plan.display_highlight_chroma_start),
-                float(color_plan.display_highlight_chroma_end),
-            )
+        piece = _apply_output_color_ops(
+            flat[start:end], output_gamut, look, look_strength, color_plan
+        )
         # Oklab hue-preserving gamut fit replaces per-channel clipping for every mode.
         alpha = float(color_plan.gamut_fit_alpha) if color_plan is not None else 0.05
         out[start:end] = fit_to_output_gamut(piece, output_gamut, alpha=alpha).astype(np.float32, copy=False)
     return out.reshape(original_shape)
+
+
+def _apply_output_color_ops(
+    rgb_linear: Any,
+    output_gamut: str,
+    look: str,
+    look_strength: float,
+    color_plan: ColorGeometryPlan | None,
+) -> Any:
+    """Operations that must remain between output conversion and gamut fitting."""
+    piece = np.nan_to_num(
+        np.asarray(rgb_linear).astype(np.float32, copy=False),
+        nan=0.0,
+        posinf=1e6,
+        neginf=-1e6,
+    )
+    if look != "none":
+        lab_l, lab_a, lab_b = rgb_to_oklab(piece, output_gamut)
+        lab_l, lab_a, lab_b = look_engine.apply_look_oklab(
+            lab_l, lab_a, lab_b, look, look_strength
+        )
+        piece = oklab_to_output_rgb(lab_l, lab_a, lab_b, output_gamut)
+    if (
+        color_plan is not None
+        and abs(float(color_plan.display_highlight_chroma_retreat)) > 1e-9
+    ):
+        piece = _apply_display_highlight_chroma_retreat(
+            piece,
+            output_gamut,
+            float(color_plan.display_highlight_chroma_retreat),
+            float(color_plan.display_highlight_chroma_start),
+            float(color_plan.display_highlight_chroma_end),
+        )
+    return piece
 
 
 def agx_compress_into_gamut(rgb: Any) -> Any:
@@ -362,6 +431,7 @@ def render_output_u8(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "base",
+    dither_noise: Any | None = None,
 ) -> Any:
     if look != "none" and display_filter != "none":
         raise ValueError("色度 look 与输出滤镜不能同时启用")
@@ -381,11 +451,36 @@ def render_output_u8(
     effective_plan = plan_with_look_overrides(plan, look, look_strength)
     effective_tone = effective_plan.tone if isinstance(effective_plan, RenderPlan) else effective_plan
     color_plan = effective_plan.color if isinstance(effective_plan, RenderPlan) else None
+    gamut_alpha = float(color_plan.gamut_fit_alpha) if color_plan is not None else 0.05
+    native_output_plan = None
+    if fast_backend.supports_output_finalizer():
+        try:
+            native_output_plan = fast_backend.compile_output_plan(
+                output_gamut, gamut_alpha
+            )
+        except Exception as exc:
+            if fast_backend.strict_requested():
+                raise fast_backend.NativeKernelError(str(exc)) from exc
+    has_output_color_ops = look != "none" or (
+        color_plan is not None
+        and abs(float(color_plan.display_highlight_chroma_retreat)) > 1e-9
+    )
+    native_rec2020_input = native_output_plan is not None and not has_output_color_ops and (
+        display_filter == "none" or filter_strength <= 0.0
+    )
 
     scene = bundle.scene_rec2020_render
     h, w = scene.shape[:2]
     flat_scene = scene.reshape(-1, scene.shape[-1])
     out = np.empty((flat_scene.shape[0], 3), dtype=np.uint8)
+    flat_dither_noise = None
+    if dither_noise is not None:
+        noise = np.asarray(dither_noise, dtype=np.float32)
+        if noise.shape != (h, w, 3):
+            raise ValueError(
+                f"dither noise shape {noise.shape} does not match render {(h, w, 3)}"
+            )
+        flat_dither_noise = np.ascontiguousarray(noise).reshape(-1, 3)
     quantize_chunk_size = STREAM_QUANTIZE_CHUNK
     render_chunk_size = (
         STREAM_RENDER_CHUNK
@@ -411,7 +506,7 @@ def render_output_u8(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb,
         scene_transform_engine.window_transport_tag(bundle)
     )
-    def render_finalized_chunk(start: int, end: int) -> Any:
+    def render_post_tone_chunk(start: int, end: int) -> Any:
         rec = scene_intent_rec2020(flat_scene[start:end, :3], bundle)
         rec = scene_transform_engine.apply_scene_transform_rec2020(
             rec, scene_transform, scene_transform_strength, wb_adapt
@@ -434,6 +529,8 @@ def render_output_u8(
             if raw_guidance is not None
             else None,
         )
+        if native_rec2020_input:
+            return np.ascontiguousarray(mapped_rec, dtype=np.float32)
         if display_filter != "none" and filter_strength > 0.0:
             output_linear = filter_engine.apply_display_filter_rec2020(
                 mapped_rec,
@@ -447,6 +544,17 @@ def render_output_u8(
         output_linear = np.nan_to_num(
             output_linear, nan=0.0, posinf=1e6, neginf=-1e6
         ).astype(np.float32, copy=False)
+        if native_output_plan is not None:
+            return np.ascontiguousarray(
+                _apply_output_color_ops(
+                    output_linear,
+                    output_gamut,
+                    look,
+                    look_strength,
+                    color_plan,
+                ),
+                dtype=np.float32,
+            )
         finalized = finalize_output_linear(
             output_linear, output_gamut, look, look_strength, color_plan
         )
@@ -463,18 +571,63 @@ def render_output_u8(
     ]
     rng = np.random.default_rng(0)
 
-    def quantize_chunk(start: int, end: int, finalized: Any) -> None:
-        encoded = encode_display_linear(
-            finalized,
-            output_gamut,
+    def quantize_chunk(start: int, end: int, pixels: Any) -> None:
+        noise = (
+            flat_dither_noise[start:end]
+            if flat_dither_noise is not None
+            else None
         )
-        out[start:end] = dither_quantize_u8(encoded, rng)
+        if noise is None:
+            noise_a, noise_b = generate_dither_noise(rng, pixels.shape)
+        else:
+            noise_a = noise_b = None
+        if native_output_plan is not None:
+            try:
+                if native_rec2020_input and noise is not None:
+                    encoded_u8 = fast_backend.finalize_rec2020_u8_noise_f32(
+                        pixels, noise, native_output_plan
+                    )
+                elif native_rec2020_input:
+                    encoded_u8 = fast_backend.finalize_rec2020_u8_f32(
+                        pixels, noise_a, noise_b, native_output_plan
+                    )
+                elif noise is not None:
+                    encoded_u8 = fast_backend.finalize_output_u8_noise_f32(
+                        pixels, noise, native_output_plan
+                    )
+                else:
+                    encoded_u8 = fast_backend.finalize_output_u8_f32(
+                        pixels, noise_a, noise_b, native_output_plan
+                    )
+                out[start:end] = encoded_u8
+                return
+            except Exception as exc:
+                if fast_backend.strict_requested():
+                    if isinstance(exc, fast_backend.NativeKernelError):
+                        raise
+                    raise fast_backend.NativeKernelError(str(exc)) from exc
+
+            if native_rec2020_input:
+                pixels = rec2020_to_output(pixels, output_gamut)
+                pixels = _apply_output_color_ops(
+                    pixels, output_gamut, look, look_strength, color_plan
+                )
+            pixels = fit_to_output_gamut(
+                pixels, output_gamut, alpha=gamut_alpha
+            ).astype(np.float32, copy=False)
+        encoded = encode_display_linear(pixels, output_gamut)
+        if noise is not None:
+            out[start:end] = dither_quantize_u8_with_tpdf(encoded, noise)
+        else:
+            out[start:end] = dither_quantize_u8_with_noise(
+                encoded, noise_a, noise_b
+            )
 
     def consume_in_quantize_groups(results: Any) -> None:
         group_start = 0
         group_parts: list[Any] = []
-        for start, end, finalized in results:
-            group_parts.append(finalized)
+        for start, end, pixels in results:
+            group_parts.append(pixels)
             group_end = min(group_start + quantize_chunk_size, flat_scene.shape[0])
             if end == group_end:
                 merged = group_parts[0] if len(group_parts) == 1 else np.concatenate(group_parts, axis=0)
@@ -484,7 +637,7 @@ def render_output_u8(
 
     if flat_scene.shape[0] < STREAM_THREAD_MIN_PIXELS or len(ranges) < 2:
         consume_in_quantize_groups(
-            (start, end, render_finalized_chunk(start, end)) for start, end in ranges
+            (start, end, render_post_tone_chunk(start, end)) for start, end in ranges
         )
     else:
         # Two workers give useful NumPy parallelism without multiplying the large
@@ -494,19 +647,19 @@ def render_output_u8(
             submit_idx = 0
             while submit_idx < min(2, len(ranges)):
                 start, end = ranges[submit_idx]
-                pending[submit_idx] = pool.submit(render_finalized_chunk, start, end)
+                pending[submit_idx] = pool.submit(render_post_tone_chunk, start, end)
                 submit_idx += 1
             def ordered_results() -> Any:
                 nonlocal submit_idx
                 for idx, (start, end) in enumerate(ranges):
-                    finalized = pending.pop(idx).result()
+                    pixels = pending.pop(idx).result()
                     if submit_idx < len(ranges):
                         next_start, next_end = ranges[submit_idx]
                         pending[submit_idx] = pool.submit(
-                            render_finalized_chunk, next_start, next_end
+                            render_post_tone_chunk, next_start, next_end
                         )
                         submit_idx += 1
-                    yield start, end, finalized
+                    yield start, end, pixels
 
             consume_in_quantize_groups(ordered_results())
     return out.reshape(h, w, 3)

@@ -7,9 +7,10 @@ import json
 import os
 import tempfile
 import threading
-from dataclasses import asdict, dataclass
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Hashable
 
 import dngscan as dg
 from dngscan.guidance import raw_guidance_for_shape
@@ -19,9 +20,14 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 5
+PREVIEW_CACHE_VERSION = 8
+PROXY_RESAMPLER = "lanczos"
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
+MAX_MEMORY_PROXY_ITEMS = 2
+MAX_PLAN_CACHE_ITEMS = 32
+MAX_PIXEL_CACHE_ITEMS = 2
+MAX_FRAME_CACHE_ITEMS = 24
 
 
 @dataclass
@@ -30,6 +36,84 @@ class PreviewEntry:
 
     bundle: RawBundle
     analysis: Analysis
+    _plan_cache: OrderedDict[Hashable, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _frame_cache: OrderedDict[Hashable, dict[str, Any]] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _pixel_cache: OrderedDict[Hashable, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _dither_noise: Any | None = field(default=None, init=False, repr=False)
+    _runtime_cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+
+    def get_or_build_plan(self, key: Hashable, builder: Callable[[], Any]) -> Any:
+        """Return an immutable base plan, compiling it at most once per key."""
+        with self._runtime_cache_lock:
+            cached = self._plan_cache.get(key)
+            if cached is not None:
+                self._plan_cache.move_to_end(key)
+                return cached
+            plan = builder()
+            self._plan_cache[key] = plan
+            while len(self._plan_cache) > MAX_PLAN_CACHE_ITEMS:
+                self._plan_cache.popitem(last=False)
+            return plan
+
+    def get_frame(self, key: Hashable) -> dict[str, Any] | None:
+        """Return a shallow payload copy so request metadata can be added safely."""
+        with self._runtime_cache_lock:
+            payload = self._frame_cache.get(key)
+            if payload is None:
+                return None
+            self._frame_cache.move_to_end(key)
+            result = dict(payload)
+            if isinstance(payload.get("metrics"), dict):
+                result["metrics"] = dict(payload["metrics"])
+            return result
+
+    def get_pixels(self, key: Hashable) -> Any | None:
+        """Return immutable rendered pixels shared by representation variants."""
+        with self._runtime_cache_lock:
+            pixels = self._pixel_cache.get(key)
+            if pixels is not None:
+                self._pixel_cache.move_to_end(key)
+            return pixels
+
+    def put_pixels(self, key: Hashable, pixels: Any) -> Any:
+        """Keep only the newest full preview frames; each is several MiB."""
+        np = dg.np
+        stored = np.array(pixels, dtype=np.uint8, copy=True, order="C")
+        stored.setflags(write=False)
+        with self._runtime_cache_lock:
+            self._pixel_cache[key] = stored
+            self._pixel_cache.move_to_end(key)
+            while len(self._pixel_cache) > MAX_PIXEL_CACHE_ITEMS:
+                self._pixel_cache.popitem(last=False)
+        return stored
+
+    def put_frame(self, key: Hashable, payload: dict[str, Any]) -> None:
+        """Keep a bounded exact-frame LRU; predicted combinations never explode."""
+        stored = dict(payload)
+        if isinstance(payload.get("metrics"), dict):
+            stored["metrics"] = dict(payload["metrics"])
+        with self._runtime_cache_lock:
+            self._frame_cache[key] = stored
+            self._frame_cache.move_to_end(key)
+            while len(self._frame_cache) > MAX_FRAME_CACHE_ITEMS:
+                self._frame_cache.popitem(last=False)
+
+    def get_or_build_dither_noise(self) -> Any:
+        """Reuse the fixed seed-0 TPDF plane for this proxy geometry."""
+        with self._runtime_cache_lock:
+            if self._dither_noise is None:
+                self._dither_noise = dg.deterministic_dither_plane(
+                    self.bundle.scene_rec2020_render.shape[:2] + (3,)
+                )
+            return self._dither_noise
 
 
 INT_KEY_ANALYSIS_FIELDS = {
@@ -49,24 +133,35 @@ INT_KEY_ANALYSIS_FIELDS = {
 }
 
 
+def proxy_target_size(width: int, height: int, max_long_edge: int) -> tuple[int, int]:
+    """Fit inside one long-edge bound while preserving the decoded source ratio."""
+    if width < 1 or height < 1:
+        raise ValueError("preview source dimensions must be positive")
+    long_edge = max(width, height)
+    if long_edge <= max_long_edge:
+        return width, height
+    scale = float(max_long_edge) / float(long_edge)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def downsample_mean(image: object, max_long_edge: int = PROXY_LONG_EDGE) -> object:
-    """Exact-size area proxy in scene-linear code values."""
+    """High-quality fixed-geometry proxy in scene-linear code values."""
     np = dg.np
     if np is None:
         return image
     arr = np.asarray(image)
     h, w = arr.shape[:2]
-    long_edge = max(h, w)
-    if long_edge <= max_long_edge:
+    target = proxy_target_size(w, h, max_long_edge)
+    if target == (w, h):
         return arr
     from PIL import Image
 
-    scale = float(max_long_edge) / float(long_edge)
-    target = (max(1, round(w * scale)), max(1, round(h * scale)))
     channels = []
     for idx in range(arr.shape[2]):
         plane = Image.fromarray(arr[:, :, idx].astype(np.float32, copy=False), mode="F")
-        channels.append(np.asarray(plane.resize(target, Image.Resampling.BOX), dtype=np.float32))
+        channels.append(
+            np.asarray(plane.resize(target, Image.Resampling.LANCZOS), dtype=np.float32)
+        )
     return np.stack(channels, axis=2)
 
 
@@ -75,8 +170,8 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v5"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v5"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v8"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v8"
 
 
 def _evidence_cache_identity(path: Path) -> tuple[str, int, int, str]:
@@ -98,7 +193,8 @@ def _cache_identity(
     wb: str,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
-) -> tuple[tuple[str, int, int, str, str, str, str, str], str]:
+    demosaic: str = "auto",
+) -> tuple[tuple[str, int, int, str, str, str, str, str, str], str]:
     evidence_key = _evidence_cache_identity(path)
     key = (
         *evidence_key,
@@ -106,8 +202,16 @@ def _cache_identity(
         wb,
         str(decoder),
         str(coreimage_version),
+        str(demosaic),
     )
-    encoded = "\0".join((str(PREVIEW_CACHE_VERSION), *(str(value) for value in key))).encode("utf-8")
+    encoded = "\0".join(
+        (
+            str(PREVIEW_CACHE_VERSION),
+            str(PROXY_LONG_EDGE),
+            PROXY_RESAMPLER,
+            *(str(value) for value in key),
+        )
+    ).encode("utf-8")
     return key, hashlib.sha256(encoded).hexdigest()
 
 
@@ -385,12 +489,12 @@ def _write_disk_entry(cache_path: Path, entry: PreviewEntry) -> None:
 
 
 class PreviewCache:
-    """One in-memory proxy plus a bounded, validated on-disk cache."""
+    """A small in-memory proxy LRU plus a bounded, validated on-disk cache."""
 
     def __init__(self) -> None:
-        self.entries: dict[
-            tuple[str, int, int, str, str, str, str, str], PreviewEntry
-        ] = {}
+        self.entries: OrderedDict[
+            tuple[str, int, int, str, str, str, str, str, str], PreviewEntry
+        ] = OrderedDict()
         self.lock = threading.Lock()
         self.build_lock = threading.Lock()
 
@@ -406,19 +510,25 @@ class PreviewCache:
         require_guidance: bool = False,
         decoder: str = "libraw",
         coreimage_version: str = "auto",
+        demosaic: str = "auto",
     ) -> PreviewEntry:
         if decoder == "coreimage":
             highlight = "reconstruct"
-        key, digest = _cache_identity(path, highlight, wb, decoder, coreimage_version)
+            demosaic = "auto"
+        key, digest = _cache_identity(
+            path, highlight, wb, decoder, coreimage_version, demosaic
+        )
         with self.lock:
             cached = self.entries.get(key)
             if cached is not None and (not require_guidance or cached.bundle.raw_guidance is not None):
+                self.entries.move_to_end(key)
                 return cached
 
         with self.build_lock:
             with self.lock:
                 cached = self.entries.get(key)
                 if cached is not None and (not require_guidance or cached.bundle.raw_guidance is not None):
+                    self.entries.move_to_end(key)
                     return cached
 
             cache_path = _cache_dir() / f"{digest}.npz"
@@ -427,7 +537,8 @@ class PreviewCache:
                 source = dg.load_raw(
                     path,
                     highlight,
-                    scene_half_size=True,
+                    scene_half_size=False,
+                    demosaic=demosaic,
                     wb_mode=wb,
                     decoder=decoder,
                     coreimage_version=coreimage_version,
@@ -437,8 +548,10 @@ class PreviewCache:
                 _write_disk_entry(cache_path, cached)
 
             with self.lock:
-                self.entries.clear()
                 self.entries[key] = cached
+                self.entries.move_to_end(key)
+                while len(self.entries) > MAX_MEMORY_PROXY_ITEMS:
+                    self.entries.popitem(last=False)
             return cached
 
 

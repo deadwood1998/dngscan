@@ -9,15 +9,27 @@ from typing import Any
 from ._deps import np
 from . import agx as agx_engine
 from . import drt as drt_engine
-from .constants import OKLAB_M1, OKLAB_M1_INV, OKLAB_M2, OKLAB_M2_INV, RGB_TO_XYZ, XYZ_TO_RGB
+from .constants import (
+    OKLAB_M1,
+    OKLAB_M1_INV,
+    OKLAB_M2,
+    OKLAB_M2_INV,
+    OUTPUT_GAMUT_SPACES,
+    RGB_TO_XYZ,
+    XYZ_TO_RGB,
+)
 from .models import ToneCompressionPlan
 
-NATIVE_ABI_VERSION = 2
+NATIVE_ABI_VERSION = 5
+NATIVE_OUTPUT_GAMUT_FIT_ITERS = 16
+NATIVE_OUTPUT_GAMUT_TOLERANCE = 1e-4
 
 # Compiled plans are tiny, but every distinct scene compiles a distinct plan, so an
 # unbounded dict grows for the lifetime of a GUI server session. FIFO-evict beyond this.
 _PLAN_CACHE_MAX = 64
 _plan_cache: dict[tuple[Any, ...], Any] = {}
+_OUTPUT_PLAN_CACHE_MAX = 16
+_output_plan_cache: dict[tuple[str, float], Any] = {}
 
 
 def _flat_matrix(matrix: Any) -> tuple[float, ...]:
@@ -96,4 +108,40 @@ def compile_agx_plan(plan: ToneCompressionPlan) -> Any:
             _plan_cache.pop(next(iter(_plan_cache)))
         cached = _build_native_plan(plan)
         _plan_cache[key] = cached
+    return cached
+
+
+def _build_output_plan(output_gamut: str, alpha: float) -> Any:
+    from types import SimpleNamespace
+
+    space = OUTPUT_GAMUT_SPACES[output_gamut]
+    rec2020_to_output = XYZ_TO_RGB[space] @ RGB_TO_XYZ["Rec2020"]
+    output_to_lms = OKLAB_M1 @ RGB_TO_XYZ[space]
+    lms_to_output = XYZ_TO_RGB[space] @ OKLAB_M1_INV
+    return SimpleNamespace(
+        rec2020_to_output=_flat_matrix(rec2020_to_output),
+        output_to_lms=_flat_matrix(output_to_lms),
+        lms_to_output=_flat_matrix(lms_to_output),
+        oklab_m2=_flat_matrix(OKLAB_M2),
+        oklab_m2_inv=_flat_matrix(OKLAB_M2_INV),
+        alpha=float(alpha),
+        gamut_fit_iters=NATIVE_OUTPUT_GAMUT_FIT_ITERS,
+        gamut_tolerance=NATIVE_OUTPUT_GAMUT_TOLERANCE,
+    )
+
+
+def compile_output_plan(output_gamut: str, alpha: float = 0.05) -> Any:
+    """Return immutable precombined matrices for the fused SDR finalizer."""
+    if output_gamut not in OUTPUT_GAMUT_SPACES:
+        raise ValueError(f"unknown output gamut: {output_gamut}")
+    alpha = float(alpha)
+    if not math.isfinite(alpha) or alpha < 0.0:
+        raise ValueError("gamut fit alpha must be finite and non-negative")
+    key = (output_gamut, alpha)
+    cached = _output_plan_cache.get(key)
+    if cached is None:
+        if len(_output_plan_cache) >= _OUTPUT_PLAN_CACHE_MAX:
+            _output_plan_cache.pop(next(iter(_output_plan_cache)))
+        cached = _build_output_plan(output_gamut, alpha)
+        _output_plan_cache[key] = cached
     return cached

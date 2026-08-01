@@ -69,7 +69,10 @@ variants are described in the [architecture notes](docs/ARCHITECTURE.md).
 
 ## Quick start
 
-Python 3.10 or newer is required.
+Python 3.10 or newer is required. The validated rawpy/LibRaw dependency is built
+from its pinned source revision on first install, so Git and a native compiler
+are also required (Xcode Command Line Tools on macOS, or the standard build
+toolchain on Linux).
 
 ### GUI
 
@@ -119,8 +122,9 @@ Run `python -m dngscan --help` for the complete option list.
 ### Optional C++ acceleration
 
 NumPy is the reference implementation and works without a native extension. The optional pybind11
-C++ kernel accelerates only the AgX hot paths; RAW analysis, render planning, and fallback policy
-remain in Python.
+C++ kernel accelerates the AgX core and the shared SDR output finalizer (16-step Oklab gamut fit,
+transfer, dither, and quantization); RAW analysis, render planning, and fallback policy remain in
+Python.
 
 ```bash
 pip install pybind11 cmake

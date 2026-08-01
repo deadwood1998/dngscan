@@ -20,21 +20,69 @@ from __future__ import annotations
 
 import unittest
 
-from dngscan.gui.page import PAGE
+from dngscan.gui.page import PAGE, render_page
 
 
 class PageInformationDisplayTests(unittest.TestCase):
     def test_prepare_failure_is_surfaced_not_swallowed(self) -> None:
         self.assertIn('setStatus(j.error,"err");renderDetectedParams(null);', PAGE)
 
+    def test_realtime_preview_is_fixed_1920_and_has_no_resolution_control(self) -> None:
+        served_page = render_page("").decode("utf-8")
+        self.assertIn('id="previewLiveBadge">实时 · 1920px', served_page)
+        self.assertNotIn('id="previewBtn"', PAGE)
+        self.assertNotIn("更新预览", PAGE)
+        self.assertNotIn("previewLongEdge", PAGE)
+        self.assertNotIn("previewResolution", PAGE)
+
+    def test_realtime_preview_uses_generation_abort_and_automatic_first_frame(self) -> None:
+        self.assertIn("PREVIEW_GENERATION", PAGE)
+        self.assertIn("new AbortController()", PAGE)
+        self.assertIn("body.generation=generation", PAGE)
+        self.assertIn("j.superseded", PAGE)
+        prepare = PAGE[PAGE.index("async function preparePreview()") :]
+        prepare = prepare[: prepare.index("\n}")]
+        self.assertIn("PREVIEW_READY=true", prepare)
+        self.assertIn("await requestPreview();", prepare)
+
+    def test_image_controls_schedule_live_preview(self) -> None:
+        wiring = PAGE[PAGE.index('$("#ev").oninput=') : PAGE.index("restoreSettings();")]
+        for control in ("ev", "gradeStrength", "punch", "sceneTransformStrength"):
+            with self.subTest(control=control):
+                anchor = f'$("#{control}")'
+                start = wiring.index(anchor)
+                self.assertIn("scheduleLivePreview()", wiring[start : start + 180])
+        for control in (
+            "midtoneBrightness",
+            "midtoneContrast",
+            "shadowTransition",
+            "highlightTransition",
+            "highlightFade",
+        ):
+            self.assertIn(f'"{control}"', wiring)
+        loop = wiring[wiring.index('"midtoneBrightness"') :]
+        self.assertIn('forEach(id=>$("#"+id).oninput=', loop)
+        self.assertIn("scheduleLivePreview()", loop)
+
+    def test_demosaic_change_rebuilds_the_cold_proxy(self) -> None:
+        wiring = PAGE[PAGE.index('$("#demosaic").addEventListener') :]
+        wiring = wiring[: wiring.index("\n")]
+        self.assertIn("saveSettings()", wiring)
+        self.assertIn("preparePreview()", wiring)
+
     def test_status_area_renders_multiline_guidance(self) -> None:
         start = PAGE.index("#status{")
         self.assertIn("white-space:pre-line", PAGE[start:PAGE.index("}", start)])
 
-    def test_tier_report_fires_on_every_prepare(self) -> None:
+    def test_tier_report_runs_once_per_file_not_every_prepare(self) -> None:
+        selection = PAGE[PAGE.index('$("#filePicker").addEventListener') :]
+        selection = selection[: selection.index("async function listOutDir")]
+        self.assertIn("fetchDecodeSupport(result.path);", selection)
         prepare = PAGE[PAGE.index("async function preparePreview()"):]
         prepare = prepare[:prepare.index("\n}")]
-        self.assertIn("fetchDecodeSupport(body.input);", prepare)
+        self.assertNotIn("fetchDecodeSupport", prepare)
+        self.assertIn("RAW9_PROBE_REQUESTS", PAGE)
+        self.assertEqual(PAGE.count('postJob("/raw9-support"'), 1)
 
     def test_layout_targets_desktop_landscape(self) -> None:
         # This GUI ships desktop/laptop web only (16:9/16:10 landscape): the
@@ -111,3 +159,19 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn('id="go">导出</button>', PAGE)
         self.assertIn('dialog.showModal()', PAGE)
         self.assertIn('id="exportConfirm"', dialog)
+
+    def test_hdr_delivery_does_not_collapse_realtime_tone_core_choices(self) -> None:
+        tone_select = PAGE[
+            PAGE.index('<select id="toneCore"'):
+            PAGE.index('</select>', PAGE.index('<select id="toneCore"'))
+        ]
+        for core in ("agx", "gated", "neutral", "lum"):
+            with self.subTest(core=core):
+                self.assertIn(f'value="{core}"', tone_select)
+
+        format_ui = PAGE[PAGE.index("function updateFormatUi()") :]
+        format_ui = format_ui[: format_ui.index("async function checkHdrBackend()")]
+        self.assertNotIn('$("#toneCore").value="agx"', format_ui)
+        self.assertNotIn('$("#toneCore").disabled=hdr', format_ui)
+        self.assertIn("updateToneCoreExportUi()", format_ui)
+        self.assertIn('id="toneCoreExportHint"', PAGE)

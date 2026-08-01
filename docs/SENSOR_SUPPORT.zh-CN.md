@@ -39,7 +39,7 @@ LibRaw 主解码对未知新机型的可用性事实：ARW/RAF/NEF 等容器格�
 发布的 `fwc` 与 `unityEv` 字段；PDR 曲线只取实心点，三角标记起点记入
 `suspect_iso_min`）；矩阵出处逐条记录在 `camera_matrices.py`。
 
-## LibRaw 升级路径（2026-07-30，已执行）
+## LibRaw 项目依赖（2026-08-01，已执行）
 
 轮子版 rawpy 0.27.0 捆绑 LibRaw **0.22.1 发布版**。对本清单实测：0.22.1 已知
 A7S III、X100VI、**Zf**（初判"缺 Zf"是 `strings` 默认 4 字符下限吃掉了
@@ -49,14 +49,16 @@ A7S III、X100VI、**Zf**（初判"缺 Zf"是 `strings` 默认 4 字符下限吃
 都没有——回退矩阵表对它们仍是必需层。
 
 升级不能走 dylib 换装：master 把共享库 soname 从 25 升到 26（ABI 声明不兼容，
-结构体布局可能变化，强行换装是内存踩踏不是升级）。受支持的路径是**源码重建
-rawpy**：其 sdist 自带"编译并捆绑 external/LibRaw"的官方构建机制。注意 sdist
-**自带 vendored 的发布版 LibRaw**，必须强制替换而非"缺了才装"——第一次构建
-就是这样"成功"地重编了旧表。一键脚本：`tools/build_libraw_master.sh`（钉住
-验证过的 commit；换钉必须全套回归 + 若解码输出漂移则重基线 SDR 冻结/金标）。
+结构体布局可能变化，强行换装是内存踩踏不是升级）。项目现在把 rawpy fork 的
+`cc7b4748` 精确提交同时写入 `requirements.txt` 和 `pyproject.toml`；该 fork 又把
+`external/LibRaw` 精确锁在 `e419de08`。因此常规 `pip install -r requirements.txt`
+会直接构建并安装验证过的组合，不再依赖某台机器事后运行升级脚本，也不会被 PyPI
+的 0.27.0 发布轮子悄悄替换。`tools/build_libraw_master.sh` 仅保留为已有虚拟环境的
+显式修复入口；换钉必须全套回归，若解码输出漂移则重基线 SDR 冻结/金标。
 
-本机已按此路径升级并验证：`rawpy.libraw_version = (0, 22, 0)`（master 线），
-soname 26，A7 V 入表；**全套 431 项测试零漂移通过**——master 对既有机型
+项目构建已验证：`rawpy.__version__ = 0.27.0+libraw.e419de08`，并公开记录完整
+LibRaw 来源提交；`rawpy.libraw_version = (0, 22, 0)`（master 线），soname 26，
+A7 V 入表；**全套 454 项测试在 NumPy/原生两条路径零漂移通过**——master 对既有机型
 （fp/iPhone 样张）的解码逐字节兼容，SDR 冻结与金标均未失效。
 
 两层的分工从此明确：**LibRaw 升级**解决"LibRaw 内部色彩转换缺矩阵"（回退表

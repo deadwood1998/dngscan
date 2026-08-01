@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+import os
 import unittest
+from unittest import mock
 
 from dngscan._deps import np
 from dngscan.models import RawBundle, ToneCompressionPlan
 from dngscan.render import (
+    deterministic_dither_plane,
     quantize_final_output_linear_to_u8,
     render_output_linear,
     render_output_u8,
@@ -48,11 +52,67 @@ class StreamRenderTest(unittest.TestCase):
             negative_rgb_pct=0.0,
             over_rgb_pct=0.0,
         )
-        legacy = quantize_final_output_linear_to_u8(
-            render_output_linear(bundle, object(), "srgb", plan), "srgb"
-        )
-        fused = render_output_u8(bundle, object(), "srgb", plan)
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
+            legacy = quantize_final_output_linear_to_u8(
+                render_output_linear(bundle, object(), "srgb", plan), "srgb"
+            )
+            fused = render_output_u8(bundle, object(), "srgb", plan)
         np.testing.assert_array_equal(fused, legacy)
+
+    def test_native_output_path_matches_reference_within_one_code_value(self) -> None:
+        import dngscan._fast as fast_backend
+
+        if not fast_backend.available():
+            self.skipTest("native extension not built")
+        bundle, plan = self._bundle_and_plan(73, 97, seed=31)
+        for gamut in ("srgb", "p3"):
+            for core in ("agx", "neutral", "lum"):
+                core_plan = replace(plan, tone_core=core)
+                with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
+                    reference = render_output_u8(
+                        bundle, object(), gamut, core_plan
+                    )
+                with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "1"}):
+                    native = render_output_u8(bundle, object(), gamut, core_plan)
+                delta = np.abs(native.astype(np.int16) - reference.astype(np.int16))
+                self.assertLessEqual(int(delta.max()), 1, (gamut, core))
+                self.assertEqual(float(np.percentile(delta, 99)), 0.0, (gamut, core))
+                self.assertLessEqual(float(np.mean(delta != 0)), 0.01, (gamut, core))
+
+    def test_precomputed_dither_plane_is_byte_identical(self) -> None:
+        bundle, plan = self._bundle_and_plan(73, 97, seed=43)
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
+            streamed = render_output_u8(bundle, object(), "srgb", plan)
+            cached = render_output_u8(
+                bundle,
+                object(),
+                "srgb",
+                plan,
+                dither_noise=deterministic_dither_plane(
+                    bundle.scene_rec2020_render.shape
+                ),
+            )
+        np.testing.assert_array_equal(cached, streamed)
+
+    def test_native_failure_reuses_noise_for_exact_auto_fallback(self) -> None:
+        import dngscan._fast as fast_backend
+
+        bundle, plan = self._bundle_and_plan(43, 59, seed=37)
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
+            reference = render_output_u8(bundle, object(), "srgb", plan)
+        with (
+            mock.patch.dict(os.environ, {"DNGSCAN_FAST": "auto"}),
+            mock.patch.object(
+                fast_backend, "supports_output_finalizer", return_value=True
+            ),
+            mock.patch.object(
+                fast_backend,
+                "finalize_rec2020_u8_f32",
+                side_effect=RuntimeError("synthetic native failure"),
+            ),
+        ):
+            fallback = render_output_u8(bundle, object(), "srgb", plan)
+        np.testing.assert_array_equal(fallback, reference)
 
     def _bundle_and_plan(self, h: int, w: int, seed: int = 7):
         rng = np.random.default_rng(seed)
