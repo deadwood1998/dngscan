@@ -75,3 +75,22 @@ class PageInformationDisplayTests(unittest.TestCase):
                 self.assertLess(len(gap), 700, f"{fact_id} not adjacent to {anchor}")
         self.assertIn("SUPPORT_ROUTE", PAGE)
         self.assertNotIn("decodeSupport", PAGE)
+
+    def test_output_controls_live_in_a_modal_not_the_left_panel(self) -> None:
+        control_panel = PAGE[
+            PAGE.index('<div class="controlPanel">'):
+            PAGE.index('<div class="card previewCard">')
+        ]
+        dialog = PAGE[
+            PAGE.index('<dialog class="outputDialog"'):
+            PAGE.index("</dialog>")
+        ]
+        self.assertNotIn('id="format"', control_panel)
+        self.assertNotIn('id="outdir"', control_panel)
+        self.assertIn('id="outputDialogTitle">输出参数', dialog)
+        for control_id in ("format", "deliveryProfile", "gamut", "quality", "chroma", "outdir", "png"):
+            with self.subTest(control=control_id):
+                self.assertIn(f'id="{control_id}"', dialog)
+        self.assertIn('id="go">导出</button>', PAGE)
+        self.assertIn('dialog.showModal()', PAGE)
+        self.assertIn('id="exportConfirm"', dialog)
