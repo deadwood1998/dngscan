@@ -2,6 +2,8 @@
 
 实时预览与导出继续使用同一套颜色算法和参数语义。优化只拆分计算阶段、改变缓存边界和预览载体质量，不减少 AgX gamut fit 的 16 轮，也不建立一套“预览专用”的颜色数学。
 
+性能改造的规范性等价门禁见 `PIPELINE_PERFORMANCE_EQUIVALENCE_PLAN.zh-CN.md`。本文下方早期实验记录中的误差容限不能作为发布条件；最终可见结果必须与各自的 LibRaw/Apple 串行参考逐字节相同。
+
 ### 分辨率与画质
 
 - 预览固定为 1920 像素长边。1920 可被 3 整除，常见 3:2 照片得到 1920×1280；其他画幅严格按照解码后原图比例四舍五入，不裁切、不拉伸，也不强制改成 3:2。
@@ -25,7 +27,7 @@ metrics 的延迟/补算不再重复颜色渲染，只读取同一份不可变 R
 
 ### Native 优化顺序
 
-AgX 核心已经是 C++17/pybind native 实现，无需先整体重写。完成上述拆分后重新 profile；若非缓存热帧仍主要耗在 16 轮色域拟合，再把常量矩阵预合并，并在一个 native chunk kernel 内融合 Oklab 往返、二分和 gamut test。之后才考虑融合 transfer+dither 和复用常驻 worker pool。每一步都必须通过现有像素回归，保持预览与导出的算法一致。
+AgX 核心已经是 C++17/pybind native 实现，无需先整体重写。完成上述拆分后重新 profile；若非缓存热帧仍主要耗在 16 轮色域拟合，再在一个 native chunk kernel 内融合 Oklab 往返、二分和 gamut test。原参考图中的矩阵阶段和 float32 舍入点必须保留，不能通过预合并矩阵改变运算图。之后才考虑融合 transfer+dither 和复用常驻 worker pool。每一步都必须通过逐字节像素回归，保持预览与导出的算法一致。
 
 ### 输出后处理 native 优化方案
 
@@ -37,9 +39,9 @@ AgX 核心已经是 C++17/pybind native 实现，无需先整体重写。完成�
 - `finalize_output_u8_f32`：输入已经执行 display filter、look 或 highlight chroma retreat 的输出空间 float32，融合后续 gamut-fit、OETF 和 quantize；这些功能仍保留原有 Python 色彩操作，但不再退回 NumPy 的 16 轮拟合。
 - `fit_output_gamut_f32`：只暴露同一 native gamut 实现的 float32 结果，用于与 NumPy 参考逐点验证，不在产品路径额外增加一次计算。
 
-`NativeOutputPlan` 在 Python 侧按输出色域和 gamut alpha 缓存，并预合并三组常量矩阵：Rec.2020→目标 RGB、目标 RGB→Oklab LMS、Oklab LMS→目标 RGB。kernel 每个像素只在寄存器中保存 RGB、L/a/b、L0、lo、hi；越界像素严格执行 16 次二分，容差固定为现有 `1e-4`，in-gamut 像素保持原值后只做最终 `[0,1]` 夹取。
+`NativeOutputPlan` 在 Python 侧按输出色域和 gamut alpha 缓存原参考图的三组常量矩阵：Rec.2020→目标 RGB、目标 RGB→Oklab LMS、Oklab LMS→目标 RGB。矩阵阶段之间保留与 NumPy 相同的 float32 materialization，不能预合并。kernel 每个像素只在寄存器中保存 RGB、L/a/b、L0、lo、hi；越界像素严格执行 16 次二分，容差固定为现有 `1e-4`，in-gamut 像素保持原值后只做最终 `[0,1]` 夹取。
 
-TPDF dither 的随机序列仍由 `np.random.default_rng(0)` 按当前顺序生成两组 float32 值并传入 native。第一版不替换 RNG，确保流式 chunk、预览和导出继续消费完全相同的噪声；native 只融合 `noise_a-noise_b`、floor、clip 和 uint8 转换。这样先消除颜色中间数组和 16 轮内存往返，同时把随机算法变更隔离到未来独立决策。
+TPDF dither 的随机序列仍由 `np.random.default_rng(0)` 按当前顺序生成两组 float32 值并传入 native。第一版不替换 RNG，确保流式 chunk、预览和导出继续消费完全相同的噪声；native 严格执行 `(value + noise_a) - noise_b`、floor、clip 和 uint8 转换。这样先消除颜色中间数组和 16 轮内存往返，同时把随机算法变更隔离到未来独立决策。
 
 native 输出 kernel 在一个 quantize group 上独占自身的像素并行；Python 外层继续按顺序提交 tone chunk，最终帧顺序和 RNG 消费顺序不变。先 profile 线程创建成本，只有它成为可测瓶颈后才引入常驻 pool，避免在同一变更里同时改变数值实现和调度生命周期。
 
@@ -55,8 +57,8 @@ native 输出 kernel 在一个 quantize group 上独占自身的像素并行；P
 按以下顺序设门禁，前一层失败不得进入性能验收：
 
 1. **算法常量门禁**：native 迭代数只能是编译期 16；测试检查 ABI、sRGB/P3 plan、`alpha` 与 `1e-4` tolerance。预览和导出不得传入不同迭代数。
-2. **float gamut parity**：对 sRGB/P3 和实际计划范围内的多个 alpha，覆盖 RGB 基色、灰阶、`-1e-4/0/1/1.0001` 边界、负值/高值、随机广色域值及 NaN/Inf。由于预合并矩阵会去掉 NumPy 两段矩阵间的一次 float32 舍入，要求最大绝对误差≤`1e-4`、p99.99≤`5e-5`（实测最大 `8.6e-5`）；in-gamut 输入在 float32 下不被改写，输出全部有限且落在 `[0,1]`。
-3. **编码/量化 parity**：向参考与 native 注入完全相同的两组 float32 噪声；相同线程数和不同线程数必须逐字节一致。对参考完整链路，最终 uint8 要求 p99 差值为 0、最大差值≤1 code value、变化通道占比≤1%。
+2. **float gamut parity**：对 sRGB/P3 和实际计划范围内的多个 alpha，覆盖 RGB 基色、灰阶、`-1e-4/0/1/1.0001` 边界、负值/高值、随机广色域值及 NaN/Inf。所有影响分支和 RenderPlan 的中间结果要求位级相同；预合并矩阵造成的 `8.6e-5` 误差只保留为历史诊断，不得启用。
+3. **编码/量化 parity**：向参考与 native 注入完全相同的两组 float32 噪声并保持原加减顺序；相同线程数和不同线程数的最终 uint8 必须逐字节一致。最大 1 code value 不再作为可接受发布标准。
 4. **端到端统一性**：AgX/neutral/lum/gated，sRGB/P3，EV、look、scene transform、highlight retreat 各取代表组合，对照 `DNGSCAN_FAST=0/1`；跑 stream ordering、golden、SDR freeze 和现有 native parity。预览与导出继续调用同一 finalizer，不增加预览专用近似。
 5. **完整回归**：`DNGSCAN_FAST=0` 与 `DNGSCAN_FAST=1` 全量测试都通过；构建 wheel 后再从安装产物验证 ABI 和 self-test，避免只测试源码树中的旧 `.so`。
 6. **性能门禁**：真实 1920px NEF 与 A7M5 各记录 output matrix、gamut-fit、transfer、dither、pixel pipeline 和端到端 p50/p95。融合阶段 p50 至少降低 25%，连续热帧 p50 不得回退超过 5%；若不满足，保留参考实现并不启用 native dispatch。
@@ -78,7 +80,7 @@ native 输出 kernel 在一个 quantize group 上独占自身的像素并行；P
 
 阶段耗时存在两个 Python render worker 与各 native kernel 内部 8 路并行的重叠，因此不能直接相加。去掉重叠后，端到端热帧仍主要由以下工作组成：AgX tone core 每帧累计约 54–60 ms CPU、clip retreat 约 11–18 ms、native output finalizer 约 17–20 ms，最后 JPEG q95/4:4:4 占 11–13 ms wall time。进程平均使用约 6.6–7.1 个 CPU 核；继续增加 CPU 线程会先遇到调度和内存带宽，而不是 I/O。
 
-seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。现在每个冷代理生成一次、以只读 float32 单平面缓存，native ABI 5 直接读取已经合并的 `noise_a-noise_b`；完整导出仍用原流式双平面，避免全分辨率内存膨胀。每个 1920px 代理增加约 28 MiB，两个 LRU 代理上限约 56 MiB。单平面把浮点求值从 `(value + noise_a) - noise_b` 改为 `value + (noise_a - noise_b)`，因此在量化阈值上不是逐字节相同；实测 p99 差值为 0、最大 1 code value、变化通道低于 0.01%，并由回归门禁固定。
+seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。曾实验每个冷代理缓存只读 float32 单平面 `noise_a-noise_b`，完整导出仍用原流式双平面。每个 1920px 代理增加约 28 MiB，两个 LRU 代理上限约 56 MiB。单平面把浮点求值从 `(value + noise_a) - noise_b` 改为 `value + (noise_a - noise_b)`，实测 p99 差值为 0、最大 1 code value、变化通道低于 0.01%。在严格等价契约下该实验不合格，产品快路必须改为双平面缓存/精确 RNG 重放并保持原运算顺序，否则关闭该快路。
 
 | RAW | 缓存前连续 p50 / p95 | 缓存 TPDF 后 p50 / p95 | p50 变化 | 热帧 CPU / wall |
 | --- | --- | --- | --- | --- |
@@ -173,7 +175,7 @@ Portra 400 的稳定热帧明显更差：NEF p50/p95 230.74/233.28 ms，A7M5 为
 5. **P1 设备常驻整条热管线**：Metal/CUDA 常驻 scene/mask/noise，只传小参数、只回读 RGB8；普通 AgX 的目标是移除 50 ms 左右 CPU pixel critical path。JPEG 仍是约 8–14 ms 的下限，后续单独评估平台编码器。
 6. **不作为主方案**：扩大 proxy/frame LRU 可以改善来回切换，预热 5500K/3200K 可以隐藏部分等待，但都会增加内存/后台计算，且不能降低首次真实计算量。
 
-所有改造继续遵守同一算法契约：预览与导出共享公式、16 轮 gamut-fit、边界与量化门禁；允许改变数据依赖、采样载体和执行设备，不允许建立另一套预览颜色数学。
+所有改造继续遵守同一算法契约：预览与导出共享公式、输入像素、16 轮 gamut-fit、边界与量化顺序；允许改变数据依赖、缓存位置和执行设备，不允许改变采样载体或建立另一套预览颜色数学。
 
 ### Metal / CUDA 异构热路径
 
@@ -184,7 +186,7 @@ Portra 400 的稳定热帧明显更差：NEF p50/p95 230.74/233.28 ms，A7M5 为
 3. macOS 使用 Metal compute 和 Apple Silicon unified-memory `MTLBuffer`，复用 command queue/buffer，避免 CPU↔GPU 拷贝；CUDA 使用 CUDA C++ kernel、常驻 device buffer、独立 stream，并在参数/shape 固定后用 CUDA Graph 重放。二者共享 plan 结构、测试向量和 CPU reference，不共享平台 kernel 源码。
 4. ANE/NPU 不作为这段确定性色彩数学的执行器：它适合受支持算子组成的模型，而这里有分支、固定 16 轮二分和严格的 NaN/Inf/量化语义；强行转成 Core ML 会引入算子覆盖和一致性风险。CPU 仍用于 RAW 冷解码、回退与 JPEG，GPU 承担热像素管线。
 
-实现按 Metal→CUDA 两个可独立验收的 backend 落地。每个 backend 都必须覆盖 AgX/neutral/lum/gated、sRGB/P3、边界/NaN/Inf 和固定噪声；float 门禁沿用最大误差 `1e-4`、p99.99 `5e-5`，uint8 门禁沿用 p99 差值 0、最大 1 code value，并保留逐字节一致的 CPU reference。性能报告必须同时给出 kernel、参数上传、RGB8 回读、JPEG 和端到端 p50/p95；CUDA 只在真实目标 GPU 上出数字，本次 macOS 机器不推测 CUDA 性能。
+实现按 Metal→CUDA 两个可独立验收的 backend 落地。每个 backend 都必须覆盖 AgX/neutral/lum/gated、sRGB/P3、边界/NaN/Inf 和固定双平面噪声；float 误差只作诊断，所有影响分支的中间结果以及最终 RGB8/RGB16/HDR 必须与 CPU reference 逐 bit/逐字节一致。性能报告必须同时给出 kernel、参数上传、RGB8 回读、JPEG 和端到端 p50/p95；CUDA 只在真实目标 GPU 上出数字，本次 macOS 机器不推测 CUDA 性能。
 
 ### 验收
 
