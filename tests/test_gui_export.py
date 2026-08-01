@@ -24,7 +24,8 @@ class ExportSuffixTests(unittest.TestCase):
     def test_public_gui_is_concise_and_has_no_vendor_luts(self) -> None:
         html = render_page("/tmp").decode("utf-8")
         self.assertIn("更新预览", html)
-        self.assertIn("导出 JPEG", html)
+        self.assertIn('<button class="go" id="go">导出</button>', html)
+        self.assertNotIn(">导出 JPEG</button>", html)
         self.assertIn("前馈校正", html)
         self.assertIn("中间调亮度", html)
         self.assertIn("中间调对比", html)
