@@ -10,8 +10,10 @@ import io
 import json
 import math
 import os
+import resource
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -66,9 +68,28 @@ def _dimensions(data_url: str) -> list[int]:
 class _StageRecorder:
     def __init__(self) -> None:
         self.samples: dict[str, list[float]] = defaultdict(list)
+        self.frame_samples: dict[str, list[float]] = defaultdict(list)
+        self._frame_totals: dict[str, float] | None = None
+        self._lock = threading.Lock()
 
     def clear(self) -> None:
         self.samples.clear()
+        self.frame_samples.clear()
+        self._frame_totals = None
+
+    def begin_frame(self) -> None:
+        with self._lock:
+            if self._frame_totals is not None:
+                raise RuntimeError("stage frame already active")
+            self._frame_totals = defaultdict(float)
+
+    def end_frame(self) -> None:
+        with self._lock:
+            if self._frame_totals is None:
+                raise RuntimeError("no active stage frame")
+            for stage, elapsed_ms in self._frame_totals.items():
+                self.frame_samples[stage].append(elapsed_ms)
+            self._frame_totals = None
 
     def wrapper(self, stage: str, callable_):
         def measured(*args, **kwargs):
@@ -76,7 +97,11 @@ class _StageRecorder:
             try:
                 return callable_(*args, **kwargs)
             finally:
-                self.samples[stage].append((time.perf_counter() - started) * 1000.0)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                with self._lock:
+                    self.samples[stage].append(elapsed_ms)
+                    if self._frame_totals is not None:
+                        self._frame_totals[stage] += elapsed_ms
 
         return measured
 
@@ -87,6 +112,16 @@ class _StageRecorder:
                 "p95_ms": round(_percentile(samples, 0.95), 3),
             }
             for stage, samples in sorted(self.samples.items())
+            if samples
+        }
+
+    def frame_report(self) -> dict[str, dict[str, float]]:
+        return {
+            stage: {
+                "p50_ms": round(_percentile(samples, 0.50), 3),
+                "p95_ms": round(_percentile(samples, 0.95), 3),
+            }
+            for stage, samples in sorted(self.frame_samples.items())
             if samples
         }
 
@@ -112,6 +147,7 @@ def _record_stages():
         ),
         (render_module.retreat_engine, "apply_clip_retreat_rec2020", "clip_retreat"),
         (render_module, "apply_tone_core", "tone_core"),
+        (render_module, "generate_dither_noise", "dither_noise_generation"),
         (render_module, "rec2020_to_output", "output_matrix"),
         (render_module, "finalize_output_linear", "gamut_finalize"),
         (render_module, "fit_to_output_gamut", "gamut_fit"),
@@ -130,6 +166,16 @@ def _record_stages():
             fast_module,
             "finalize_output_u8_f32",
             "native_output_finalize",
+        ),
+        (
+            fast_module,
+            "finalize_rec2020_u8_noise_f32",
+            "native_output_finalize_cached_noise",
+        ),
+        (
+            fast_module,
+            "finalize_output_u8_noise_f32",
+            "native_output_finalize_cached_noise",
         ),
         (service_module, "preview_metrics_from_u8", "preview_metrics"),
         (service_module, "preview_b64_from_u8", "jpeg_base64"),
@@ -243,6 +289,7 @@ def main() -> int:
 
                 continuous_ms: list[float] = []
                 last_params: dict[str, object] | None = None
+                usage_before = resource.getrusage(resource.RUSAGE_SELF)
                 for index in range(args.iterations):
                     step = (index // 2 + 1) * 0.05
                     ev = -step if index % 2 == 0 else step
@@ -251,12 +298,20 @@ def main() -> int:
                         "generation": index + 3,
                         "ev": ev,
                     }
-                    result, elapsed_ms = _elapsed_ms(lambda p=last_params: run_preview(p))
+                    stages.begin_frame()
+                    try:
+                        result, elapsed_ms = _elapsed_ms(
+                            lambda p=last_params: run_preview(p)
+                        )
+                    finally:
+                        stages.end_frame()
                     if not result.get("ok") or result.get("superseded"):
                         raise RuntimeError(result)
                     continuous_ms.append(elapsed_ms)
 
+                usage_after = resource.getrusage(resource.RUSAGE_SELF)
                 stage_report = stages.report()
+                stage_frame_report = stages.frame_report()
 
             assert last_params is not None
             repeated, cache_hit_ms = _elapsed_ms(
@@ -281,7 +336,44 @@ def main() -> int:
                 "continuous_p95_ms": round(_percentile(continuous_ms, 0.95), 2),
                 "continuous_p99_ms": round(_percentile(continuous_ms, 0.99), 2),
                 "continuous_max_ms": round(max(continuous_ms), 2),
-                "continuous_stage_ms": stage_report,
+                "continuous_stage_call_ms": stage_report,
+                "continuous_stage_frame_ms": stage_frame_report,
+                "continuous_resource": {
+                    "cpu_ms_per_frame": round(
+                        1000.0
+                        * (
+                            usage_after.ru_utime
+                            + usage_after.ru_stime
+                            - usage_before.ru_utime
+                            - usage_before.ru_stime
+                        )
+                        / len(continuous_ms),
+                        3,
+                    ),
+                    "cpu_to_wall_ratio": round(
+                        1000.0
+                        * (
+                            usage_after.ru_utime
+                            + usage_after.ru_stime
+                            - usage_before.ru_utime
+                            - usage_before.ru_stime
+                        )
+                        / sum(continuous_ms),
+                        3,
+                    ),
+                    "filesystem_input_blocks": int(
+                        usage_after.ru_inblock - usage_before.ru_inblock
+                    ),
+                    "filesystem_output_blocks": int(
+                        usage_after.ru_oublock - usage_before.ru_oublock
+                    ),
+                    "major_page_faults": int(
+                        usage_after.ru_majflt - usage_before.ru_majflt
+                    ),
+                    "minor_page_faults": int(
+                        usage_after.ru_minflt - usage_before.ru_minflt
+                    ),
+                },
                 "revisit_cache_hit": bool(repeated.get("cache_hit")),
                 "revisit_ms": round(cache_hit_ms, 2),
             }

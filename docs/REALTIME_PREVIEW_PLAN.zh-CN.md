@@ -72,6 +72,32 @@ native 输出 kernel 在一个 quantize group 上独占自身的像素并行；P
 
 融合 finalizer 在每个 quantize group 上的 p50 / p95：NEF 为 5.49 / 9.26 ms，A7M5 为 4.39 / 7.47 ms。连续热帧 p50 分别降低 52.0% 和 38.2%，通过 ≥25% 性能门禁；测试仍固定 16 轮拟合并注入原 NumPy TPDF 噪声序列。
 
+### 第二阶段瓶颈诊断与优化
+
+同日继续在 M4 Max（12P+4E）上对 40 个连续变参帧记录进程资源计数和逐阶段耗时。两份 RAW 的 `filesystem_input_blocks` 与 major page fault 都为 0；session/frame/plan cache lookup 仅约 0.05 ms。磁盘 I/O 只属于代理准备的冷路径，连续预览明确是计算与内存流量瓶颈。
+
+阶段耗时存在两个 Python render worker 与各 native kernel 内部 8 路并行的重叠，因此不能直接相加。去掉重叠后，端到端热帧仍主要由以下工作组成：AgX tone core 每帧累计约 54–60 ms CPU、clip retreat 约 11–18 ms、native output finalizer 约 17–20 ms，最后 JPEG q95/4:4:4 占 11–13 ms wall time。进程平均使用约 6.6–7.1 个 CPU 核；继续增加 CPU 线程会先遇到调度和内存带宽，而不是 I/O。
+
+seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。现在每个冷代理生成一次、以只读 float32 单平面缓存，native ABI 5 直接读取已经合并的 `noise_a-noise_b`；完整导出仍用原流式双平面，避免全分辨率内存膨胀。每个 1920px 代理增加约 28 MiB，两个 LRU 代理上限约 56 MiB。单平面把浮点求值从 `(value + noise_a) - noise_b` 改为 `value + (noise_a - noise_b)`，因此在量化阈值上不是逐字节相同；实测 p99 差值为 0、最大 1 code value、变化通道低于 0.01%，并由回归门禁固定。
+
+| RAW | 缓存前连续 p50 / p95 | 缓存 TPDF 后 p50 / p95 | p50 变化 | 热帧 CPU / wall |
+| --- | --- | --- | --- | --- |
+| Nikon NEF 1920×1275 | 78.99 / 82.22 ms | 64.68 / 67.25 ms | -18.1% | 461.87 ms / 7.13× |
+| SONY ILCE-7M5 ARW 1920×1281 | 76.52 / 80.93 ms | 63.83 / 66.27 ms | -16.6% | 423.86 ms / 6.64× |
+
+两个 CPU 实验未进入产品：把 AgX 到 finalizer 合成单个全帧 CPU 调用后，NEF p50 为 74.37 ms，破坏了现有 chunk 间的流水重叠；改用 libdispatch 常驻全局池后连续 p50 没有实质变化（64.68→64.45 ms），p95 与首帧反而变为 68.16 和 270.94 ms。它们说明 CPU 下一步不是继续扩大并行度或做全帧串行融合。
+
+### Metal / CUDA 异构热路径
+
+下一阶段把冷代理作为统一设备边界，而不是只把 finalizer 搬到 GPU。仅 offload 输出阶段仍会保留约 50 ms CPU 像素管线，并为每帧增加约 28 MiB float 输入传输，收益上限太低。Metal 与 CUDA 共用以下逻辑契约：
+
+1. `prepare_device_session` 将 1920px 线性 Rec.2020 代理、clip/gated guidance、固定 TPDF、常量矩阵和 tone/output plan 放入设备常驻只读 buffer；冷配置变化才重建。
+2. 每次交互只上传 EV、look/filter、tone core 等小型参数块。scene intent、clip retreat、所选 tone core、Rec.2020→输出、固定 16 轮 Oklab gamut-fit、transfer、dither/quantize 在同一设备队列执行；只回读 RGB8，JPEG 先保留 CPU 编码。
+3. macOS 使用 Metal compute 和 Apple Silicon unified-memory `MTLBuffer`，复用 command queue/buffer，避免 CPU↔GPU 拷贝；CUDA 使用 CUDA C++ kernel、常驻 device buffer、独立 stream，并在参数/shape 固定后用 CUDA Graph 重放。二者共享 plan 结构、测试向量和 CPU reference，不共享平台 kernel 源码。
+4. ANE/NPU 不作为这段确定性色彩数学的执行器：它适合受支持算子组成的模型，而这里有分支、固定 16 轮二分和严格的 NaN/Inf/量化语义；强行转成 Core ML 会引入算子覆盖和一致性风险。CPU 仍用于 RAW 冷解码、回退与 JPEG，GPU 承担热像素管线。
+
+实现按 Metal→CUDA 两个可独立验收的 backend 落地。每个 backend 都必须覆盖 AgX/neutral/lum/gated、sRGB/P3、边界/NaN/Inf 和固定噪声；float 门禁沿用最大误差 `1e-4`、p99.99 `5e-5`，uint8 门禁沿用 p99 差值 0、最大 1 code value，并保留逐字节一致的 CPU reference。性能报告必须同时给出 kernel、参数上传、RGB8 回读、JPEG 和端到端 p50/p95；CUDA 只在真实目标 GPU 上出数字，本次 macOS 机器不推测 CUDA 性能。
+
 ### 验收
 
 - 3:2 横竖图分别得到 1920×1280 / 1280×1920，非 3:2 图保持自身比例；

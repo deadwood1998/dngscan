@@ -45,6 +45,7 @@ class PreviewEntry:
     _pixel_cache: OrderedDict[Hashable, Any] = field(
         default_factory=OrderedDict, init=False, repr=False
     )
+    _dither_noise: Any | None = field(default=None, init=False, repr=False)
     _runtime_cache_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
@@ -104,6 +105,15 @@ class PreviewEntry:
             self._frame_cache.move_to_end(key)
             while len(self._frame_cache) > MAX_FRAME_CACHE_ITEMS:
                 self._frame_cache.popitem(last=False)
+
+    def get_or_build_dither_noise(self) -> Any:
+        """Reuse the fixed seed-0 TPDF plane for this proxy geometry."""
+        with self._runtime_cache_lock:
+            if self._dither_noise is None:
+                self._dither_noise = dg.deterministic_dither_plane(
+                    self.bundle.scene_rec2020_render.shape[:2] + (3,)
+                )
+            return self._dither_noise
 
 
 INT_KEY_ANALYSIS_FIELDS = {

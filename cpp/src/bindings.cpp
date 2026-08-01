@@ -199,6 +199,46 @@ PYBIND11_MODULE(_dngscan_fast, m) {
       py::arg("plan"));
 
   m.def(
+      "finalize_rec2020_u8_noise_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise, "noise");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_rec2020_u8_noise_f32(
+            rgb.data(), noise.data(), out.mutable_data(),
+            static_cast<std::size_t>(n), plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise"),
+      py::arg("plan"));
+
+  m.def(
+      "finalize_output_u8_noise_f32",
+      [](py::array_t<float, py::array::c_style | py::array::forcecast> rgb,
+         py::array_t<float, py::array::c_style | py::array::forcecast> noise,
+         const py::object& plan_obj) {
+        require_rgb_array(rgb, "rgb");
+        require_same_shape(rgb, noise, "noise");
+        const auto plan = output_plan_from_py(plan_obj);
+        const py::ssize_t n = rgb.shape(0);
+        auto out = py::array_t<std::uint8_t>({n, py::ssize_t(3)});
+        py::gil_scoped_release release;
+        dngscan_fast::finalize_output_u8_noise_f32(
+            rgb.data(), noise.data(), out.mutable_data(),
+            static_cast<std::size_t>(n), plan);
+        return out;
+      },
+      py::arg("rgb"),
+      py::arg("noise"),
+      py::arg("plan"));
+
+  m.def(
       "self_test",
       []() {
         dngscan_fast::NativeAgxPlan plan{};

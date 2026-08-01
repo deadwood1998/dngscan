@@ -181,3 +181,30 @@ def finalize_output_u8_f32(
     return _finalize_output_u8_f32(
         "finalize_output_u8_f32", rgb, noise_a, noise_b, plan
     )
+
+
+def _finalize_output_u8_noise_f32(
+    function_name: str, rgb: Any, noise: Any, plan: Any
+) -> np.ndarray:
+    ext = _require_extension()
+    arr = _output_array(rgb, "rgb")
+    combined = _output_array(noise, "noise")
+    if combined.shape != arr.shape:
+        raise ValueError("dither noise must match rgb shape")
+    return getattr(ext, function_name)(arr, combined, plan)
+
+
+def finalize_rec2020_u8_noise_f32(
+    rgb: Any, noise: Any, plan: Any
+) -> np.ndarray:
+    return _finalize_output_u8_noise_f32(
+        "finalize_rec2020_u8_noise_f32", rgb, noise, plan
+    )
+
+
+def finalize_output_u8_noise_f32(
+    rgb: Any, noise: Any, plan: Any
+) -> np.ndarray:
+    return _finalize_output_u8_noise_f32(
+        "finalize_output_u8_noise_f32", rgb, noise, plan
+    )

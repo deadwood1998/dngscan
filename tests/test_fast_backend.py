@@ -23,7 +23,11 @@ from dngscan.fast_plan import (
 )
 from dngscan.models import ToneCompressionPlan
 from dngscan.punch import apply_punch_rec2020
-from dngscan.render import apply_agx_core, dither_quantize_u8_with_noise
+from dngscan.render import (
+    apply_agx_core,
+    dither_quantize_u8_with_noise,
+    dither_quantize_u8_with_tpdf,
+)
 
 
 def _sample_plan(**overrides) -> ToneCompressionPlan:
@@ -180,7 +184,7 @@ class NativeOutputParityTests(unittest.TestCase):
         from dngscan import _dngscan_fast as ext
 
         self.assertEqual(ext.native_abi_version(), NATIVE_ABI_VERSION)
-        self.assertEqual(NATIVE_ABI_VERSION, 4)
+        self.assertEqual(NATIVE_ABI_VERSION, 5)
         self.assertEqual(NATIVE_OUTPUT_GAMUT_FIT_ITERS, 16)
         self.assertEqual(NATIVE_OUTPUT_GAMUT_TOLERANCE, 1e-4)
         for gamut in ("srgb", "p3"):
@@ -244,6 +248,33 @@ class NativeOutputParityTests(unittest.TestCase):
         second = fast_backend.finalize_output_u8_f32(rgb, noise_a, noise_b, plan)
         np.testing.assert_array_equal(first, second)
 
+    def test_combined_noise_finalizer_matches_reference(self) -> None:
+        rng = np.random.default_rng(97)
+        rec2020 = rng.uniform(-1.0, 2.5, size=(140_000, 3)).astype(np.float32)
+        noise_a = rng.random(rec2020.shape, dtype=np.float32)
+        noise_b = rng.random(rec2020.shape, dtype=np.float32)
+        noise = noise_a - noise_b
+        plan = fast_backend.compile_output_plan("srgb", 0.05)
+        linear = rec2020_to_output(rec2020, "srgb")
+        fitted = fit_to_output_gamut(linear, "srgb", alpha=0.05, iters=16)
+        reference = dither_quantize_u8_with_tpdf(
+            encode_display_linear(fitted, "srgb"), noise
+        )
+        actual = fast_backend.finalize_rec2020_u8_noise_f32(
+            rec2020, noise, plan
+        )
+        previous = fast_backend.finalize_rec2020_u8_f32(
+            rec2020, noise_a, noise_b, plan
+        )
+        previous_delta = np.abs(
+            actual.astype(np.int16) - previous.astype(np.int16)
+        )
+        self.assertLessEqual(int(previous_delta.max()), 1)
+        self.assertEqual(float(np.percentile(previous_delta, 99)), 0.0)
+        self.assertLess(float(np.mean(previous_delta != 0)), 0.0001)
+        delta = np.abs(actual.astype(np.int16) - reference.astype(np.int16))
+        self.assertLessEqual(int(delta.max()), 1)
+        self.assertEqual(float(np.percentile(delta, 99)), 0.0)
 
 class NativeDispatchTests(unittest.TestCase):
     def test_fast_unavailable_falls_back(self) -> None:

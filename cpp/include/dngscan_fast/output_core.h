@@ -42,4 +42,18 @@ void finalize_output_u8_f32(
     std::size_t pixel_count,
     const NativeOutputPlan& plan);
 
+void finalize_rec2020_u8_noise_f32(
+    const float* input,
+    const float* noise,
+    std::uint8_t* output,
+    std::size_t pixel_count,
+    const NativeOutputPlan& plan);
+
+void finalize_output_u8_noise_f32(
+    const float* input,
+    const float* noise,
+    std::uint8_t* output,
+    std::size_t pixel_count,
+    const NativeOutputPlan& plan);
+
 }  // namespace dngscan_fast

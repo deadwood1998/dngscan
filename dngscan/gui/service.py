@@ -677,6 +677,7 @@ def export_preview_jpeg(
                 look, look_strength, display_filter, filter_strength,
                 scene_transform, scene_transform_strength,
                 tone_core, lum_norm, agx_primaries,
+                dither_noise=cached.get_or_build_dither_noise(),
             )
             ensure_current()
             if auto_ev is None:

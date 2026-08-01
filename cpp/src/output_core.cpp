@@ -121,6 +121,11 @@ inline std::uint8_t quantize(float encoded, float noise_a, float noise_b) {
   return static_cast<std::uint8_t>(clampf(value, 0.0f, 255.0f));
 }
 
+inline std::uint8_t quantize_noise(float encoded, float noise) {
+  const float value = std::floor(encoded * 255.0f + 0.5f + noise);
+  return static_cast<std::uint8_t>(clampf(value, 0.0f, 255.0f));
+}
+
 template <typename Function>
 void parallel_for(std::size_t pixel_count, const Function& function) {
   constexpr std::size_t kParallelThreshold = 128 * 1024;
@@ -146,7 +151,7 @@ void parallel_for(std::size_t pixel_count, const Function& function) {
   }
 }
 
-template <bool InputIsRec2020>
+template <bool InputIsRec2020, bool NoiseIsCombined>
 void finalize_u8(
     const float* input,
     const float* noise_a,
@@ -161,12 +166,18 @@ void finalize_u8(
         rgb = mat3(plan.rec2020_to_output, rgb);
       }
       const Rgb fitted = fit_output_pixel(rgb, plan);
-      output[i * 3] = quantize(
-          display_encode(fitted.r), noise_a[i * 3], noise_b[i * 3]);
-      output[i * 3 + 1] = quantize(
-          display_encode(fitted.g), noise_a[i * 3 + 1], noise_b[i * 3 + 1]);
-      output[i * 3 + 2] = quantize(
-          display_encode(fitted.b), noise_a[i * 3 + 2], noise_b[i * 3 + 2]);
+      if constexpr (NoiseIsCombined) {
+        output[i * 3] = quantize_noise(display_encode(fitted.r), noise_a[i * 3]);
+        output[i * 3 + 1] = quantize_noise(display_encode(fitted.g), noise_a[i * 3 + 1]);
+        output[i * 3 + 2] = quantize_noise(display_encode(fitted.b), noise_a[i * 3 + 2]);
+      } else {
+        output[i * 3] = quantize(
+            display_encode(fitted.r), noise_a[i * 3], noise_b[i * 3]);
+        output[i * 3 + 1] = quantize(
+            display_encode(fitted.g), noise_a[i * 3 + 1], noise_b[i * 3 + 1]);
+        output[i * 3 + 2] = quantize(
+            display_encode(fitted.b), noise_a[i * 3 + 2], noise_b[i * 3 + 2]);
+      }
     }
   };
   parallel_for(pixel_count, process_range);
@@ -198,7 +209,7 @@ void finalize_rec2020_u8_f32(
     std::uint8_t* output,
     std::size_t pixel_count,
     const NativeOutputPlan& plan) {
-  finalize_u8<true>(input, noise_a, noise_b, output, pixel_count, plan);
+  finalize_u8<true, false>(input, noise_a, noise_b, output, pixel_count, plan);
 }
 
 void finalize_output_u8_f32(
@@ -208,7 +219,25 @@ void finalize_output_u8_f32(
     std::uint8_t* output,
     std::size_t pixel_count,
     const NativeOutputPlan& plan) {
-  finalize_u8<false>(input, noise_a, noise_b, output, pixel_count, plan);
+  finalize_u8<false, false>(input, noise_a, noise_b, output, pixel_count, plan);
+}
+
+void finalize_rec2020_u8_noise_f32(
+    const float* input,
+    const float* noise,
+    std::uint8_t* output,
+    std::size_t pixel_count,
+    const NativeOutputPlan& plan) {
+  finalize_u8<true, true>(input, noise, nullptr, output, pixel_count, plan);
+}
+
+void finalize_output_u8_noise_f32(
+    const float* input,
+    const float* noise,
+    std::uint8_t* output,
+    std::size_t pixel_count,
+    const NativeOutputPlan& plan) {
+  finalize_u8<false, true>(input, noise, nullptr, output, pixel_count, plan);
 }
 
 }  // namespace dngscan_fast

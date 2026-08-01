@@ -143,6 +143,12 @@ class PreviewCacheTest(unittest.TestCase):
             np.full((2, 3, 3), MAX_PIXEL_CACHE_ITEMS, dtype=np.uint8),
         )
 
+        first_noise = entry.get_or_build_dither_noise()
+        second_noise = entry.get_or_build_dither_noise()
+        self.assertIs(first_noise, second_noise)
+        self.assertFalse(first_noise.flags.writeable)
+        self.assertEqual(first_noise.shape, entry.bundle.scene_rec2020_render.shape)
+
     def test_evidence_identity_is_scene_decoder_independent(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".dng") as source:
             path = Path(source.name)

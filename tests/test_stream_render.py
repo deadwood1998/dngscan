@@ -10,6 +10,7 @@ from unittest import mock
 from dngscan._deps import np
 from dngscan.models import RawBundle, ToneCompressionPlan
 from dngscan.render import (
+    deterministic_dither_plane,
     quantize_final_output_linear_to_u8,
     render_output_linear,
     render_output_u8,
@@ -77,6 +78,21 @@ class StreamRenderTest(unittest.TestCase):
                 self.assertLessEqual(int(delta.max()), 1, (gamut, core))
                 self.assertEqual(float(np.percentile(delta, 99)), 0.0, (gamut, core))
                 self.assertLessEqual(float(np.mean(delta != 0)), 0.01, (gamut, core))
+
+    def test_precomputed_dither_plane_is_byte_identical(self) -> None:
+        bundle, plan = self._bundle_and_plan(73, 97, seed=43)
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
+            streamed = render_output_u8(bundle, object(), "srgb", plan)
+            cached = render_output_u8(
+                bundle,
+                object(),
+                "srgb",
+                plan,
+                dither_noise=deterministic_dither_plane(
+                    bundle.scene_rec2020_render.shape
+                ),
+            )
+        np.testing.assert_array_equal(cached, streamed)
 
     def test_native_failure_reuses_noise_for_exact_auto_fallback(self) -> None:
         import dngscan._fast as fast_backend

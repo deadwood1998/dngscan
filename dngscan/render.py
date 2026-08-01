@@ -36,20 +36,58 @@ STREAM_THREAD_MIN_PIXELS = 2_000_000
 
 def dither_quantize_u8(encoded: Any, rng: Any) -> Any:
     """Quantize display-domain [0,1] floats to uint8 with 1-LSB TPDF dither."""
-    noise_a = rng.random(encoded.shape, dtype=np.float32)
-    noise_b = rng.random(encoded.shape, dtype=np.float32)
+    noise_a, noise_b = generate_dither_noise(rng, encoded.shape)
     return dither_quantize_u8_with_noise(encoded, noise_a, noise_b)
+
+
+def generate_dither_noise(rng: Any, shape: Any) -> tuple[Any, Any]:
+    """Generate the authoritative deterministic TPDF source planes.
+
+    Kept as a named stage so profiling can distinguish RNG/memory traffic from the
+    fused output kernel without putting timers in the production render path.
+    """
+    return (
+        rng.random(shape, dtype=np.float32),
+        rng.random(shape, dtype=np.float32),
+    )
 
 
 def dither_quantize_u8_with_noise(
     encoded: Any, noise_a: Any, noise_b: Any
 ) -> Any:
     """Reference quantizer with explicit noise for deterministic native parity."""
-    scaled = encoded.astype(np.float32, copy=False) * np.float32(255.0)
     noise = np.asarray(noise_a, dtype=np.float32) - np.asarray(
         noise_b, dtype=np.float32
     )
+    return dither_quantize_u8_with_tpdf(encoded, noise)
+
+
+def dither_quantize_u8_with_tpdf(encoded: Any, noise: Any) -> Any:
+    """Quantize with an already-combined TPDF plane."""
+    scaled = encoded.astype(np.float32, copy=False) * np.float32(255.0)
     return np.clip(np.floor(scaled + np.float32(0.5) + noise), 0, 255).astype(np.uint8)
+
+
+def deterministic_dither_plane(shape: Any) -> Any:
+    """Build the exact seed-0 TPDF plane consumed by streamed SDR rendering.
+
+    The quantize-group ordering is part of the historical pixel contract. Preview
+    sessions reuse this immutable plane because shape and RNG seed do not change
+    between interactive frames; full-resolution exports keep their streamed path.
+    """
+    dimensions = tuple(int(value) for value in shape)
+    if len(dimensions) != 3 or dimensions[-1] != 3:
+        raise ValueError("dither shape must be (H, W, 3)")
+    pixel_count = dimensions[0] * dimensions[1]
+    flat = np.empty((pixel_count, 3), dtype=np.float32)
+    rng = np.random.default_rng(0)
+    for start in range(0, pixel_count, STREAM_QUANTIZE_CHUNK):
+        end = min(start + STREAM_QUANTIZE_CHUNK, pixel_count)
+        first, second = generate_dither_noise(rng, (end - start, 3))
+        np.subtract(first, second, out=flat[start:end])
+    result = flat.reshape(dimensions)
+    result.setflags(write=False)
+    return result
 
 
 def output_linear_to_u8(
@@ -393,6 +431,7 @@ def render_output_u8(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "base",
+    dither_noise: Any | None = None,
 ) -> Any:
     if look != "none" and display_filter != "none":
         raise ValueError("色度 look 与输出滤镜不能同时启用")
@@ -434,6 +473,14 @@ def render_output_u8(
     h, w = scene.shape[:2]
     flat_scene = scene.reshape(-1, scene.shape[-1])
     out = np.empty((flat_scene.shape[0], 3), dtype=np.uint8)
+    flat_dither_noise = None
+    if dither_noise is not None:
+        noise = np.asarray(dither_noise, dtype=np.float32)
+        if noise.shape != (h, w, 3):
+            raise ValueError(
+                f"dither noise shape {noise.shape} does not match render {(h, w, 3)}"
+            )
+        flat_dither_noise = np.ascontiguousarray(noise).reshape(-1, 3)
     quantize_chunk_size = STREAM_QUANTIZE_CHUNK
     render_chunk_size = (
         STREAM_RENDER_CHUNK
@@ -525,13 +572,28 @@ def render_output_u8(
     rng = np.random.default_rng(0)
 
     def quantize_chunk(start: int, end: int, pixels: Any) -> None:
-        noise_a = rng.random(pixels.shape, dtype=np.float32)
-        noise_b = rng.random(pixels.shape, dtype=np.float32)
+        noise = (
+            flat_dither_noise[start:end]
+            if flat_dither_noise is not None
+            else None
+        )
+        if noise is None:
+            noise_a, noise_b = generate_dither_noise(rng, pixels.shape)
+        else:
+            noise_a = noise_b = None
         if native_output_plan is not None:
             try:
-                if native_rec2020_input:
+                if native_rec2020_input and noise is not None:
+                    encoded_u8 = fast_backend.finalize_rec2020_u8_noise_f32(
+                        pixels, noise, native_output_plan
+                    )
+                elif native_rec2020_input:
                     encoded_u8 = fast_backend.finalize_rec2020_u8_f32(
                         pixels, noise_a, noise_b, native_output_plan
+                    )
+                elif noise is not None:
+                    encoded_u8 = fast_backend.finalize_output_u8_noise_f32(
+                        pixels, noise, native_output_plan
                     )
                 else:
                     encoded_u8 = fast_backend.finalize_output_u8_f32(
@@ -554,9 +616,12 @@ def render_output_u8(
                 pixels, output_gamut, alpha=gamut_alpha
             ).astype(np.float32, copy=False)
         encoded = encode_display_linear(pixels, output_gamut)
-        out[start:end] = dither_quantize_u8_with_noise(
-            encoded, noise_a, noise_b
-        )
+        if noise is not None:
+            out[start:end] = dither_quantize_u8_with_tpdf(encoded, noise)
+        else:
+            out[start:end] = dither_quantize_u8_with_noise(
+                encoded, noise_a, noise_b
+            )
 
     def consume_in_quantize_groups(results: Any) -> None:
         group_start = 0

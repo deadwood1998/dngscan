@@ -134,6 +134,7 @@ class PreviewPlanCacheTests(unittest.TestCase):
         bundle.scene_scale = 1.0
         bundle.scene_decoder = "libraw"
         bundle.scene_decoder_runtime = "test"
+        bundle.scene_rec2020_render = dg.np.zeros((12, 18, 3), dtype=dg.np.uint16)
         entry = PreviewEntry(bundle=bundle, analysis=MagicMock())
         pixels = dg.np.zeros((12, 18, 3), dtype=dg.np.uint8)
         with patch(
