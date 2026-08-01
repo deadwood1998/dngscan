@@ -96,6 +96,15 @@ class NativeAgxParityTests(unittest.TestCase):
                 out = apply_agx_core(rgb, plan)
                 np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5, err_msg=primaries)
 
+    def test_parallel_kernel_matches_reference(self) -> None:
+        plan = _sample_plan(agx_primaries="punchy", hue_restore=0.7)
+        rng = np.random.default_rng(29)
+        # Deliberately exceeds the native kernel's parallel threshold.
+        rgb = rng.uniform(0.0, 2.0, size=(140_000, 3)).astype(np.float32)
+        ref = _reference_agx_core(rgb, plan)
+        out = apply_agx_core(rgb, plan)
+        np.testing.assert_allclose(out, ref, rtol=0.0, atol=2e-5)
+
     def test_view_brightness_both_sides_match_reference(self) -> None:
         rgb = np.asarray([[0.02, 0.08, 0.25], [0.8, 0.45, 0.12]], dtype=np.float32)
         for brightness in (0.64, 1.25):

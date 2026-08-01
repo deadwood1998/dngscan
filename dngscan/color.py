@@ -149,13 +149,26 @@ def oklab_to_output_rgb(lab_l: Any, lab_a: Any, lab_b: Any, output_gamut: str) -
     return apply_rgb_matrix3(xyz, XYZ_TO_RGB[space])
 
 
+def _rgb_rows_in_unit_gamut(rgb: Any, tolerance: Any) -> Any:
+    """Return the per-row gamut mask without allocating min/max reductions."""
+    upper = 1.0 + tolerance
+    return (
+        (rgb[:, 0] >= -tolerance)
+        & (rgb[:, 0] <= upper)
+        & (rgb[:, 1] >= -tolerance)
+        & (rgb[:, 1] <= upper)
+        & (rgb[:, 2] >= -tolerance)
+        & (rgb[:, 2] <= upper)
+    )
+
+
 def fit_to_output_gamut(rgb: Any, output_gamut: str, alpha: float = 0.05, iters: int = 16) -> Any:
     """Bring out-of-gamut linear RGB into [0,1] with Oklab adaptive-L0 clipping: hold hue,
     trade a little lightness for saturation only at the extremes. In-gamut pixels are left
     untouched. Replaces per-channel clipping, which skews hue on saturated colors."""
     rgb = np.nan_to_num(rgb.astype(np.float32, copy=False), nan=0.0, posinf=1e6, neginf=-1e6)
     tol = np.float32(1e-4)
-    oog = (np.min(rgb, axis=1) < -tol) | (np.max(rgb, axis=1) > 1.0 + tol)
+    oog = ~_rgb_rows_in_unit_gamut(rgb, tol)
     if not np.any(oog):
         return np.clip(rgb, 0.0, 1.0)
     sub = rgb[oog]
@@ -170,7 +183,7 @@ def fit_to_output_gamut(rgb: Any, output_gamut: str, alpha: float = 0.05, iters:
     for _ in range(iters):
         t = 0.5 * (lo + hi)
         rgb_t = oklab_to_output_rgb(l0 * (1.0 - t) + t * lab_l, t * lab_a, t * lab_b, output_gamut)
-        inside = (np.min(rgb_t, axis=1) >= -tol) & (np.max(rgb_t, axis=1) <= 1.0 + tol)
+        inside = _rgb_rows_in_unit_gamut(rgb_t, tol)
         lo = np.where(inside, t, lo)
         hi = np.where(inside, hi, t)
     fit = oklab_to_output_rgb(l0 * (1.0 - lo) + lo * lab_l, lo * lab_a, lo * lab_b, output_gamut)
