@@ -395,6 +395,7 @@ GRADE_OPTIONS
       <input type="checkbox" id="png"><label for="png" style="margin:0">附带分析图</label>
     </div>
     <div class="ctlFact" id="priorsFact"></div>
+    <div class="muted" id="toneCoreExportHint" style="display:none;margin-top:10px"></div>
     <div class="dialogActions">
       <button class="ghost" id="outputCancel" type="button">取消</button>
       <button class="go" id="exportConfirm" type="button">导出</button>
@@ -461,14 +462,24 @@ function applyDeliveryDefaults(){
   if($("#deliveryProfile").value==="share"){$("#quality").value="90";$("#chroma").value="420";}
   applyDeliveryConstraints();
 }
+function updateToneCoreExportUi(){
+  const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
+  const incompatible=hdr&&$("#toneCore").value!=="agx";
+  const hint=$("#toneCoreExportHint");
+  hint.textContent=incompatible?"当前压缩核心可继续用于实时预览；HDR 容器导出目前只支持 AgX。请切换到 AgX，或改用 SDR JPEG。":"";
+  hint.style.display=incompatible?"block":"none";
+  $("#exportConfirm").disabled=incompatible;
+  $("#exportConfirm").title=incompatible?"HDR 容器导出目前只支持 AgX":"";
+}
 function updateFormatUi(){
   const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
   $("#hdrBlock").style.display=hdr?"flex":"none";
-  if(hdr){$("#gamut").value="p3";$("#toneCore").value="agx";}
-  $("#gamut").disabled=hdr;$("#toneCore").disabled=hdr;
+  if(hdr)$("#gamut").value="p3";
+  $("#gamut").disabled=hdr;
   $("#highlightFade").disabled=hdr;
   $("#highlightFadeBlock").title=hdr?"HDR 色彩几何独立处理高光，不使用 SDR 显示侧褪白。":"";
   applyDeliveryConstraints();
+  updateToneCoreExportUi();
   updateToneCoreUi();
 }
 async function checkHdrBackend(){
@@ -677,7 +688,7 @@ $("#film").addEventListener("change",()=>{
 });
 $("#lensFilter").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#filmCurve").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
-$("#toneCore").addEventListener("change",()=>{updateToneCoreUi();saveSettings();preparePreview();});
+$("#toneCore").addEventListener("change",()=>{updateToneCoreUi();updateToneCoreExportUi();saveSettings();preparePreview();});
 $("#lumNorm").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#agxPrimaries").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#sceneTransform").addEventListener("change",()=>{updateSceneTransformUi();saveSettings();scheduleLivePreview();});
@@ -1046,7 +1057,7 @@ $("#exportConfirm").onclick=async()=>{
       renderDeliveryReport(j);
       lastSavedPath=j.saved[0]||"";$("#revealBtn").style.display=lastSavedPath?"inline-block":"none";setPreviewImage(j.preview);}
   }catch(e){endBusy();setStatus("请求失败："+e,"err");}
-  $("#go").disabled=false;$("#exportConfirm").disabled=false;
+  $("#go").disabled=false;$("#exportConfirm").disabled=false;updateToneCoreExportUi();
 };
 $("#revealBtn").onclick=async()=>{
   if(!lastSavedPath)return;

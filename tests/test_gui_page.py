@@ -159,3 +159,19 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn('id="go">导出</button>', PAGE)
         self.assertIn('dialog.showModal()', PAGE)
         self.assertIn('id="exportConfirm"', dialog)
+
+    def test_hdr_delivery_does_not_collapse_realtime_tone_core_choices(self) -> None:
+        tone_select = PAGE[
+            PAGE.index('<select id="toneCore"'):
+            PAGE.index('</select>', PAGE.index('<select id="toneCore"'))
+        ]
+        for core in ("agx", "gated", "neutral", "lum"):
+            with self.subTest(core=core):
+                self.assertIn(f'value="{core}"', tone_select)
+
+        format_ui = PAGE[PAGE.index("function updateFormatUi()") :]
+        format_ui = format_ui[: format_ui.index("async function checkHdrBackend()")]
+        self.assertNotIn('$("#toneCore").value="agx"', format_ui)
+        self.assertNotIn('$("#toneCore").disabled=hdr', format_ui)
+        self.assertIn("updateToneCoreExportUi()", format_ui)
+        self.assertIn('id="toneCoreExportHint"', PAGE)

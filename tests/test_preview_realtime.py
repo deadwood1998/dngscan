@@ -53,6 +53,30 @@ class PreviewCoordinatorTests(unittest.TestCase):
             result, {"ok": True, "superseded": True, "generation": 1}
         )
 
+    def test_hdr_delivery_choice_does_not_restrict_sdr_preview_tone_core(self) -> None:
+        PREVIEW_COORDINATOR.clear()
+        entry = MagicMock()
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source, patch(
+            "dngscan.gui.service.PREVIEW_STORE.get", return_value=entry
+        ), patch(
+            "dngscan.gui.service.export_preview_jpeg", return_value={"ok": True}
+        ) as export:
+            result = run_preview(
+                {
+                    "input": source.name,
+                    "format": "ultrahdr-heic",
+                    "toneCore": "neutral",
+                    "previewSession": "hdr-neutral-preview",
+                    "generation": 1,
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["generation"], 1)
+        export.assert_called_once()
+        self.assertEqual(export.call_args.kwargs["tone_core"], "neutral")
+        self.assertEqual(export.call_args.args[2], "p3")
+
 
 class PreviewPlanCacheTests(unittest.TestCase):
     def test_base_plan_is_reused_across_interactive_adjustments(self) -> None:
