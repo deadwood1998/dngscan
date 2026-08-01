@@ -10,5 +10,5 @@ RAW_EXTS = {
 
 # Realtime preview is a product invariant, not a quality knob.  Keeping one
 # geometry prevents sharpness and pacing changes while the user drags controls.
-REALTIME_PREVIEW_LONG_EDGE = 960
+REALTIME_PREVIEW_LONG_EDGE = 1980
 PROXY_LONG_EDGE = REALTIME_PREVIEW_LONG_EDGE

@@ -27,9 +27,9 @@ class PageInformationDisplayTests(unittest.TestCase):
     def test_prepare_failure_is_surfaced_not_swallowed(self) -> None:
         self.assertIn('setStatus(j.error,"err");renderDetectedParams(null);', PAGE)
 
-    def test_realtime_preview_is_fixed_960_and_has_no_resolution_control(self) -> None:
+    def test_realtime_preview_is_fixed_1980_and_has_no_resolution_control(self) -> None:
         served_page = render_page("").decode("utf-8")
-        self.assertIn('id="previewLiveBadge">实时 · 960px', served_page)
+        self.assertIn('id="previewLiveBadge">实时 · 1980px', served_page)
         self.assertNotIn('id="previewBtn"', PAGE)
         self.assertNotIn("更新预览", PAGE)
         self.assertNotIn("previewLongEdge", PAGE)

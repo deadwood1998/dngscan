@@ -85,8 +85,8 @@ class PreviewPlanCacheTests(unittest.TestCase):
         build.assert_called_once()
         self.assertEqual(apply.call_count, 2)
 
-    def test_fixed_resolution_constant_is_960(self) -> None:
-        self.assertEqual(REALTIME_PREVIEW_LONG_EDGE, 960)
+    def test_fixed_resolution_constant_is_1980(self) -> None:
+        self.assertEqual(REALTIME_PREVIEW_LONG_EDGE, 1980)
 
 
 if __name__ == "__main__":

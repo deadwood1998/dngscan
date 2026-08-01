@@ -92,10 +92,10 @@ def _bundle() -> RawBundle:
 
 
 class PreviewCacheTest(unittest.TestCase):
-    def test_realtime_proxy_has_one_fixed_960px_long_edge(self) -> None:
-        image = np.zeros((900, 1200, 3), dtype=np.float32)
+    def test_realtime_proxy_has_one_fixed_1980px_long_edge(self) -> None:
+        image = np.zeros((600, 2400, 3), dtype=np.float32)
         proxy = downsample_mean(image)
-        self.assertEqual(proxy.shape, (720, 960, 3))
+        self.assertEqual(proxy.shape, (495, 1980, 3))
 
     def test_runtime_plan_and_frame_caches_are_bounded_lrus(self) -> None:
         entry = PreviewEntry(bundle=_bundle(), analysis=_analysis())
