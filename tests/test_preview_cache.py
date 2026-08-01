@@ -4,10 +4,14 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from dngscan._deps import np
 from dngscan.gui.preview_cache import (
     MAX_FRAME_CACHE_ITEMS,
+    MAX_MEMORY_PROXY_ITEMS,
+    MAX_PIXEL_CACHE_ITEMS,
+    PreviewCache,
     PreviewEntry,
     _cache_identity,
     _evidence_cache_identity,
@@ -15,6 +19,7 @@ from dngscan.gui.preview_cache import (
     _write_disk_entry,
     build_proxy_entry,
     downsample_mean,
+    proxy_target_size,
 )
 from dngscan.models import Analysis, RawBundle, RawGuidanceMaps
 
@@ -92,10 +97,15 @@ def _bundle() -> RawBundle:
 
 
 class PreviewCacheTest(unittest.TestCase):
-    def test_realtime_proxy_has_one_fixed_1980px_long_edge(self) -> None:
+    def test_realtime_proxy_has_one_fixed_1920px_long_edge(self) -> None:
         image = np.zeros((600, 2400, 3), dtype=np.float32)
         proxy = downsample_mean(image)
-        self.assertEqual(proxy.shape, (495, 1980, 3))
+        self.assertEqual(proxy.shape, (480, 1920, 3))
+
+    def test_target_size_preserves_decoded_source_aspect_ratio(self) -> None:
+        self.assertEqual(proxy_target_size(6000, 4000, 1920), (1920, 1280))
+        self.assertEqual(proxy_target_size(7008, 4672, 1920), (1920, 1280))
+        self.assertEqual(proxy_target_size(4000, 6000, 1920), (1280, 1920))
 
     def test_runtime_plan_and_frame_caches_are_bounded_lrus(self) -> None:
         entry = PreviewEntry(bundle=_bundle(), analysis=_analysis())
@@ -122,6 +132,17 @@ class PreviewCacheTest(unittest.TestCase):
             MAX_FRAME_CACHE_ITEMS + 1,
         )
 
+        for index in range(MAX_PIXEL_CACHE_ITEMS + 1):
+            source = np.full((2, 3, 3), index, dtype=np.uint8)
+            stored = entry.put_pixels((index,), source)
+            source.fill(255)
+            self.assertFalse(stored.flags.writeable)
+        self.assertIsNone(entry.get_pixels((0,)))
+        np.testing.assert_array_equal(
+            entry.get_pixels((MAX_PIXEL_CACHE_ITEMS,)),
+            np.full((2, 3, 3), MAX_PIXEL_CACHE_ITEMS, dtype=np.uint8),
+        )
+
     def test_evidence_identity_is_scene_decoder_independent(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".dng") as source:
             path = Path(source.name)
@@ -133,6 +154,48 @@ class PreviewCacheTest(unittest.TestCase):
         self.assertEqual(libraw_key[:4], evidence_key)
         self.assertEqual(apple_key[:4], evidence_key)
         self.assertNotEqual(libraw_key, apple_key)
+
+    def test_cache_identity_includes_demosaic_recipe(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source:
+            path = Path(source.name)
+            auto_key, auto_digest = _cache_identity(
+                path, "clip", "camera", "libraw", "auto", "auto"
+            )
+            dht_key, dht_digest = _cache_identity(
+                path, "clip", "camera", "libraw", "auto", "dht"
+            )
+        self.assertNotEqual(auto_key, dht_key)
+        self.assertNotEqual(auto_digest, dht_digest)
+
+    def test_cold_proxy_uses_full_resolution_selected_demosaic(self) -> None:
+        cache = PreviewCache()
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source, patch(
+            "dngscan.gui.preview_cache._read_disk_entry", return_value=None
+        ), patch(
+            "dngscan.gui.preview_cache._write_disk_entry"
+        ), patch(
+            "dngscan.gui.preview_cache.dg.load_raw", return_value=_bundle()
+        ) as load, patch(
+            "dngscan.gui.preview_cache.dg.analyze",
+            return_value=(_analysis(), None, None),
+        ):
+            cache.get(Path(source.name), "clip", "camera", demosaic="dht")
+        self.assertFalse(load.call_args.kwargs["scene_half_size"])
+        self.assertEqual(load.call_args.kwargs["demosaic"], "dht")
+
+    def test_memory_proxy_cache_is_a_bounded_lru(self) -> None:
+        cache = PreviewCache()
+        entries = [PreviewEntry(_bundle(), _analysis()) for _ in range(3)]
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source, patch(
+            "dngscan.gui.preview_cache._read_disk_entry", side_effect=entries
+        ) as read:
+            path = Path(source.name)
+            cache.get(path, "clip", "camera")
+            cache.get(path, "blend", "camera")
+            cache.get(path, "reconstruct", "camera")
+            cache.get(path, "blend", "camera")
+        self.assertEqual(len(cache.entries), MAX_MEMORY_PROXY_ITEMS)
+        self.assertEqual(read.call_count, 3)
 
     def test_round_trip_keeps_compact_proxy_and_guidance(self) -> None:
         entry = build_proxy_entry(_bundle(), _analysis())

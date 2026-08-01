@@ -100,6 +100,7 @@ def _record_stages():
     targets = (
         (service_module.PREVIEW_STORE, "get", "session_lookup"),
         (preview_cache_module.PreviewEntry, "get_frame", "frame_cache_lookup"),
+        (preview_cache_module.PreviewEntry, "get_pixels", "pixel_cache_lookup"),
         (service_module, "_cached_render_plan", "plan_lookup"),
         (service_module.dg, "render_output_u8", "pixel_pipeline_total"),
         (render_module, "scene_intent_rec2020", "scene_intent"),
@@ -188,6 +189,18 @@ def main() -> int:
                 )
                 if not first.get("ok") or first.get("superseded"):
                     raise RuntimeError(first)
+                metrics_variant, metrics_variant_ms = _elapsed_ms(
+                    lambda: run_preview(
+                        {
+                            **common,
+                            "generation": 2,
+                            "ev": 0.0,
+                            "includeMetrics": True,
+                        }
+                    )
+                )
+                if not metrics_variant.get("ok") or metrics_variant.get("superseded"):
+                    raise RuntimeError(metrics_variant)
                 stages.clear()
 
                 continuous_ms: list[float] = []
@@ -197,7 +210,7 @@ def main() -> int:
                     ev = -step if index % 2 == 0 else step
                     last_params = {
                         **common,
-                        "generation": index + 2,
+                        "generation": index + 3,
                         "ev": ev,
                     }
                     result, elapsed_ms = _elapsed_ms(lambda p=last_params: run_preview(p))
@@ -210,7 +223,7 @@ def main() -> int:
             assert last_params is not None
             repeated, cache_hit_ms = _elapsed_ms(
                 lambda: run_preview(
-                    {**last_params, "generation": args.iterations + 2}
+                    {**last_params, "generation": args.iterations + 3}
                 )
             )
             report = {
@@ -220,6 +233,10 @@ def main() -> int:
                 "dimensions": _dimensions(first["preview"]),
                 "prepare_ms": round(prepare_ms, 2),
                 "first_frame_ms": round(first_frame_ms, 2),
+                "metrics_variant_pixel_cache_hit": bool(
+                    metrics_variant.get("pixel_cache_hit")
+                ),
+                "metrics_variant_ms": round(metrics_variant_ms, 2),
                 "continuous_iterations": len(continuous_ms),
                 "continuous_p50_ms": round(_percentile(continuous_ms, 0.50), 2),
                 "continuous_p95_ms": round(_percentile(continuous_ms, 0.95), 2),

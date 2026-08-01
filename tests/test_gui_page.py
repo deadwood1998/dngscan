@@ -27,9 +27,9 @@ class PageInformationDisplayTests(unittest.TestCase):
     def test_prepare_failure_is_surfaced_not_swallowed(self) -> None:
         self.assertIn('setStatus(j.error,"err");renderDetectedParams(null);', PAGE)
 
-    def test_realtime_preview_is_fixed_1980_and_has_no_resolution_control(self) -> None:
+    def test_realtime_preview_is_fixed_1920_and_has_no_resolution_control(self) -> None:
         served_page = render_page("").decode("utf-8")
-        self.assertIn('id="previewLiveBadge">实时 · 1980px', served_page)
+        self.assertIn('id="previewLiveBadge">实时 · 1920px', served_page)
         self.assertNotIn('id="previewBtn"', PAGE)
         self.assertNotIn("更新预览", PAGE)
         self.assertNotIn("previewLongEdge", PAGE)
@@ -63,6 +63,12 @@ class PageInformationDisplayTests(unittest.TestCase):
         loop = wiring[wiring.index('"midtoneBrightness"') :]
         self.assertIn('forEach(id=>$("#"+id).oninput=', loop)
         self.assertIn("scheduleLivePreview()", loop)
+
+    def test_demosaic_change_rebuilds_the_cold_proxy(self) -> None:
+        wiring = PAGE[PAGE.index('$("#demosaic").addEventListener') :]
+        wiring = wiring[: wiring.index("\n")]
+        self.assertIn("saveSettings()", wiring)
+        self.assertIn("preparePreview()", wiring)
 
     def test_status_area_renders_multiline_guidance(self) -> None:
         start = PAGE.index("#status{")

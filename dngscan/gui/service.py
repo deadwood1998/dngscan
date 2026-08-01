@@ -15,7 +15,12 @@ import dngscan as dg
 from dngscan.debug_util import maybe_print_exc
 from dngscan.grade import RENDER_MODE, resolve_grade_params
 
-from .constants import PROXY_LONG_EDGE, RAW_EXTS
+from .constants import (
+    PROXY_LONG_EDGE,
+    RAW_EXTS,
+    REALTIME_PREVIEW_JPEG_QUALITY,
+    REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+)
 from .preview_cache import PREVIEW_STORE, PreviewEntry, downsample_mean
 from .preview_scheduler import PREVIEW_COORDINATOR
 
@@ -41,10 +46,14 @@ def make_preview_b64(
         if icc_profile is None:
             icc_profile = src.info.get("icc_profile")
         im = src.convert("RGB")
-    if width is not None and im.width > width:
-        im = im.resize((width, round(im.height * width / im.width)))
+    if width is not None and max(im.size) > width:
+        im.thumbnail((width, width), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    save_kwargs = {"format": "JPEG", "quality": 85}
+    save_kwargs = {
+        "format": "JPEG",
+        "quality": REALTIME_PREVIEW_JPEG_QUALITY,
+        "subsampling": REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+    }
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
     im.save(buf, **save_kwargs)
@@ -59,10 +68,14 @@ def preview_b64_from_u8(
     from PIL import Image
 
     im = Image.fromarray(rgb_u8, "RGB")
-    if width is not None and im.width > width:
-        im = im.resize((width, round(im.height * width / im.width)))
+    if width is not None and max(im.size) > width:
+        im.thumbnail((width, width), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    save_kwargs = {"format": "JPEG", "quality": 85}
+    save_kwargs = {
+        "format": "JPEG",
+        "quality": REALTIME_PREVIEW_JPEG_QUALITY,
+        "subsampling": REALTIME_PREVIEW_JPEG_SUBSAMPLING,
+    }
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
     im.save(buf, **save_kwargs)
@@ -479,7 +492,7 @@ def _cached_render_plan(
     return dg.apply_render_adjustments(base, adjustments)
 
 
-def _preview_frame_key(
+def _preview_pixel_key(
     bundle: dg.RawBundle,
     gamut: str,
     ev: float,
@@ -496,7 +509,6 @@ def _preview_frame_key(
     lens_filter: str,
     film_curve: str,
     adjustments: dg.RenderAdjustments | None,
-    include_metrics: bool,
 ) -> tuple[Any, ...]:
     return (
         gamut,
@@ -514,12 +526,18 @@ def _preview_frame_key(
         lens_filter,
         film_curve,
         _adjustment_key(adjustments),
-        bool(include_metrics),
         # Exposure is represented by ``ev`` above; the scale contract guards against
         # accidentally sharing frames across decoder/cache versions.
         _cache_float(getattr(bundle, "scene_scale", 1.0)),
         str(getattr(bundle, "scene_decoder_runtime", "") or ""),
     )
+
+
+def _preview_frame_key(
+    pixel_key: tuple[Any, ...], include_metrics: bool
+) -> tuple[Any, ...]:
+    """Exact browser representation layered on top of reusable rendered pixels."""
+    return (*pixel_key, bool(include_metrics))
 
 
 def parse_decoder(params: dict) -> tuple[str, str]:
@@ -541,6 +559,15 @@ def parse_decoder(params: dict) -> tuple[str, str]:
             "固定色温声明（如 5500K）与拍摄值均可用"
         )
     return decoder, version
+
+
+def parse_demosaic(params: dict, decoder: str) -> str:
+    from dngscan.constants import DEMOSAIC_CHOICES
+
+    demosaic = str(params.get("demosaic", "auto"))
+    if demosaic not in DEMOSAIC_CHOICES:
+        raise ValueError(f"未知解拜耳算法：{demosaic}")
+    return "auto" if decoder == "coreimage" else demosaic
 
 
 def export_preview_jpeg(
@@ -566,6 +593,7 @@ def export_preview_jpeg(
     adjustments: dg.RenderAdjustments | None = None,
     decoder: str = "libraw",
     coreimage_version: str = "auto",
+    demosaic: str = "auto",
     lens_filter: str = "none",
     film_curve: str = "none",
     include_metrics: bool = True,
@@ -576,7 +604,13 @@ def export_preview_jpeg(
         highlight = "reconstruct"
     if cached is None:
         cached = PREVIEW_STORE.get(
-            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
         )
 
     def ensure_current() -> None:
@@ -594,7 +628,7 @@ def export_preview_jpeg(
         import dataclasses as _dc
 
         proxy_bundle = _dc.replace(proxy_bundle, lens_filter=lens_filter)
-    frame_key = _preview_frame_key(
+    pixel_key = _preview_pixel_key(
         proxy_bundle,
         gamut,
         ev,
@@ -611,8 +645,8 @@ def export_preview_jpeg(
         lens_filter,
         film_curve,
         adjustments,
-        include_metrics,
     )
+    frame_key = _preview_frame_key(pixel_key, include_metrics)
     if auto_ev is None:
         frame = cached.get_frame(frame_key)
         if frame is not None:
@@ -621,28 +655,33 @@ def export_preview_jpeg(
             return frame
     with RENDER_LOCK:
         ensure_current()
-        render_plan = _cached_render_plan(
-            cached,
-            proxy_bundle,
-            gamut,
-            scene_transform,
-            scene_transform_strength,
-            punch_scale,
-            tone_core,
-            lum_norm,
-            agx_primaries,
-            film_curve,
-            adjustments,
-        )
-        ensure_current()
+        rgb_u8 = cached.get_pixels(pixel_key) if auto_ev is None else None
+        pixel_cache_hit = rgb_u8 is not None
+        if rgb_u8 is None:
+            render_plan = _cached_render_plan(
+                cached,
+                proxy_bundle,
+                gamut,
+                scene_transform,
+                scene_transform_strength,
+                punch_scale,
+                tone_core,
+                lum_norm,
+                agx_primaries,
+                film_curve,
+                adjustments,
+            )
+            ensure_current()
+            rgb_u8 = dg.render_output_u8(
+                proxy_bundle, cached.analysis, gamut, render_plan,
+                look, look_strength, display_filter, filter_strength,
+                scene_transform, scene_transform_strength,
+                tone_core, lum_norm, agx_primaries,
+            )
+            ensure_current()
+            if auto_ev is None:
+                rgb_u8 = cached.put_pixels(pixel_key, rgb_u8)
         icc_profile = dg.output_icc_profile_bytes(gamut)
-        rgb_u8 = dg.render_output_u8(
-            proxy_bundle, cached.analysis, gamut, render_plan,
-            look, look_strength, display_filter, filter_strength,
-            scene_transform, scene_transform_strength,
-            tone_core, lum_norm, agx_primaries,
-        )
-        ensure_current()
         if auto_ev is not None:
             rgb_u8 = annotate_preview_rgb_u8(rgb_u8, dg.auto_ev_overlay_lines(auto_ev))
         metrics = preview_metrics_from_u8(rgb_u8, gamut) if include_metrics else {}
@@ -665,6 +704,7 @@ def export_preview_jpeg(
         "decoder_version": getattr(proxy_bundle, "scene_decoder_version", None),
         "ev_auto": auto_ev_payload(auto_ev),
         "cache_hit": False,
+        "pixel_cache_hit": pixel_cache_hit,
     }
     if auto_ev is None:
         cached.put_frame(frame_key, payload)
@@ -700,6 +740,7 @@ def run_preview(params: dict) -> dict:
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    demosaic = parse_demosaic(params, decoder)
     if decoder == "coreimage":
         highlight = "reconstruct"
     look, look_strength, display_filter, filter_strength = parse_grade(params)
@@ -715,7 +756,13 @@ def run_preview(params: dict) -> dict:
     lens_filter, film_curve = parse_film_params(params)
     try:
         cached = PREVIEW_STORE.get(
-            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
         )
         if not is_current():
             raise PreviewSuperseded()
@@ -762,6 +809,7 @@ def run_preview(params: dict) -> dict:
             adjustments=adjustments,
             decoder=decoder,
             coreimage_version=coreimage_version,
+            demosaic=demosaic,
             lens_filter=lens_filter,
             film_curve=film_curve,
             include_metrics=bool(params.get("includeMetrics", True)),
@@ -823,6 +871,7 @@ def prepare_preview(params: dict) -> dict:
     if wb not in dg.WB_CHOICES:
         raise ValueError(f"未知白平衡模式：{wb}")
     decoder, coreimage_version = parse_decoder(params)
+    demosaic = parse_demosaic(params, decoder)
     if decoder == "coreimage":
         highlight = "reconstruct"
     tone_core, lum_norm = parse_tone_core(params)
@@ -834,7 +883,13 @@ def prepare_preview(params: dict) -> dict:
     # Do not compete with the full-resolution export worker for memory bandwidth.
     with RENDER_LOCK:
         entry = PREVIEW_STORE.get(
-            inp, highlight, wb, tone_core == "gated", decoder, coreimage_version
+            inp,
+            highlight,
+            wb,
+            tone_core == "gated",
+            decoder,
+            coreimage_version,
+            demosaic,
         )
         proxy_bundle = entry.bundle
         if lens_filter != "none":

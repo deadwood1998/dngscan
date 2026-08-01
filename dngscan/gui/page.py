@@ -652,7 +652,8 @@ function restoreSettings(){
 ["quality","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
 $("#gamut").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#highlight").addEventListener("change",()=>{saveSettings();preparePreview();});
-["demosaic","chroma"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
+$("#demosaic").addEventListener("change",()=>{saveSettings();preparePreview();});
+$("#chroma").addEventListener("change",saveSettings);
 $("#grade").addEventListener("change",()=>{updateGradeUi();saveSettings();scheduleLivePreview();});
 $("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();saveSettings();});
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
