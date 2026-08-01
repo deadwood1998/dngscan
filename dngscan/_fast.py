@@ -124,3 +124,60 @@ def apply_agx_core_f32(rgb: np.ndarray, plan: Any) -> np.ndarray:
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError("rgb must be (N, 3) float32")
     return ext.apply_agx_core_f32(arr, plan)
+
+
+def supports_output_finalizer() -> bool:
+    """Whether the independent SDR output kernel may be dispatched."""
+    if _fast_mode() == "off":
+        return False
+    return _load_extension() is not None
+
+
+def compile_output_plan(output_gamut: str, alpha: float = 0.05) -> Any:
+    from .fast_plan import compile_output_plan as _compile
+
+    return _compile(output_gamut, alpha)
+
+
+def _output_array(value: Any, name: str) -> np.ndarray:
+    arr = np.ascontiguousarray(value, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"{name} must be (N, 3) float32")
+    return arr
+
+
+def fit_output_gamut_f32(rgb: Any, plan: Any) -> np.ndarray:
+    ext = _require_extension()
+    return ext.fit_output_gamut_f32(_output_array(rgb, "rgb"), plan)
+
+
+def _finalize_output_u8_f32(
+    function_name: str,
+    rgb: Any,
+    noise_a: Any,
+    noise_b: Any,
+    plan: Any,
+) -> np.ndarray:
+    ext = _require_extension()
+    arr = _output_array(rgb, "rgb")
+    first = _output_array(noise_a, "noise_a")
+    second = _output_array(noise_b, "noise_b")
+    if first.shape != arr.shape or second.shape != arr.shape:
+        raise ValueError("dither noise must match rgb shape")
+    return getattr(ext, function_name)(arr, first, second, plan)
+
+
+def finalize_rec2020_u8_f32(
+    rgb: Any, noise_a: Any, noise_b: Any, plan: Any
+) -> np.ndarray:
+    return _finalize_output_u8_f32(
+        "finalize_rec2020_u8_f32", rgb, noise_a, noise_b, plan
+    )
+
+
+def finalize_output_u8_f32(
+    rgb: Any, noise_a: Any, noise_b: Any, plan: Any
+) -> np.ndarray:
+    return _finalize_output_u8_f32(
+        "finalize_output_u8_f32", rgb, noise_a, noise_b, plan
+    )

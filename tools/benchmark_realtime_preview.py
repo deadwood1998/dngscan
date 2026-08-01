@@ -95,6 +95,7 @@ class _StageRecorder:
 def _record_stages():
     """Instrument preview stages without adding timers to the production path."""
     from dngscan import render as render_module
+    from dngscan import _fast as fast_module
 
     recorder = _StageRecorder()
     targets = (
@@ -113,8 +114,23 @@ def _record_stages():
         (render_module, "apply_tone_core", "tone_core"),
         (render_module, "rec2020_to_output", "output_matrix"),
         (render_module, "finalize_output_linear", "gamut_finalize"),
+        (render_module, "fit_to_output_gamut", "gamut_fit"),
         (render_module, "encode_display_linear", "transfer_encode"),
-        (render_module, "dither_quantize_u8", "dither_quantize"),
+        (
+            render_module,
+            "dither_quantize_u8_with_noise",
+            "dither_quantize",
+        ),
+        (
+            fast_module,
+            "finalize_rec2020_u8_f32",
+            "native_output_finalize",
+        ),
+        (
+            fast_module,
+            "finalize_output_u8_f32",
+            "native_output_finalize",
+        ),
         (service_module, "preview_metrics_from_u8", "preview_metrics"),
         (service_module, "preview_b64_from_u8", "jpeg_base64"),
     )
@@ -123,6 +139,18 @@ def _record_stages():
             original = getattr(owner, name)
             stack.enter_context(patch.object(owner, name, recorder.wrapper(stage, original)))
         yield recorder
+
+
+@contextmanager
+def _output_backend(mode: str):
+    """Select only the finalizer implementation while leaving tone native policy intact."""
+    if mode == "numpy":
+        from dngscan import _fast as fast_module
+
+        with patch.object(fast_module, "supports_output_finalizer", return_value=False):
+            yield
+        return
+    yield
 
 
 @contextmanager
@@ -165,12 +193,22 @@ def main() -> int:
         default="baseline",
         help="representative preview mode to measure",
     )
+    parser.add_argument(
+        "--output-backend",
+        choices=("auto", "numpy", "native"),
+        default="auto",
+        help="isolate the finalizer backend without disabling the native tone core",
+    )
     args = parser.parse_args()
     if args.iterations < 1:
         parser.error("--iterations must be at least 1")
 
     input_path = args.input.expanduser().resolve()
-    with _preview_geometry(args.long_edge) as long_edge:
+    if args.output_backend == "native":
+        os.environ["DNGSCAN_FAST"] = "1"
+    with _preview_geometry(args.long_edge) as long_edge, _output_backend(
+        args.output_backend
+    ):
         session = f"benchmark:{uuid.uuid4()}"
         common = {
             "input": str(input_path),
@@ -229,6 +267,7 @@ def main() -> int:
             report = {
                 "input": input_path.name,
                 "scenario": args.scenario,
+                "output_backend": args.output_backend,
                 "long_edge": long_edge,
                 "dimensions": _dimensions(first["preview"]),
                 "prepare_ms": round(prepare_ms, 2),

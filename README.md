@@ -122,8 +122,9 @@ Run `python -m dngscan --help` for the complete option list.
 ### Optional C++ acceleration
 
 NumPy is the reference implementation and works without a native extension. The optional pybind11
-C++ kernel accelerates only the AgX hot paths; RAW analysis, render planning, and fallback policy
-remain in Python.
+C++ kernel accelerates the AgX core and the shared SDR output finalizer (16-step Oklab gamut fit,
+transfer, dither, and quantization); RAW analysis, render planning, and fallback policy remain in
+Python.
 
 ```bash
 pip install pybind11 cmake

@@ -27,6 +27,51 @@ metrics 的延迟/补算不再重复颜色渲染，只读取同一份不可变 R
 
 AgX 核心已经是 C++17/pybind native 实现，无需先整体重写。完成上述拆分后重新 profile；若非缓存热帧仍主要耗在 16 轮色域拟合，再把常量矩阵预合并，并在一个 native chunk kernel 内融合 Oklab 往返、二分和 gamut test。之后才考虑融合 transfer+dither 和复用常驻 worker pool。每一步都必须通过现有像素回归，保持预览与导出的算法一致。
 
+### 输出后处理 native 优化方案
+
+#### 计算边界
+
+新增独立于 AgX 的 `NativeOutputPlan` 和两种入口，所有 tone core 共用，不把输出优化绑到 AgX：
+
+- `finalize_rec2020_u8_f32`：输入 tone core 产生的 Rec.2020 float32，融合 Rec.2020→输出空间、16 轮 Oklab gamut-fit、sRGB/P3 OETF 和 TPDF dither/uint8 quantize；普通 baseline 走这条最短路径。
+- `finalize_output_u8_f32`：输入已经执行 display filter、look 或 highlight chroma retreat 的输出空间 float32，融合后续 gamut-fit、OETF 和 quantize；这些功能仍保留原有 Python 色彩操作，但不再退回 NumPy 的 16 轮拟合。
+- `fit_output_gamut_f32`：只暴露同一 native gamut 实现的 float32 结果，用于与 NumPy 参考逐点验证，不在产品路径额外增加一次计算。
+
+`NativeOutputPlan` 在 Python 侧按输出色域和 gamut alpha 缓存，并预合并三组常量矩阵：Rec.2020→目标 RGB、目标 RGB→Oklab LMS、Oklab LMS→目标 RGB。kernel 每个像素只在寄存器中保存 RGB、L/a/b、L0、lo、hi；越界像素严格执行 16 次二分，容差固定为现有 `1e-4`，in-gamut 像素保持原值后只做最终 `[0,1]` 夹取。
+
+TPDF dither 的随机序列仍由 `np.random.default_rng(0)` 按当前顺序生成两组 float32 值并传入 native。第一版不替换 RNG，确保流式 chunk、预览和导出继续消费完全相同的噪声；native 只融合 `noise_a-noise_b`、floor、clip 和 uint8 转换。这样先消除颜色中间数组和 16 轮内存往返，同时把随机算法变更隔离到未来独立决策。
+
+native 输出 kernel 在一个 quantize group 上独占自身的像素并行；Python 外层继续按顺序提交 tone chunk，最终帧顺序和 RNG 消费顺序不变。先 profile 线程创建成本，只有它成为可测瓶颈后才引入常驻 pool，避免在同一变更里同时改变数值实现和调度生命周期。
+
+#### 回退与失效
+
+- `DNGSCAN_FAST=0` 永远走原 NumPy 参考；`auto` 在扩展缺失或 native 调用失败时用已经生成的同一组噪声回退；`DNGSCAN_FAST=1` 继续把 native 失败视为错误。
+- native ABI 升级，旧扩展不会被静默加载。
+- sRGB/P3、gamut alpha、look/display filter/highlight retreat、所有 tone core 都进入已有 plan/frame cache key；输出 plan 只缓存不可变小矩阵，不缓存像素结果。
+- `render_output_linear`、HDR/gain-map 和分析路径保持原 float reference；本次只替换 SDR uint8 的最终交付路径。
+
+### 一致性验证方案
+
+按以下顺序设门禁，前一层失败不得进入性能验收：
+
+1. **算法常量门禁**：native 迭代数只能是编译期 16；测试检查 ABI、sRGB/P3 plan、`alpha` 与 `1e-4` tolerance。预览和导出不得传入不同迭代数。
+2. **float gamut parity**：对 sRGB/P3 和实际计划范围内的多个 alpha，覆盖 RGB 基色、灰阶、`-1e-4/0/1/1.0001` 边界、负值/高值、随机广色域值及 NaN/Inf。由于预合并矩阵会去掉 NumPy 两段矩阵间的一次 float32 舍入，要求最大绝对误差≤`1e-4`、p99.99≤`5e-5`（实测最大 `8.6e-5`）；in-gamut 输入在 float32 下不被改写，输出全部有限且落在 `[0,1]`。
+3. **编码/量化 parity**：向参考与 native 注入完全相同的两组 float32 噪声；相同线程数和不同线程数必须逐字节一致。对参考完整链路，最终 uint8 要求 p99 差值为 0、最大差值≤1 code value、变化通道占比≤1%。
+4. **端到端统一性**：AgX/neutral/lum/gated，sRGB/P3，EV、look、scene transform、highlight retreat 各取代表组合，对照 `DNGSCAN_FAST=0/1`；跑 stream ordering、golden、SDR freeze 和现有 native parity。预览与导出继续调用同一 finalizer，不增加预览专用近似。
+5. **完整回归**：`DNGSCAN_FAST=0` 与 `DNGSCAN_FAST=1` 全量测试都通过；构建 wheel 后再从安装产物验证 ABI 和 self-test，避免只测试源码树中的旧 `.so`。
+6. **性能门禁**：真实 1920px NEF 与 A7M5 各记录 output matrix、gamut-fit、transfer、dither、pixel pipeline 和端到端 p50/p95。融合阶段 p50 至少降低 25%，连续热帧 p50 不得回退超过 5%；若不满足，保留参考实现并不启用 native dispatch。
+
+### 输出融合 profile 结果
+
+2026-08-02 在 Apple Silicon 上用 `tools/benchmark_realtime_preview.py --output-backend numpy/native --iterations 40` 测量。两组都保持 `DNGSCAN_FAST=1`，因此 AgX native core 完全相同，只切换本次输出 finalizer；输入命中相同的磁盘冷代理，帧缓存通过逐轮改变 EV 避免命中。
+
+| RAW | 尺寸 | NumPy 连续 p50 / p95 | Native 连续 p50 / p95 | NumPy→Native 像素管线 p50 | 首帧 |
+| --- | --- | --- | --- | --- | --- |
+| Nikon NEF | 1920×1275 | 153.91 / 159.23 ms | 73.87 / 75.63 ms | 143.82→62.91 ms（-56.3%） | 169.78→89.66 ms |
+| SONY ILCE-7M5 compressed ARW | 1920×1281 | 120.08 / 147.75 ms | 74.23 / 80.97 ms | 109.98→64.76 ms（-41.1%） | 137.14→92.62 ms |
+
+融合 finalizer 在每个 quantize group 上的 p50 / p95：NEF 为 5.49 / 9.26 ms，A7M5 为 4.39 / 7.47 ms。连续热帧 p50 分别降低 52.0% 和 38.2%，通过 ≥25% 性能门禁；测试仍固定 16 轮拟合并注入原 NumPy TPDF 噪声序列。
+
 ### 验收
 
 - 3:2 横竖图分别得到 1920×1280 / 1280×1920，非 3:2 图保持自身比例；
