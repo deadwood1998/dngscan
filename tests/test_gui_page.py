@@ -45,6 +45,23 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn("object-fit:contain", PAGE)
         self.assertNotIn("max-height:calc(100vh", PAGE)
 
+    def test_file_picker_sits_below_title_and_uses_full_width(self) -> None:
+        top_bar = PAGE[
+            PAGE.index('<div class="topBar">'):
+            PAGE.index("</div>", PAGE.index('<div class="topBar">'))
+        ]
+        self.assertLess(top_bar.index("<h1>"), top_bar.index('id="filePicker"'))
+
+        top_bar_start = PAGE.index(".topBar{")
+        top_bar_rule = PAGE[top_bar_start:PAGE.index("}", top_bar_start)]
+        self.assertIn("flex-direction:column", top_bar_rule)
+        self.assertIn("align-items:stretch", top_bar_rule)
+
+        start = PAGE.index(".topBar input[type=file]{")
+        rule = PAGE[start:PAGE.index("}", start)]
+        self.assertIn("width:100%", rule)
+        self.assertNotIn("max-width", rule)
+
     def test_measured_facts_sit_next_to_their_controls(self) -> None:
         # Data-to-function adjacency: each measured fact renders inside the
         # block whose control consumes it, not in a separate overview card the
@@ -75,3 +92,22 @@ class PageInformationDisplayTests(unittest.TestCase):
                 self.assertLess(len(gap), 700, f"{fact_id} not adjacent to {anchor}")
         self.assertIn("SUPPORT_ROUTE", PAGE)
         self.assertNotIn("decodeSupport", PAGE)
+
+    def test_output_controls_live_in_a_modal_not_the_left_panel(self) -> None:
+        control_panel = PAGE[
+            PAGE.index('<div class="controlPanel">'):
+            PAGE.index('<div class="card previewCard">')
+        ]
+        dialog = PAGE[
+            PAGE.index('<dialog class="outputDialog"'):
+            PAGE.index("</dialog>")
+        ]
+        self.assertNotIn('id="format"', control_panel)
+        self.assertNotIn('id="outdir"', control_panel)
+        self.assertIn('id="outputDialogTitle">输出参数', dialog)
+        for control_id in ("format", "deliveryProfile", "gamut", "quality", "chroma", "outdir", "png"):
+            with self.subTest(control=control_id):
+                self.assertIn(f'id="{control_id}"', dialog)
+        self.assertIn('id="go">导出</button>', PAGE)
+        self.assertIn('dialog.showModal()', PAGE)
+        self.assertIn('id="exportConfirm"', dialog)

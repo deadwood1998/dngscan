@@ -13,9 +13,9 @@ PAGE = """<!doctype html>
 body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;background:#15171c;color:#e7e9ee}
 .wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
 h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
-.topBar{display:flex;gap:16px;align-items:center;margin:0 0 12px}
-.topBar input[type=file]{flex:1;width:auto;max-width:460px}
-.topBar .ctlFact{flex:1;min-width:260px}
+.topBar{display:flex;flex-direction:column;gap:8px;align-items:stretch;margin:0 0 12px}
+.topBar input[type=file]{width:100%;min-width:260px}
+.topBar .ctlFact{min-width:260px}
 .card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
 .secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}
 .workspace{display:grid;grid-template-columns:minmax(360px,460px) minmax(0,1fr);gap:12px;align-items:start}
@@ -80,9 +80,14 @@ button.preview:disabled{opacity:.5;cursor:default}
 .chk{display:flex;align-items:center;gap:8px}.chk input{width:auto}
 .outdirRow{display:flex;gap:8px;align-items:stretch}
 .outdirRow input{flex:1}
+dialog.outputDialog{width:min(680px,calc(100vw - 32px));max-height:90vh;padding:0;border:1px solid #353b48;border-radius:12px;background:#1d2028;color:#e7e9ee;box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:hidden}
+dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3px)}
+.dialogPanel{max-height:90vh;padding:18px;overflow:auto}
+.dialogHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.dialogTitle{margin:0;font-size:17px;font-weight:600}
+.dialogActions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid #2b2f3a}
 @media (max-width:980px){
   .wrap{padding:14px}
-  .topBar{flex-wrap:wrap}
   .workspace{display:block}
   .previewCard{position:static;height:auto;min-height:60vh}
   .modes button .d{display:none}
@@ -280,66 +285,6 @@ FILM_CURVE_OPTIONS
 </div>
 
 <div class="card">
-  <div class="secTitle">输出</div>
-  <div class="row">
-    <div style="flex:1;min-width:170px">
-      <label>格式</label>
-      <select id="format">
-        <option value="sdr">SDR JPEG</option>
-        <option value="ultrahdr">HDR gain-map · JPEG</option>
-        <option value="ultrahdr-heic">HDR gain-map · HEIC</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:160px">
-      <label>交付档</label>
-      <select id="deliveryProfile" title="只影响最后编码，不重算 AgX/HDR。archive=q100/4:4:4 验证级保真（全尺寸约 60MB）；share=q90/4:2:0 流媒体发布档（约 11–27MB，微信原图 25MB 限制内，HDR gain map 完整保留）。">
-        <option value="archive">Archive · 保真</option>
-        <option value="share">Share · 流媒体</option>
-      </select>
-    </div>
-    <div style="flex:1;min-width:140px">
-      <label>色域</label>
-      <select id="gamut">
-        <option value="srgb">sRGB · 兼容优先</option>
-        <option value="p3">Display P3 · 宽色域</option>
-      </select>
-    </div>
-    <div style="flex:0;min-width:110px">
-      <label>质量</label>
-      <input type="number" id="quality" min="1" max="100" value="100">
-    </div>
-    <div style="flex:1;min-width:140px">
-      <label>色度采样</label>
-      <select id="chroma" title="4:4:4 保留完整色度，4:2:0 文件更小。Ultrahdr 主图采样主要由 quality 决定。">
-        <option value="444">4:4:4 · 完整</option>
-        <option value="422">4:2:2</option>
-        <option value="420">4:2:0 · 最小</option>
-      </select>
-    </div>
-  </div>
-  <div class="row" id="hdrBlock" style="margin-top:12px">
-    <div style="min-width:220px">
-      <div class="labelRow"><label>HDR 余量上限</label><span class="val" id="hdrHeadroomVal">+3.00 EV</span></div>
-      <input type="range" id="hdrHeadroom" min="1" max="MAX_HDR_HEADROOM_ATTR" step="0.02" value="3">
-      <div class="ctlFact" id="hdrSceneFact"></div>
-      <div class="muted" id="hdrHint">实际余量由场景决定；只恢复漫反射白以上的真实亮度档数。</div>
-    </div>
-  </div>
-  <div style="margin-top:12px">
-    <label>文件夹</label>
-    <div class="outdirRow">
-      <input type="text" id="outdir" placeholder="默认保存到照片文件夹">
-      <button class="ghost" id="outdirBtn">选择</button>
-    </div>
-    <div id="outdirBrowser" class="browserList"></div>
-  </div>
-  <div class="chk" style="margin-top:12px">
-    <input type="checkbox" id="png"><label for="png" style="margin:0">附带分析图</label>
-  </div>
-  <div class="ctlFact" id="priorsFact"></div>
-</div>
-
-<div class="card">
   <div class="secTitle">前馈校正 · 实验</div>
   <div class="row">
     <div style="flex:2;min-width:210px">
@@ -376,7 +321,7 @@ GRADE_OPTIONS
 <div class="card previewCard">
   <div class="actions">
     <button class="preview" id="previewBtn">更新预览</button>
-    <button class="go" id="go">导出 JPEG</button>
+    <button class="go" id="go">导出</button>
     <button class="ghost" id="revealBtn" style="display:none">在 Finder 显示</button>
   </div>
   <div id="status"></div>
@@ -387,6 +332,74 @@ GRADE_OPTIONS
   <div id="previewWrap"><img id="preview"><div id="spinner"></div></div>
 </div>
 </div>
+
+<dialog class="outputDialog" id="outputDialog" aria-labelledby="outputDialogTitle">
+  <div class="dialogPanel">
+    <div class="dialogHeader">
+      <h2 class="dialogTitle" id="outputDialogTitle">输出参数</h2>
+    </div>
+    <div class="row">
+      <div style="flex:1;min-width:170px">
+        <label>格式</label>
+        <select id="format">
+          <option value="sdr">SDR JPEG</option>
+          <option value="ultrahdr">HDR gain-map · JPEG</option>
+          <option value="ultrahdr-heic">HDR gain-map · HEIC</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label>交付档</label>
+        <select id="deliveryProfile" title="只影响最后编码，不重算 AgX/HDR。archive=q100/4:4:4 验证级保真（全尺寸约 60MB）；share=q90/4:2:0 流媒体发布档（约 11–27MB，微信原图 25MB 限制内，HDR gain map 完整保留）。">
+          <option value="archive">Archive · 保真</option>
+          <option value="share">Share · 流媒体</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label>色域</label>
+        <select id="gamut">
+          <option value="srgb">sRGB · 兼容优先</option>
+          <option value="p3">Display P3 · 宽色域</option>
+        </select>
+      </div>
+      <div style="flex:0;min-width:110px">
+        <label>质量</label>
+        <input type="number" id="quality" min="1" max="100" value="100">
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label>色度采样</label>
+        <select id="chroma" title="4:4:4 保留完整色度，4:2:0 文件更小。Ultrahdr 主图采样主要由 quality 决定。">
+          <option value="444">4:4:4 · 完整</option>
+          <option value="422">4:2:2</option>
+          <option value="420">4:2:0 · 最小</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" id="hdrBlock" style="margin-top:12px">
+      <div style="min-width:220px">
+        <div class="labelRow"><label>HDR 余量上限</label><span class="val" id="hdrHeadroomVal">+3.00 EV</span></div>
+        <input type="range" id="hdrHeadroom" min="1" max="MAX_HDR_HEADROOM_ATTR" step="0.02" value="3">
+        <div class="ctlFact" id="hdrSceneFact"></div>
+        <div class="muted" id="hdrHint">实际余量由场景决定；只恢复漫反射白以上的真实亮度档数。</div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>文件夹</label>
+      <div class="outdirRow">
+        <input type="text" id="outdir" placeholder="默认保存到照片文件夹">
+        <button class="ghost" id="outdirBtn" type="button">选择</button>
+      </div>
+      <div id="outdirBrowser" class="browserList"></div>
+    </div>
+    <div class="chk" style="margin-top:12px">
+      <input type="checkbox" id="png"><label for="png" style="margin:0">附带分析图</label>
+    </div>
+    <div class="ctlFact" id="priorsFact"></div>
+    <div class="dialogActions">
+      <button class="ghost" id="outputCancel" type="button">取消</button>
+      <button class="go" id="exportConfirm" type="button">导出</button>
+    </div>
+  </div>
+</dialog>
 
 <script>
 const $=s=>document.querySelector(s);
@@ -939,10 +952,23 @@ $("#evReferenceBtn").onclick=async()=>{
   $("#previewBtn").disabled=false;$("#evReferenceBtn").disabled=false;
 };
 
-$("#go").onclick=async()=>{
-  const body=payload();if(!body)return;
+function openOutputDialog(){
+  const dialog=$("#outputDialog");
+  if(typeof dialog.showModal==="function")dialog.showModal();
+  else dialog.setAttribute("open","");
+}
+function closeOutputDialog(){
+  const dialog=$("#outputDialog");
+  if(typeof dialog.close==="function")dialog.close();
+  else dialog.removeAttribute("open");
+}
+$("#go").onclick=openOutputDialog;
+$("#outputCancel").onclick=closeOutputDialog;
+$("#exportConfirm").onclick=async()=>{
+  const body=payload();if(!body){closeOutputDialog();return;}
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
-  $("#go").disabled=true;$("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在全尺寸导出…","");
+  closeOutputDialog();
+  $("#go").disabled=true;$("#exportConfirm").disabled=true;$("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在全尺寸导出…","");
   try{
     const j=await postJob("/export",body);
     if(!j.ok){endBusy();setStatus("错误："+j.error,"err");}
@@ -950,7 +976,7 @@ $("#go").onclick=async()=>{
       renderDeliveryReport(j);
       lastSavedPath=j.saved[0]||"";$("#revealBtn").style.display=lastSavedPath?"inline-block":"none";setPreviewImage(j.preview);}
   }catch(e){endBusy();setStatus("请求失败："+e,"err");}
-  $("#go").disabled=false;$("#previewBtn").disabled=false;
+  $("#go").disabled=false;$("#exportConfirm").disabled=false;$("#previewBtn").disabled=false;
 };
 $("#revealBtn").onclick=async()=>{
   if(!lastSavedPath)return;
