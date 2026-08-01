@@ -7,9 +7,10 @@ import json
 import os
 import tempfile
 import threading
-from dataclasses import asdict, dataclass
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Hashable
 
 import dngscan as dg
 from dngscan.guidance import raw_guidance_for_shape
@@ -19,9 +20,11 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 5
+PREVIEW_CACHE_VERSION = 7
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
+MAX_PLAN_CACHE_ITEMS = 32
+MAX_FRAME_CACHE_ITEMS = 24
 
 
 @dataclass
@@ -30,6 +33,51 @@ class PreviewEntry:
 
     bundle: RawBundle
     analysis: Analysis
+    _plan_cache: OrderedDict[Hashable, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _frame_cache: OrderedDict[Hashable, dict[str, Any]] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _runtime_cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+
+    def get_or_build_plan(self, key: Hashable, builder: Callable[[], Any]) -> Any:
+        """Return an immutable base plan, compiling it at most once per key."""
+        with self._runtime_cache_lock:
+            cached = self._plan_cache.get(key)
+            if cached is not None:
+                self._plan_cache.move_to_end(key)
+                return cached
+            plan = builder()
+            self._plan_cache[key] = plan
+            while len(self._plan_cache) > MAX_PLAN_CACHE_ITEMS:
+                self._plan_cache.popitem(last=False)
+            return plan
+
+    def get_frame(self, key: Hashable) -> dict[str, Any] | None:
+        """Return a shallow payload copy so request metadata can be added safely."""
+        with self._runtime_cache_lock:
+            payload = self._frame_cache.get(key)
+            if payload is None:
+                return None
+            self._frame_cache.move_to_end(key)
+            result = dict(payload)
+            if isinstance(payload.get("metrics"), dict):
+                result["metrics"] = dict(payload["metrics"])
+            return result
+
+    def put_frame(self, key: Hashable, payload: dict[str, Any]) -> None:
+        """Keep a bounded exact-frame LRU; predicted combinations never explode."""
+        stored = dict(payload)
+        if isinstance(payload.get("metrics"), dict):
+            stored["metrics"] = dict(payload["metrics"])
+        with self._runtime_cache_lock:
+            self._frame_cache[key] = stored
+            self._frame_cache.move_to_end(key)
+            while len(self._frame_cache) > MAX_FRAME_CACHE_ITEMS:
+                self._frame_cache.popitem(last=False)
 
 
 INT_KEY_ANALYSIS_FIELDS = {
@@ -75,8 +123,8 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v5"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v5"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v7"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v7"
 
 
 def _evidence_cache_identity(path: Path) -> tuple[str, int, int, str]:
@@ -107,7 +155,13 @@ def _cache_identity(
         str(decoder),
         str(coreimage_version),
     )
-    encoded = "\0".join((str(PREVIEW_CACHE_VERSION), *(str(value) for value in key))).encode("utf-8")
+    encoded = "\0".join(
+        (
+            str(PREVIEW_CACHE_VERSION),
+            str(PROXY_LONG_EDGE),
+            *(str(value) for value in key),
+        )
+    ).encode("utf-8")
     return key, hashlib.sha256(encoded).hexdigest()
 
 

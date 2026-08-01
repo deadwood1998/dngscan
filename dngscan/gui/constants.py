@@ -8,4 +8,7 @@ RAW_EXTS = {
     ".raw", ".pef", ".srw", ".x3f", ".iiq", ".3fr", ".mrw", ".dcr", ".kdc",
 }
 
-PROXY_LONG_EDGE = 1280
+# Realtime preview is a product invariant, not a quality knob.  Keeping one
+# geometry prevents sharpness and pacing changes while the user drags controls.
+REALTIME_PREVIEW_LONG_EDGE = 960
+PROXY_LONG_EDGE = REALTIME_PREVIEW_LONG_EDGE

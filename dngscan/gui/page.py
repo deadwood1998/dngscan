@@ -44,8 +44,9 @@ input[type=range]{display:block;width:100%;margin:6px 0 2px;accent-color:#5b8cff
 button.go{background:#5b8cff;border:0;border-radius:9px;color:#fff;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer}
 button.go:disabled{opacity:.5;cursor:default}
 button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#cdd2dd;padding:8px 12px;cursor:pointer;font:inherit;white-space:nowrap}
-button.preview{background:#2c3444;border:1px solid #46536b;border-radius:9px;color:#eef2ff;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer}
-button.preview:disabled{opacity:.5;cursor:default}
+.previewLive{margin-left:auto;border:1px solid #33415c;border-radius:999px;padding:4px 9px;color:#91b4ff;background:#151b27;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.previewLive.busy{color:#ffc46b;border-color:#614d2e}
+.previewLive.err{color:#ff8a8a;border-color:#663939}
 .muted{color:#828a99;font-size:12px}
 .coreFacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .coreFacts span{background:#151922;border:1px solid #303746;border-radius:6px;padding:5px 8px;color:#9aa1b0;font-size:12px}
@@ -320,9 +321,9 @@ GRADE_OPTIONS
 
 <div class="card previewCard">
   <div class="actions">
-    <button class="preview" id="previewBtn">更新预览</button>
     <button class="go" id="go">导出</button>
     <button class="ghost" id="revealBtn" style="display:none">在 Finder 显示</button>
+    <span class="previewLive" id="previewLiveBadge">实时 · PREVIEW_LONG_EDGEpx</span>
   </div>
   <div id="status"></div>
   <details id="deliveryReport" style="display:none">
@@ -648,9 +649,11 @@ function restoreSettings(){
   setEvLabel();setHdrLabel();setGradeStrengthLabel();setSceneTransformStrengthLabel();setPunchLabel();setAdjustmentLabels();updateGradeUi();updateSceneTransformUi();updateToneCoreUi();updateFormatUi();updateDecoderUi();
   if(migrated)saveSettings();
 }
-["quality","gamut","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
+["quality","outdir","png"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
+$("#gamut").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#highlight").addEventListener("change",()=>{saveSettings();preparePreview();});
-["demosaic","chroma","grade"].forEach(id=>$("#"+id).addEventListener("change",()=>{updateGradeUi();saveSettings();}));
+["demosaic","chroma"].forEach(id=>$("#"+id).addEventListener("change",saveSettings));
+$("#grade").addEventListener("change",()=>{updateGradeUi();saveSettings();scheduleLivePreview();});
 $("#deliveryProfile").addEventListener("change",()=>{applyDeliveryDefaults();saveSettings();});
 $("#decoder").addEventListener("change",()=>{updateDecoderUi();saveSettings();preparePreview();});
 $("#coreimageVersion").addEventListener("change",()=>{RAW9_APPROVALS.delete($("#input").value.trim());saveSettings();preparePreview();});
@@ -671,30 +674,33 @@ $("#film").addEventListener("change",()=>{
   }
   updateDecoderUi();updateSceneTransformUi();saveSettings();preparePreview();
 });
-$("#lensFilter").addEventListener("change",()=>{saveSettings();});
-$("#filmCurve").addEventListener("change",()=>{saveSettings();});
+$("#lensFilter").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
+$("#filmCurve").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
 $("#toneCore").addEventListener("change",()=>{updateToneCoreUi();saveSettings();preparePreview();});
-$("#lumNorm").addEventListener("change",saveSettings);
-$("#agxPrimaries").addEventListener("change",saveSettings);
-$("#sceneTransform").addEventListener("change",()=>{updateSceneTransformUi();saveSettings();});
-$("#format").addEventListener("change",()=>{updateFormatUi();saveSettings();});
-$("#ev").oninput=()=>{setEvLabel();saveSettings();};
+$("#lumNorm").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
+$("#agxPrimaries").addEventListener("change",()=>{saveSettings();scheduleLivePreview();});
+$("#sceneTransform").addEventListener("change",()=>{updateSceneTransformUi();saveSettings();scheduleLivePreview();});
+$("#format").addEventListener("change",()=>{updateFormatUi();saveSettings();scheduleLivePreview();});
+$("#ev").oninput=()=>{setEvLabel();saveSettings();scheduleLivePreview();};
 $("#hdrHeadroom").oninput=()=>{setHdrLabel();saveSettings();};
-$("#gradeStrength").oninput=()=>{setGradeStrengthLabel();saveSettings();};
-$("#punch").oninput=()=>{setPunchLabel();saveSettings();};
+$("#gradeStrength").oninput=()=>{setGradeStrengthLabel();saveSettings();scheduleLivePreview();};
+$("#punch").oninput=()=>{setPunchLabel();saveSettings();scheduleLivePreview();};
 [
   "midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"
-].forEach(id=>$("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();});
-$("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();};
+].forEach(id=>$("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();scheduleLivePreview();});
+$("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();scheduleLivePreview();};
 restoreSettings();
 checkHdrBackend();
-document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();});
+document.querySelectorAll("button[data-ev]").forEach(b=>b.onclick=()=>{$("#ev").value=b.dataset.ev;setEvLabel();saveSettings();scheduleLivePreview();});
 let lastSavedPath="";
 
 let curDir=INIT_DIR;
 $("#filePicker").addEventListener("change",async()=>{
   const picker=$("#filePicker");const file=picker.files&&picker.files[0];
   if(!file)return;
+  // A newly selected source invalidates every in-flight response immediately,
+  // including one that might finish while the upload is still in progress.
+  beginPreviewSession();
   picker.disabled=true;$("#input").value="";lastSavedPath="";$("#revealBtn").style.display="none";
   setStatus("正在读取 "+file.name+"…","");
   try{
@@ -704,10 +710,11 @@ $("#filePicker").addEventListener("change",async()=>{
     const result=await response.json();
     if(!result.ok){picker.value="";setStatus("文件选择失败："+result.error,"err");return;}
     $("#input").value=result.path;
-    RAW9_PROBES.clear();RAW9_APPROVALS.clear();
+    RAW9_PROBES.clear();RAW9_PROBE_REQUESTS.clear();RAW9_APPROVALS.clear();
     if(!$("#outdir").value.trim())$("#outdir").value=INIT_DIR;
     saveSettings();
     setStatus("已选择："+file.name,"ok");
+    fetchDecodeSupport(result.path);
     await preparePreview();
   }catch(error){
     picker.value="";
@@ -756,20 +763,32 @@ function payload(){
   };
 }
 
-async function postJob(path, body){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+async function postJob(path, body, signal){
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal});
   return await r.json();
 }
 const RAW9_PROBES=new Map();
+const RAW9_PROBE_REQUESTS=new Map();
 const RAW9_APPROVALS=new Map();
+function raw9Probe(input){
+  const cached=RAW9_PROBES.get(input);
+  if(cached)return Promise.resolve(cached);
+  let pending=RAW9_PROBE_REQUESTS.get(input);
+  if(!pending){
+    pending=postJob("/raw9-support",{input}).then(j=>{
+      if(j.ok)RAW9_PROBES.set(input,j);
+      return j;
+    }).finally(()=>{
+      if(RAW9_PROBE_REQUESTS.get(input)===pending)RAW9_PROBE_REQUESTS.delete(input);
+    });
+    RAW9_PROBE_REQUESTS.set(input,pending);
+  }
+  return pending;
+}
 async function ensureRaw9Support(body){
   if(body.decoder!=="coreimage")return true;
   const key=body.input;
-  let j=RAW9_PROBES.get(key);
-  if(!j){
-    j=await postJob("/raw9-support",{input:key});
-    if(j.ok)RAW9_PROBES.set(key,j);
-  }
+  const j=await raw9Probe(key);
   if(!j.ok){setStatus("RAW 9 探测失败："+(j.error||"未知错误"),"err");return false;}
   const switchToLibRaw=(message)=>{
     window.alert(message+"\\n\\n将改用 LibRaw。");
@@ -859,23 +878,90 @@ function renderDecodeSupport(lines){
   }
 }
 async function fetchDecodeSupport(input){
-  // The per-file support probe; fire-and-forget, never blocks the flow.
+  // File capability is stable for the selected source. Render it once when the
+  // file changes; preview reconfiguration must not replay this success notice.
   try{
-    const key=input;
-    let j=RAW9_PROBES.get(key);
-    if(!j){j=await postJob("/raw9-support",{input:key});if(j.ok)RAW9_PROBES.set(key,j);}
-    if(j&&j.support_lines)renderDecodeSupport(j.support_lines);
+    const j=await raw9Probe(input);
+    if($("#input").value.trim()===input&&j&&j.support_lines)renderDecodeSupport(j.support_lines);
   }catch(_){/* probe display is best-effort */}
+}
+const PREVIEW_CLIENT_ID=(globalThis.crypto&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+"-"+Math.random());
+let PREVIEW_SESSION_SERIAL=0;
+let PREVIEW_SESSION_ID=PREVIEW_CLIENT_ID+":0";
+let PREVIEW_GENERATION=0;
+let PREVIEW_READY=false;
+let previewRaf=0;
+let previewAbort=null;
+let prepareAbort=null;
+function setPreviewBadge(text,state){
+  const badge=$("#previewLiveBadge");
+  badge.textContent=text;
+  badge.className="previewLive"+(state?" "+state:"");
+}
+function beginPreviewSession(){
+  PREVIEW_SESSION_SERIAL+=1;
+  PREVIEW_SESSION_ID=PREVIEW_CLIENT_ID+":"+PREVIEW_SESSION_SERIAL;
+  PREVIEW_GENERATION=0;PREVIEW_READY=false;
+  if(previewRaf){cancelAnimationFrame(previewRaf);previewRaf=0;}
+  if(previewAbort){previewAbort.abort();previewAbort=null;}
+  if(prepareAbort){prepareAbort.abort();prepareAbort=null;}
+  return PREVIEW_SESSION_ID;
+}
+function scheduleLivePreview(){
+  if(!PREVIEW_READY||!$("#input").value.trim())return;
+  if(previewRaf)return;
+  previewRaf=requestAnimationFrame(()=>{previewRaf=0;requestPreview();});
+}
+async function requestPreview({includeMetrics=false,busy=false,evAuto=false,prefix="预览"}={}){
+  if(!PREVIEW_READY)return false;
+  const body=payload();if(!body)return false;
+  const generation=++PREVIEW_GENERATION;
+  body.previewSession=PREVIEW_SESSION_ID;
+  body.generation=generation;
+  body.includeMetrics=!!includeMetrics;
+  if(evAuto)body.evAuto=true;
+  if(previewAbort)previewAbort.abort();
+  const controller=new AbortController();previewAbort=controller;
+  if(busy)beginBusy();
+  setPreviewBadge(evAuto?"亮度参考计算中 · PREVIEW_LONG_EDGEpx":"处理中 · PREVIEW_LONG_EDGEpx","busy");
+  try{
+    const j=await postJob("/preview",body,controller.signal);
+    if(controller.signal.aborted||generation!==PREVIEW_GENERATION||j.superseded)return false;
+    if(!handleJobResult(j,prefix)){
+      setStatus("错误："+(j.error||"预览失败"),"err");setPreviewBadge("实时预览错误 · PREVIEW_LONG_EDGEpx","err");return false;
+    }
+    setPreviewBadge("实时 · PREVIEW_LONG_EDGEpx","");
+    return true;
+  }catch(e){
+    if(e&&e.name==="AbortError")return false;
+    if(generation===PREVIEW_GENERATION){setStatus("请求失败："+e,"err");setPreviewBadge("实时预览错误 · PREVIEW_LONG_EDGEpx","err");}
+    return false;
+  }finally{
+    if(generation===PREVIEW_GENERATION){
+      if(previewAbort===controller)previewAbort=null;
+      if(busy)endBusy();
+    }
+  }
 }
 async function preparePreview(){
   const body=payload();if(!body)return;
-  fetchDecodeSupport(body.input);
-  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
+  const session=beginPreviewSession();
+  body.previewSession=session;
+  setPreviewBadge("准备实时预览 · PREVIEW_LONG_EDGEpx","busy");
+  try{if(!await ensureRaw9Support(body)){setPreviewBadge("实时预览未就绪 · PREVIEW_LONG_EDGEpx","err");return;}}catch(e){setStatus("RAW 9 探测失败："+e,"err");setPreviewBadge("实时预览错误 · PREVIEW_LONG_EDGEpx","err");return;}
+  const controller=new AbortController();prepareAbort=controller;
   try{
-    const j=await postJob("/prepare",body);
-    if(j&&j.ok){renderDetectedParams(j.detected);}
-    else if(j&&j.error){setStatus(j.error,"err");renderDetectedParams(null);}
-  }catch(_){/* Preview remains available on demand. */}
+    const j=await postJob("/prepare",body,controller.signal);
+    if(controller.signal.aborted||session!==PREVIEW_SESSION_ID)return;
+    if(j&&j.ok){
+      renderDetectedParams(j.detected);PREVIEW_READY=true;setPreviewBadge("实时 · PREVIEW_LONG_EDGEpx","");
+      await requestPreview();
+    }else if(j&&j.error){setStatus(j.error,"err");renderDetectedParams(null);setPreviewBadge("实时预览错误 · PREVIEW_LONG_EDGEpx","err");}
+  }catch(e){
+    if(!(e&&e.name==="AbortError")&&session===PREVIEW_SESSION_ID){setStatus("预览准备失败："+e,"err");setPreviewBadge("实时预览错误 · PREVIEW_LONG_EDGEpx","err");}
+  }finally{
+    if(prepareAbort===controller)prepareAbort=null;
+  }
 }
 function beginBusy(){const w=$("#previewWrap");w.classList.add("loading");}
 function endBusy(){const w=$("#previewWrap");w.classList.remove("loading");}
@@ -926,30 +1012,13 @@ function handleJobResult(j, prefix){
   return true;
 }
 
-$("#previewBtn").onclick=async()=>{
-  const body=payload();if(!body)return;
-  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
-  // Keep the detection card in step even when the path was pasted without a change
-  // event; the proxy session is already warm so this costs one cached lookup.
-  if(!DETECTED_READY)preparePreview();
-  $("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在生成预览…","");
-  try{
-    const j=await postJob("/preview",body);
-    if(!handleJobResult(j,"预览")){endBusy();setStatus("错误："+j.error,"err");}
-  }catch(e){endBusy();setStatus("请求失败："+e,"err");}
-  $("#previewBtn").disabled=false;
-};
-
 $("#evReferenceBtn").onclick=async()=>{
-  const body=payload();if(!body)return;
-  try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
-  body.evAuto=true;
-  $("#previewBtn").disabled=true;$("#evReferenceBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在计算亮度参考…","");
-  try{
-    const j=await postJob("/preview",body);
-    if(!handleJobResult(j,"全图亮度参考预览")){endBusy();setStatus("错误："+j.error,"err");}
-  }catch(e){endBusy();setStatus("请求失败："+e,"err");}
-  $("#previewBtn").disabled=false;$("#evReferenceBtn").disabled=false;
+  if(!payload())return;
+  if(!PREVIEW_READY)await preparePreview();
+  if(!PREVIEW_READY)return;
+  $("#evReferenceBtn").disabled=true;$("#revealBtn").style.display="none";setStatus("正在计算亮度参考…","");
+  try{await requestPreview({includeMetrics:true,busy:true,evAuto:true,prefix:"全图亮度参考预览"});}
+  finally{$("#evReferenceBtn").disabled=false;}
 };
 
 function openOutputDialog(){
@@ -968,7 +1037,7 @@ $("#exportConfirm").onclick=async()=>{
   const body=payload();if(!body){closeOutputDialog();return;}
   try{if(!await ensureRaw9Support(body))return;}catch(e){setStatus("RAW 9 探测失败："+e,"err");return;}
   closeOutputDialog();
-  $("#go").disabled=true;$("#exportConfirm").disabled=true;$("#previewBtn").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在全尺寸导出…","");
+  $("#go").disabled=true;$("#exportConfirm").disabled=true;$("#revealBtn").style.display="none";beginBusy();setStatus("正在全尺寸导出…","");
   try{
     const j=await postJob("/export",body);
     if(!j.ok){endBusy();setStatus("错误："+j.error,"err");}
@@ -976,7 +1045,7 @@ $("#exportConfirm").onclick=async()=>{
       renderDeliveryReport(j);
       lastSavedPath=j.saved[0]||"";$("#revealBtn").style.display=lastSavedPath?"inline-block":"none";setPreviewImage(j.preview);}
   }catch(e){endBusy();setStatus("请求失败："+e,"err");}
-  $("#go").disabled=false;$("#exportConfirm").disabled=false;$("#previewBtn").disabled=false;
+  $("#go").disabled=false;$("#exportConfirm").disabled=false;
 };
 $("#revealBtn").onclick=async()=>{
   if(!lastSavedPath)return;
@@ -1062,13 +1131,14 @@ def _film_options_html() -> tuple[str, str, str]:
 def render_page(init_dir: str) -> bytes:
     from dngscan import coreimage_decode
     from dngscan.constants import MAX_HDR_HEADROOM_EV
-    from dngscan.gui.constants import RAW_EXTS
+    from dngscan.gui.constants import RAW_EXTS, REALTIME_PREVIEW_LONG_EDGE
 
     film_opts, curve_opts, combos_json = _film_options_html()
 
     html = (
         PAGE.replace("INIT_DIR", json.dumps(init_dir))
         .replace("RAW_ACCEPT", ",".join(sorted(RAW_EXTS)))
+        .replace("PREVIEW_LONG_EDGE", str(REALTIME_PREVIEW_LONG_EDGE))
         .replace("GRADE_OPTIONS", _grade_options_html())
         .replace("SCENE_TRANSFORM_OPTIONS", _scene_transform_options_html())
         .replace("COREIMAGE_AVAILABLE_FLAG", "true" if coreimage_decode.available() else "false")

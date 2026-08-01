@@ -7,12 +7,14 @@ import unittest
 
 from dngscan._deps import np
 from dngscan.gui.preview_cache import (
+    MAX_FRAME_CACHE_ITEMS,
     PreviewEntry,
     _cache_identity,
     _evidence_cache_identity,
     _read_disk_entry,
     _write_disk_entry,
     build_proxy_entry,
+    downsample_mean,
 )
 from dngscan.models import Analysis, RawBundle, RawGuidanceMaps
 
@@ -90,6 +92,36 @@ def _bundle() -> RawBundle:
 
 
 class PreviewCacheTest(unittest.TestCase):
+    def test_realtime_proxy_has_one_fixed_960px_long_edge(self) -> None:
+        image = np.zeros((900, 1200, 3), dtype=np.float32)
+        proxy = downsample_mean(image)
+        self.assertEqual(proxy.shape, (720, 960, 3))
+
+    def test_runtime_plan_and_frame_caches_are_bounded_lrus(self) -> None:
+        entry = PreviewEntry(bundle=_bundle(), analysis=_analysis())
+        builds = 0
+
+        def build() -> object:
+            nonlocal builds
+            builds += 1
+            return object()
+
+        first = entry.get_or_build_plan(("agx", "srgb"), build)
+        self.assertIs(entry.get_or_build_plan(("agx", "srgb"), build), first)
+        self.assertEqual(builds, 1)
+
+        for index in range(MAX_FRAME_CACHE_ITEMS + 2):
+            entry.put_frame((index,), {"preview": str(index), "metrics": {"v": index}})
+        self.assertIsNone(entry.get_frame((0,)))
+        latest = entry.get_frame((MAX_FRAME_CACHE_ITEMS + 1,))
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        latest["metrics"]["v"] = -1
+        self.assertEqual(
+            entry.get_frame((MAX_FRAME_CACHE_ITEMS + 1,))["metrics"]["v"],
+            MAX_FRAME_CACHE_ITEMS + 1,
+        )
+
     def test_evidence_identity_is_scene_decoder_independent(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".dng") as source:
             path = Path(source.name)
