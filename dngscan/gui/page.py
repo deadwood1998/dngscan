@@ -14,7 +14,7 @@ body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;bac
 .wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
 h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
 .topBar{display:flex;gap:16px;align-items:center;margin:0 0 12px}
-.topBar input[type=file]{flex:1;width:auto;max-width:460px}
+.topBar input[type=file]{flex:1;width:auto;min-width:260px}
 .topBar .ctlFact{flex:1;min-width:260px}
 .card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
 .secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}

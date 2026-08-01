@@ -45,6 +45,12 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn("object-fit:contain", PAGE)
         self.assertNotIn("max-height:calc(100vh", PAGE)
 
+    def test_file_picker_uses_available_top_bar_width(self) -> None:
+        start = PAGE.index(".topBar input[type=file]{")
+        rule = PAGE[start:PAGE.index("}", start)]
+        self.assertIn("flex:1", rule)
+        self.assertNotIn("max-width", rule)
+
     def test_measured_facts_sit_next_to_their_controls(self) -> None:
         # Data-to-function adjacency: each measured fact renders inside the
         # block whose control consumes it, not in a separate overview card the
