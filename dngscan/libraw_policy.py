@@ -2,7 +2,7 @@
 """Pinned source policy for the LibRaw evidence provider."""
 
 RAWPY_VERSION = "0.27.0+libraw.e419de08"
-RAWPY_SOURCE_URL = "https://github.com/deadwood1998/rawpy.git"
+RAWPY_SOURCE_URL = "https://github.com/Gen-416/rawpy.git"
 RAWPY_SOURCE_COMMIT = "cc7b4748c7b3e87da319198fdfcdb46e17c9c2a6"
 PINNED_LIBRAW_COMMIT = "e419de08001de28ae6988ecb22df47e52b9c5eaa"
 
