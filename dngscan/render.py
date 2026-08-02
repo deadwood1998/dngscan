@@ -34,6 +34,13 @@ STREAM_RENDER_CHUNK = 500_000
 STREAM_THREAD_MIN_PIXELS = 2_000_000
 
 
+def _stream_render_workers() -> int:
+    """Bounded worker count shared by the full-res streaming pools."""
+    import os
+
+    return min(6, max(2, (os.cpu_count() or 4) - 2))
+
+
 def dither_quantize_u8(encoded: Any, rng: Any) -> Any:
     """Quantize display-domain [0,1] floats to uint8 with 1-LSB TPDF dither."""
     noise_a, noise_b = generate_dither_noise(rng, encoded.shape)
@@ -640,12 +647,16 @@ def render_output_u8(
             (start, end, render_post_tone_chunk(start, end)) for start, end in ranges
         )
     else:
-        # Two workers give useful NumPy parallelism without multiplying the large
-        # temporary working set as aggressively as a CPU-count-sized pool.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dngscan-render") as pool:
+        # Sized like the HDR pair pool: chunked streaming bounds each worker's
+        # temporaries to chunk scale, so the old two-worker cap only left the
+        # NumPy pre-tone stages under-parallelized. Worker count cannot change
+        # output bytes — chunks are independent and the consumer quantizes in
+        # group order with the same serial RNG sequence.
+        workers = min(_stream_render_workers(), len(ranges))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dngscan-render") as pool:
             pending: dict[int, Any] = {}
             submit_idx = 0
-            while submit_idx < min(2, len(ranges)):
+            while submit_idx < min(workers, len(ranges)):
                 start, end = ranges[submit_idx]
                 pending[submit_idx] = pool.submit(render_post_tone_chunk, start, end)
                 submit_idx += 1

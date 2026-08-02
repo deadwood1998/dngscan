@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
 import multiprocessing as mp
 import threading
@@ -961,6 +962,44 @@ def export_suffix_parts(
     return "_".join(parts)
 
 
+def _cached_full_analysis(
+    inp: Path,
+    highlight: str,
+    wb: str,
+    decoder: str,
+    coreimage_version: str,
+    demosaic: str,
+) -> Any | None:
+    """The preview session's persisted full-resolution Analysis, or None.
+
+    The cache digest binds the file signature (path, mtime, size), the LibRaw
+    runtime, the decode parameters and the cache schema version — recomputing
+    it here at export time means a stale or foreign entry can never match. The
+    stored analysis was computed with diagnostics off and the default (full)
+    gamut set, a superset of any single-gamut export request, by the same
+    analyze() on an identically-decoded bundle: reuse is exact by construction.
+    """
+    from . import preview_cache as pc
+
+    if decoder == "coreimage":
+        # Mirror PreviewCache.get's parameter normalization for this decoder.
+        highlight, demosaic = "reconstruct", "auto"
+    try:
+        _, digest = pc._cache_identity(
+            Path(inp), highlight, wb, decoder, coreimage_version, demosaic
+        )
+        cache_path = pc._cache_dir() / f"{digest}.npz"
+        if not cache_path.is_file():
+            return None
+        with dg.np.load(cache_path, allow_pickle=False) as payload:
+            metadata = json.loads(str(payload["metadata"].item()))
+        if int(metadata.get("version", -1)) != pc.PREVIEW_CACHE_VERSION:
+            return None
+        return pc._analysis_from_json(metadata["analysis"])
+    except Exception:
+        return None
+
+
 def run_export(params: dict) -> dict:
     dg.require_dependencies()
     inp, highlight, gamut, output_format, ev, hdr_headroom, quality, want_png, outdir_arg, ev_auto = parse_job_params(
@@ -1036,12 +1075,24 @@ def run_export(params: dict) -> dict:
     )
     bundle.lens_filter = lens_filter
 
-    analysis, y, ev_img = dg.analyze(
-        bundle,
-        4,
-        diagnostics=want_png,
-        gamut_names=None if want_png else (dg.output_gamut_space(gamut),),
-    )
+    # /prepare already computed and persisted this exact full-resolution
+    # Analysis (same decode identity incl. file signature and LibRaw build,
+    # diagnostics off, all gamuts). Reuse is exact by construction; any miss or
+    # doubt falls back to computing it here. The diagnostics dashboard needs
+    # the y/ev images, so want_png always recomputes.
+    analysis = None
+    y = ev_img = None
+    if not want_png:
+        analysis = _cached_full_analysis(
+            inp, highlight, wb, decoder, coreimage_version, demosaic
+        )
+    if analysis is None:
+        analysis, y, ev_img = dg.analyze(
+            bundle,
+            4,
+            diagnostics=want_png,
+            gamut_names=None if want_png else (dg.output_gamut_space(gamut),),
+        )
     auto_ev_result = None
     if ev_auto:
         auto_ev_result = dg.compute_auto_ev(

@@ -274,3 +274,67 @@ class PreviewCacheTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportAnalysisReuseTest(unittest.TestCase):
+    """run_export must reuse the persisted full-res Analysis only on exact identity."""
+
+    def _write_cache_npz(self, cache_dir: Path, digest: str, version: int) -> Path:
+        import json as _json
+        from dataclasses import asdict
+
+        payload_path = cache_dir / f"{digest}.npz"
+        metadata = {"version": version, "analysis": asdict(_analysis())}
+        with open(payload_path, "wb") as handle:
+            np.savez(handle, metadata=np.asarray(_json.dumps(metadata)))
+        return payload_path
+
+    def test_hit_returns_the_stored_analysis_and_stale_entries_miss(self) -> None:
+        import os
+        from dngscan.gui.preview_cache import PREVIEW_CACHE_VERSION
+        from dngscan.gui.service import _cached_full_analysis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            raw = tmp_path / "shot.dng"
+            raw.write_bytes(b"II*\x00 fake raw payload")
+            cache_dir = tmp_path / "cache"
+            cache_dir.mkdir()
+            with patch.dict(os.environ, {"DNGSCAN_PREVIEW_CACHE_DIR": str(cache_dir)}):
+                _, digest = _cache_identity(raw, "clip", "camera", "libraw", "auto", "auto")
+                self._write_cache_npz(cache_dir, digest, PREVIEW_CACHE_VERSION)
+
+                hit = _cached_full_analysis(raw, "clip", "camera", "libraw", "auto", "auto")
+                self.assertIsNotNone(hit)
+                # repr-compare: dataclass == is False whenever any field is NaN.
+                self.assertEqual(repr(hit), repr(_analysis()))
+
+                # Different decode parameters -> different digest -> miss.
+                self.assertIsNone(
+                    _cached_full_analysis(raw, "blend", "camera", "libraw", "auto", "auto")
+                )
+
+                # File modified after the cache was written -> identity changes -> miss.
+                raw.write_bytes(b"II*\x00 fake raw payload, edited")
+                os.utime(raw, ns=(1, 1))
+                self.assertIsNone(
+                    _cached_full_analysis(raw, "clip", "camera", "libraw", "auto", "auto")
+                )
+
+    def test_schema_version_bump_invalidates_the_entry(self) -> None:
+        import os
+        from dngscan.gui.preview_cache import PREVIEW_CACHE_VERSION
+        from dngscan.gui.service import _cached_full_analysis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            raw = tmp_path / "shot.dng"
+            raw.write_bytes(b"II*\x00 fake raw payload")
+            cache_dir = tmp_path / "cache"
+            cache_dir.mkdir()
+            with patch.dict(os.environ, {"DNGSCAN_PREVIEW_CACHE_DIR": str(cache_dir)}):
+                _, digest = _cache_identity(raw, "clip", "camera", "libraw", "auto", "auto")
+                self._write_cache_npz(cache_dir, digest, PREVIEW_CACHE_VERSION - 1)
+                self.assertIsNone(
+                    _cached_full_analysis(raw, "clip", "camera", "libraw", "auto", "auto")
+                )
