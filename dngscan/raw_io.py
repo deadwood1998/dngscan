@@ -93,17 +93,28 @@ def _apply_gain_maps_mosaic(raw: Any, maps: list, black_levels: list[float], whi
         h0 = np.clip(np.floor(ih).astype(int), 0, m.points_h - 2) if m.points_h > 1 else np.zeros(cols.size, int)
         fv = (iv - v0)[:, None] if m.points_v > 1 else np.zeros((rows.size, 1))
         fh = (ih - h0)[None, :] if m.points_h > 1 else np.zeros((1, cols.size))
-        g00 = gains_grid[v0][:, h0]
-        g01 = gains_grid[v0][:, np.minimum(h0 + 1, m.points_h - 1)]
-        g10 = gains_grid[np.minimum(v0 + 1, m.points_v - 1)][:, h0]
-        g11 = gains_grid[np.minimum(v0 + 1, m.points_v - 1)][:, np.minimum(h0 + 1, m.points_h - 1)]
+        # rows/cols are arithmetic sequences, so the sampled sites form a strided
+        # view of the mosaic; the corner gathers hoist the two row selections and
+        # the arithmetic keeps the original expression, dtypes and operation
+        # order — every element is bit-identical to the historical fancy-indexed
+        # version, without the np.ix_ gather/scatter copies.
+        h1 = np.minimum(h0 + 1, m.points_h - 1)
+        rows_lo = gains_grid[v0]
+        rows_hi = gains_grid[np.minimum(v0 + 1, m.points_v - 1)]
+        g00 = rows_lo[:, h0]
+        g01 = rows_lo[:, h1]
+        g10 = rows_hi[:, h0]
+        g11 = rows_hi[:, h1]
         gains = (g00 * (1 - fv) * (1 - fh) + g01 * (1 - fv) * fh
                  + g10 * fv * (1 - fh) + g11 * fv * fh)
-        sub = img[np.ix_(rows, cols)].astype(np.float32)
-        cidx = colors[np.ix_(rows, cols)]
+        img_view = img[m.top : min(m.bottom, h) : m.row_pitch,
+                       m.left : min(m.right, w) : m.col_pitch]
+        cidx = colors[m.top : min(m.bottom, h) : m.row_pitch,
+                      m.left : min(m.right, w) : m.col_pitch]
+        sub = img_view.astype(np.float32)
         b = blacks[np.clip(cidx, 0, blacks.size - 1)] if blacks.size > 1 else np.float32(blacks[0])
         corrected = np.clip(b + (sub - b) * gains, 0.0, float(white_level))
-        img[np.ix_(rows, cols)] = corrected.astype(img.dtype)
+        img_view[...] = corrected.astype(img.dtype)
 
 
 def _apply_vignette_render(render: Any, vignette: Any) -> Any:

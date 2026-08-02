@@ -215,6 +215,50 @@ class RoundtripErrorTests(unittest.TestCase):
         self.assertGreater(metrics["base_p99_code_error"], 4.0)
         self.assertTrue(_base_roundtrip_is_acceptable(metrics))
 
+    def test_banded_base_metrics_match_the_whole_frame_reference(self) -> None:
+        """The banded walk must reproduce the historical whole-frame statistics.
+
+        Multi-band shape (rows > _ROUNDTRIP_BAND_ROWS) with a ragged non-multiple-of-8
+        tail, so band boundaries, the top-K percentile and the 8x8 block trimming are
+        all exercised against the plain float32 reference computed here.
+        """
+        rng = np.random.default_rng(7)
+        rows = 1043  # > 2 bands of 512, tail not a multiple of 8
+        intended = rng.integers(0, 256, size=(rows, 36, 3), dtype=np.uint8)
+        decoded = np.clip(
+            intended.astype(np.int16) + rng.integers(-9, 10, size=intended.shape),
+            0,
+            255,
+        ).astype(np.uint8)
+        with mock.patch("PIL.Image.open") as opened:
+            opened.return_value.__enter__.return_value.convert.return_value = decoded
+            metrics = _base_roundtrip_error(Path("unused.jpg"), intended)
+        signed = decoded.astype(np.float32) - intended.astype(np.float32)
+        channel_error = np.abs(signed)
+        pixel_error = np.max(channel_error, axis=2)
+        h8, w8 = rows - rows % 8, 36 - 36 % 8
+        block_signed = signed[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3)
+        block_error = np.max(np.abs(np.mean(block_signed, axis=(1, 3))), axis=2)
+        self.assertAlmostEqual(
+            metrics["base_mean_code_error"], float(np.mean(channel_error)), places=5
+        )
+        self.assertAlmostEqual(
+            metrics["base_p99_code_error"],
+            float(np.percentile(pixel_error, 99.0)),
+            places=5,
+        )
+        self.assertEqual(metrics["base_max_code_error"], float(np.max(pixel_error)))
+        self.assertAlmostEqual(
+            metrics["base_channel_bias_code_error"],
+            float(np.max(np.abs(np.mean(signed, axis=(0, 1))))),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["base_block_p99_code_error"],
+            float(np.percentile(block_error, 99.0)),
+            places=5,
+        )
+
     def test_uniform_code_shift_is_rejected_as_a_changed_rendition(self) -> None:
         intended = np.full((16, 16, 3), 128, dtype=np.uint8)
         decoded = np.full((16, 16, 3), 130, dtype=np.uint8)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ._deps import mpimg, np
+from ._deps import np
 from .color import output_gamut_label, output_icc_profile_bytes
 from .constants import (
     DEFAULT_HDR_DRT, DEFAULT_HDR_HEADROOM_EV, HDR_DRT_CHOICES,
@@ -32,25 +32,20 @@ def chroma_to_subsampling(name: str) -> int:
 def save_jpeg_array(
     rgb_u8: Any, out_path: Path, quality: int, output_gamut: str = "srgb", subsampling: int = 0
 ) -> bool:
-    if mpimg is None:
-        raise RuntimeError("matplotlib.image is not available; cannot write JPEG")
     try:
-        import PIL  # noqa: F401
+        from PIL import Image
     except Exception as exc:
         raise RuntimeError("JPEG 导出需要 Pillow，请先安装 pillow 再重试") from exc
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if rgb_u8.dtype != np.uint8:
         rgb_u8 = np.clip(rgb_u8, 0, 255).astype(np.uint8)
+    # Written by PIL directly: mpimg.imsave was a thin pass-through to this same
+    # encoder call, at the price of importing matplotlib in every export worker.
     pil_kwargs: dict[str, Any] = {"quality": int(quality), "subsampling": int(subsampling), "optimize": True}
     icc_profile = output_icc_profile_bytes(output_gamut)
     if icc_profile is not None:
         pil_kwargs["icc_profile"] = icc_profile
-    mpimg.imsave(
-        str(out_path),
-        rgb_u8,
-        format="jpeg",
-        pil_kwargs=pil_kwargs,
-    )
+    Image.fromarray(rgb_u8, mode="RGB").save(str(out_path), format="JPEG", **pil_kwargs)
     return icc_profile is not None
 
 

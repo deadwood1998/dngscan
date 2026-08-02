@@ -434,23 +434,59 @@ def _base_roundtrip_error(path: Path, intended_rgb_u8: Any) -> dict[str, float]:
             "base_channel_bias_code_error": float("inf"),
             "base_block_p99_code_error": float("inf"),
         }
-    signed = decoded.astype(np.float32) - intended.astype(np.float32)
-    channel_error = np.abs(signed)
-    pixel_error = np.max(channel_error, axis=2)
-    channel_bias = float(np.max(np.abs(np.mean(signed, axis=(0, 1)))))
-    h8 = decoded.shape[0] - decoded.shape[0] % 8
-    w8 = decoded.shape[1] - decoded.shape[1] % 8
-    if h8 > 0 and w8 > 0:
-        block_signed = signed[:h8, :w8].reshape(h8 // 8, 8, w8 // 8, 8, 3)
-        block_error = np.max(np.abs(np.mean(block_signed, axis=(1, 3))), axis=2)
+    # Banded over rows like _roundtrip_error: per-band elementwise math is
+    # identical to the historical whole-frame computation, the upper percentile
+    # uses exact top-K selection, and the means use float64 accumulators (more
+    # accurate than the historical float32 pairwise mean; the difference class
+    # is far below any delivery tolerance). Nothing full-frame float32 is
+    # materialized.
+    height, width = decoded.shape[:2]
+    total_px = height * width
+    h8 = height - height % 8
+    w8 = width - width % 8
+    top_k = int(np.ceil(0.01 * total_px)) + 8
+    pixel_top = np.empty(0, dtype=np.float32)
+    abs_sum = 0.0
+    signed_sum = np.zeros(3, dtype=np.float64)
+    max_err = 0.0
+    block_means = (
+        np.empty((h8 // 8, w8 // 8, 3), dtype=np.float32) if h8 > 0 and w8 > 0 else None
+    )
+    for row0 in range(0, height, _ROUNDTRIP_BAND_ROWS):
+        row1 = min(row0 + _ROUNDTRIP_BAND_ROWS, height)
+        signed = decoded[row0:row1].astype(np.float32) - intended[row0:row1].astype(
+            np.float32
+        )
+        channel_error = np.abs(signed)
+        pixel_error = np.max(channel_error, axis=2).reshape(-1)
+        abs_sum += float(channel_error.sum(dtype=np.float64))
+        signed_sum += signed.sum(axis=(0, 1), dtype=np.float64)
+        if pixel_error.size:
+            max_err = max(max_err, float(pixel_error.max()))
+        merged = np.concatenate((pixel_top, pixel_error))
+        if merged.size > top_k:
+            merged = np.partition(merged, merged.size - top_k)[-top_k:]
+        pixel_top = merged
+        if block_means is not None and row0 < h8:
+            band_h8 = min(row1, h8) - row0
+            band_h8 -= band_h8 % 8
+            if band_h8 > 0:
+                b0 = row0 // 8
+                block_means[b0 : b0 + band_h8 // 8] = signed[:band_h8, :w8].reshape(
+                    band_h8 // 8, 8, w8 // 8, 8, 3
+                ).mean(axis=(1, 3))
+    if block_means is not None:
+        block_error = np.max(np.abs(block_means), axis=2)
         block_p99 = float(np.percentile(block_error, 99.0))
     else:
         block_p99 = float("inf")
     return {
-        "base_mean_code_error": float(np.mean(channel_error)),
-        "base_p99_code_error": float(np.percentile(pixel_error, 99.0)),
-        "base_max_code_error": float(np.max(pixel_error)),
-        "base_channel_bias_code_error": channel_bias,
+        "base_mean_code_error": float(abs_sum / (total_px * 3)) if total_px else 0.0,
+        "base_p99_code_error": _exact_upper_percentile(pixel_top, total_px, 99.0),
+        "base_max_code_error": max_err,
+        "base_channel_bias_code_error": float(np.max(np.abs(signed_sum / total_px)))
+        if total_px
+        else 0.0,
         "base_block_p99_code_error": block_p99,
     }
 

@@ -21,20 +21,14 @@ else:
     if problem := rawpy_runtime_problem(rawpy):
         IMPORT_ERRORS.append(f"rawpy: {problem}")
 
+# matplotlib is only needed by the diagnostic dashboard (plot.py), yet importing
+# pyplot + font_manager costs ~0.27s — paid by every spawned export worker if it
+# happens at package import. Availability is checked cheaply here; the actual
+# import is deferred to plot._matplotlib() at first dashboard render.
 try:
-    import matplotlib
+    import importlib.util as _importlib_util
 
-    matplotlib.use("Agg")
-    import matplotlib.image as mpimg
-    import matplotlib.pyplot as plt
-    from matplotlib import font_manager
-    from matplotlib.colors import ListedColormap
-    from matplotlib.patches import Patch
+    if _importlib_util.find_spec("matplotlib") is None:
+        raise ImportError("matplotlib is not installed")
 except Exception as exc:  # pragma: no cover - exercised only on missing deps
-    matplotlib = None  # type: ignore[assignment]
-    mpimg = None  # type: ignore[assignment]
-    plt = None  # type: ignore[assignment]
-    font_manager = None  # type: ignore[assignment]
-    ListedColormap = None  # type: ignore[assignment]
-    Patch = None  # type: ignore[assignment]
     IMPORT_ERRORS.append(f"matplotlib: {exc}")

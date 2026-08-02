@@ -6,7 +6,29 @@ import math
 from pathlib import Path
 from typing import Any
 
-from ._deps import ListedColormap, Patch, font_manager, np, plt
+from ._deps import np
+
+_MPL: tuple[Any, Any, Any, Any] | None = None
+
+
+def _matplotlib() -> tuple[Any, Any, Any, Any]:
+    """Deferred matplotlib import: (plt, font_manager, ListedColormap, Patch).
+
+    Only the dashboard needs matplotlib; loading pyplot at package import made
+    every spawned export worker pay ~0.27s for a module it never used.
+    """
+    global _MPL
+    if _MPL is None:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib import font_manager
+        from matplotlib.colors import ListedColormap
+        from matplotlib.patches import Patch
+
+        _MPL = (plt, font_manager, ListedColormap, Patch)
+    return _MPL
 from .analysis import (
     black_map, channel_color, channel_fullwell_map, channel_threshold_map,
     downsample_any, downsample_mean, format_pct, format_snr_dr, rgb_channel_groups,
@@ -16,7 +38,9 @@ from .models import Analysis, AutoEvResult, RawBundle
 from .report import summary_lines
 
 def configure_plot_fonts() -> None:
-    if plt is None or font_manager is None:
+    try:
+        plt, font_manager, _, _ = _matplotlib()
+    except Exception:
         return
     candidates = [
         "PingFang SC",
@@ -476,6 +500,7 @@ def plot_dashboard(
     out_path: Path,
     auto_ev: AutoEvResult | None = None,
 ) -> None:
+    plt, _, ListedColormap, Patch = _matplotlib()
     configure_plot_fonts()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
