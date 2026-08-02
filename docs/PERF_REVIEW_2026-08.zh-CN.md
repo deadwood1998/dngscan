@@ -15,7 +15,7 @@ HDR 导出的大头即来源于此。次级结构问题：GUI `/export` 在隔�
 
 | 项 | 内容 | 预期（24MP） | 状态 |
 |---|---|---|---|
-| A1 | `_form_hdr_chunk` 全 NumPy formation → 原生 HDR kernel（cpp/hdr_core：编译曲线表对 + RAW 门控 rho 混合 + hue restore/outset/punch + HDR 色域体积拟合全链；film full 模式排除回退 NumPy） | 并行段 −10~14s 工作量，墙钟 −2~3s | ✅ 实测（同热交替 ×2）：ultrahdr 24.5MP 墙钟 19.1–19.5s → **14.9–16.2s**；HDR display-linear 段 3.96s → **0.82s**（4.8×，单链 740→50ms/Mpx）。平价：HDR 浮点缓冲 max 6.9e-6 / p99 1.1e-6（peak 1.96）；JPEG 主图 max 4 码值 / p99 0 / 变化 0.052%；gain map p99 0 / 变化 0.24%（>8 码值仅 74 px，全部为深影 log-ratio 放大）。门槛见 tests/test_hdr_native.py（max ≤2e-4 / p99 ≤2e-5，含 NaN/Inf、mask 门控与 strict 路径） |
+| A1 | `_form_hdr_chunk` 全 NumPy formation → 原生 HDR kernel（cpp/hdr_core：编译曲线表对 + RAW 门控 rho 混合 + hue restore/outset/punch + HDR 色域体积拟合全链；film full 模式排除回退 NumPy） | 并行段 −10~14s 工作量，墙钟 −2~3s | ✅ e30e879 实测（同热交替 ×2）：ultrahdr 24.5MP 墙钟 19.1–19.5s → **14.9–16.2s**；HDR display-linear 段 3.96s → **0.82s**（4.8×，单链 740→50ms/Mpx）。平价：HDR 浮点缓冲 max 6.9e-6 / p99 1.1e-6（peak 1.96）；JPEG 主图 max 4 码值 / p99 0 / 变化 0.052%；gain map p99 0 / 变化 0.24%（>8 码值仅 74 px，全部为深影 log-ratio 放大）。门槛见 tests/test_hdr_native.py（max ≤2e-4 / p99 ≤2e-5，含 NaN/Inf、mask 门控与 strict 路径） |
 | A2 | ultrahdr SDR 底图接入 `finalize_output_u8_f32` 融合核 | RSS 3.7→2.6GB；墙钟中性（关键路径在 A1） | ✅ ce3e7a7 |
 | A3 | `color.fit_to_output_gamut` 路由 `fit_output_gamut_f32`（惠及 auto_ev/render_output_linear） | 浮点路径微变，需按门禁单独评审 | 待做，并入 B5 评审 |
 | B4 | `/export` worker 按 `_cache_identity` 复用 npz 里已持久化的全分辨率 Analysis | GUI 导出 −1.5~2.5s（实测命中 1ms 替代 ~2.3s 重算） | ✅ |
