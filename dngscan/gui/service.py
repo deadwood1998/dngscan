@@ -162,12 +162,23 @@ def preview_metrics_from_u8(rgb_u8: object, gamut: str) -> dict[str, float]:
     }
 
 
+# Declared sampling for the post-export display metrics (D10): a deterministic
+# stride of ~800k pixels replaces the full-frame walk. Measured cost on the
+# 24.5MP reference: worst metric deviation +0.0092 percentage points (median
+# luma), headroom EV unchanged at 4 decimals, 1.33s -> 52ms. The delivery
+# report labels the sample size; metrics_sample_px carries it.
+METRICS_SAMPLE_TARGET = 800_000
+
+
 def output_luminance_metrics_u8(encoded_u8: object, gamut: str, ev: float) -> dict[str, float]:
     np = dg.np
     if np is None:
         return {}
     encoded_u8 = np.asarray(encoded_u8, dtype=np.uint8)
     flat_u8 = encoded_u8.reshape(-1, 3)
+    step = max(1, math.ceil(flat_u8.shape[0] / METRICS_SAMPLE_TARGET))
+    if step > 1:
+        flat_u8 = flat_u8[::step]
     matrix = dg.RGB_TO_XYZ[dg.output_gamut_space(gamut)]
     y = np.empty((flat_u8.shape[0],), dtype=np.float32)
     max_channel = np.empty((flat_u8.shape[0],), dtype=np.float32)
@@ -204,6 +215,7 @@ def output_luminance_metrics_u8(encoded_u8: object, gamut: str, ev: float) -> di
         "headroom_luma_ev": float(headroom_luma_ev),
         "headroom_rgb_ev": float(headroom_rgb_ev),
         "estimated_ev_before_luma_limit": float(ev + headroom_luma_ev),
+        "metrics_sample_px": float(flat_u8.shape[0]),
     }
 
 
@@ -1194,7 +1206,9 @@ def run_export(params: dict) -> dict:
                 analysis,
                 gamut,
                 ev,
-                max_samples=600_000,
+                # B5: the probe's own bisection quantum is 1/128 EV; measured,
+                # 220k vs 600k samples land within one quantum of each other,
+                # so the function default (220k) is the declared operating point.
                 look=look,
                 look_strength=look_strength,
                 display_filter=display_filter,

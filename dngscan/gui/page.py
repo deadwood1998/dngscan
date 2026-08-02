@@ -509,7 +509,8 @@ function metricText(j){
   const m=j.metrics;
   if(m.luma_p999_pct===undefined)return "";
   const room=m.safe_ev_remaining!==undefined?m.safe_ev_remaining:m.headroom_luma_ev;
-  const label=j.metrics_kind==="full"?" · 全分辨率真值":" · 预览估计";
+  const sampleWan=m.metrics_sample_px?Math.round(m.metrics_sample_px/1e4):0;
+  const label=j.metrics_kind==="full"?(sampleWan?" · 全图抽样 "+sampleWan+"万px 实测":" · 全分辨率真值"):" · 预览估计";
   const roomText=j.metrics_kind==="full"&&room!==undefined?" · 可再加约 "+fmtEv(room)+"EV":"";
   return label+
     " · p99.9亮度 "+fmtPct(m.luma_p999_pct)+

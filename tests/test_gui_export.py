@@ -133,3 +133,47 @@ class BrowserUploadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetricsSamplingTests(unittest.TestCase):
+    """D10: the post-export display metrics run on a declared ~800k stride sample."""
+
+    def test_small_frames_stay_exact_and_report_their_count(self) -> None:
+        import numpy as np
+        from dngscan.gui.service import METRICS_SAMPLE_TARGET, output_luminance_metrics_u8
+
+        img = np.full((64, 64, 3), 128, dtype=np.uint8)
+        metrics = output_luminance_metrics_u8(img, "srgb", 0.0)
+        self.assertEqual(metrics["metrics_sample_px"], 64 * 64)
+        self.assertLess(64 * 64, METRICS_SAMPLE_TARGET)
+
+    def test_large_frames_sample_within_the_declared_precision(self) -> None:
+        import numpy as np
+        from dngscan.gui.service import METRICS_SAMPLE_TARGET, output_luminance_metrics_u8
+
+        rng = np.random.default_rng(11)
+        # 3.2M px with realistic structure: smooth ramp + noise + a bright patch.
+        h, w = 1600, 2000
+        ramp = np.linspace(20, 200, w, dtype=np.float32)[None, :, None]
+        img = np.clip(
+            ramp + rng.normal(0, 12, size=(h, w, 3)), 0, 255
+        ).astype(np.uint8)
+        img[:64, :64] = 254
+        sampled = output_luminance_metrics_u8(img, "srgb", 0.0)
+        self.assertLessEqual(sampled["metrics_sample_px"], 2 * METRICS_SAMPLE_TARGET)
+        self.assertLess(sampled["metrics_sample_px"], h * w)
+        # Full-frame reference computed inline by defeating the stride via a
+        # reshape into a single already-small-enough axis is not possible, so
+        # compare against numpy directly on the exact same definition.
+        flat = img.reshape(-1, 3).astype(np.float32) / np.float32(255.0)
+        from dngscan.color import srgb_decode
+        import dngscan as dg
+
+        linear = srgb_decode(flat)
+        matrix = dg.RGB_TO_XYZ[dg.output_gamut_space("srgb")]
+        y = np.clip(linear @ np.asarray(matrix[1], dtype=np.float32), 0.0, 1.0)
+        self.assertLess(abs(sampled["median_luma_pct"] - float(np.median(y)) * 100.0), 0.05)
+        self.assertLess(abs(sampled["mean_luma_pct"] - float(np.mean(y)) * 100.0), 0.05)
+        self.assertLess(
+            abs(sampled["luma_p999_pct"] - float(np.percentile(y, 99.9)) * 100.0), 0.25
+        )

@@ -16,7 +16,14 @@ from .models import (
     Analysis, AutoEvResult, RawBundle, RenderAdjustments, RenderPlan,
     ToneCompressionPlan,
 )
-from .render import apply_tone_core, finalize_output_linear, plan_with_look_overrides
+from . import _fast as fast_backend
+from .color import fit_to_output_gamut
+from .render import (
+    _apply_output_color_ops,
+    apply_tone_core,
+    finalize_output_linear,
+    plan_with_look_overrides,
+)
 from .tone import build_render_plan, compute_exposure_gain, exposure_mode_for_tone_core, scene_intent_rec2020, scene_rec2020_to_float
 
 EV_AUTO_TOKEN = "auto"
@@ -155,6 +162,38 @@ def render_sample_linear_output(
         )
     else:
         output_linear = rec2020_to_output(mapped_rec, gamut)
+    return _probe_finalize_linear(output_linear, gamut, look, look_strength, color_plan)
+
+
+def _probe_finalize_linear(
+    output_linear: Any,
+    gamut: str,
+    look: str,
+    look_strength: float,
+    color_plan: Any,
+) -> Any:
+    """The probe's finalize: same color ops, gamut fit via the native kernel.
+
+    Declared operating point (B5): the probe's bisection quantum is 1/128 EV;
+    the native/NumPy fit difference (measured max 2.8e-5 in float) can at most
+    flip a borderline threshold test by one quantum. Any native failure falls
+    back to the exact NumPy finalize; strict mode surfaces the failure.
+    """
+    if fast_backend.supports_output_finalizer():
+        alpha = float(color_plan.gamut_fit_alpha) if color_plan is not None else 0.05
+        try:
+            plan = fast_backend.compile_output_plan(gamut, alpha)
+            piece = _apply_output_color_ops(
+                output_linear, gamut, look, look_strength, color_plan
+            )
+            return fast_backend.fit_output_gamut_f32(
+                np.ascontiguousarray(piece, dtype=np.float32), plan
+            )
+        except Exception as exc:
+            if fast_backend.strict_requested():
+                if isinstance(exc, fast_backend.NativeKernelError):
+                    raise
+                raise fast_backend.NativeKernelError(str(exc)) from exc
     return finalize_output_linear(output_linear, gamut, look, look_strength, color_plan)
 
 

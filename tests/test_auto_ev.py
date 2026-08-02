@@ -211,3 +211,38 @@ class AutoEvTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeNativeFinalizeTests(unittest.TestCase):
+    """B5: the headroom probe's gamut fit routes native, within declared bounds."""
+
+    def test_probe_finalize_matches_numpy_within_the_declared_envelope(self) -> None:
+        import numpy as np
+        from dngscan import _fast as fast_backend
+        from dngscan.auto_ev import _probe_finalize_linear
+        from dngscan.render import finalize_output_linear
+
+        if not fast_backend.supports_output_finalizer():
+            self.skipTest("native output finalizer unavailable")
+        rng = np.random.default_rng(5)
+        sample = (rng.random((120_000, 3), dtype=np.float32) * 1.6 - 0.1)
+        native = _probe_finalize_linear(sample, "p3", "none", 1.0, None)
+        reference = finalize_output_linear(sample, "p3", "none", 1.0, None)
+        diff = np.abs(np.asarray(native, dtype=np.float32) - reference)
+        # Declared envelope: measured max 2.8e-5; gate at 1e-4 for headroom.
+        self.assertLess(float(diff.max()), 1e-4)
+
+    def test_native_failure_falls_back_to_the_exact_numpy_path(self) -> None:
+        import numpy as np
+        from unittest import mock
+        from dngscan import _fast as fast_backend
+        from dngscan.auto_ev import _probe_finalize_linear
+        from dngscan.render import finalize_output_linear
+
+        sample = np.linspace(-0.1, 1.4, 300, dtype=np.float32).reshape(-1, 3)
+        with mock.patch.object(
+            fast_backend, "compile_output_plan", side_effect=RuntimeError("boom")
+        ):
+            out = _probe_finalize_linear(sample, "p3", "none", 1.0, None)
+        reference = finalize_output_linear(sample, "p3", "none", 1.0, None)
+        self.assertTrue(np.array_equal(out, reference))
