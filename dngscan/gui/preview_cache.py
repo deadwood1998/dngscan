@@ -20,7 +20,7 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 8
+PREVIEW_CACHE_VERSION = 9
 PROXY_RESAMPLER = "lanczos"
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
@@ -28,6 +28,7 @@ MAX_MEMORY_PROXY_ITEMS = 2
 MAX_PLAN_CACHE_ITEMS = 32
 MAX_PIXEL_CACHE_ITEMS = 2
 MAX_FRAME_CACHE_ITEMS = 24
+MAX_BALANCE_CACHE_ITEMS = 8
 
 
 @dataclass
@@ -43,6 +44,9 @@ class PreviewEntry:
         default_factory=OrderedDict, init=False, repr=False
     )
     _pixel_cache: OrderedDict[Hashable, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _balance_cache: OrderedDict[str, "PreviewEntry"] = field(
         default_factory=OrderedDict, init=False, repr=False
     )
     _dither_noise: Any | None = field(default=None, init=False, repr=False)
@@ -62,6 +66,26 @@ class PreviewEntry:
             while len(self._plan_cache) > MAX_PLAN_CACHE_ITEMS:
                 self._plan_cache.popitem(last=False)
             return plan
+
+    def get_or_build_balance(
+        self,
+        wb: str,
+        builder: Callable[[], "PreviewEntry"],
+    ) -> "PreviewEntry":
+        """Build each user WB once from the immutable proxy DecodeContext."""
+        if wb == "camera":
+            return self
+        with self._runtime_cache_lock:
+            cached = self._balance_cache.get(wb)
+            if cached is not None:
+                self._balance_cache.move_to_end(wb)
+                return cached
+            balanced = builder()
+            self._balance_cache[wb] = balanced
+            self._balance_cache.move_to_end(wb)
+            while len(self._balance_cache) > MAX_BALANCE_CACHE_ITEMS:
+                self._balance_cache.popitem(last=False)
+            return balanced
 
     def get_frame(self, key: Hashable) -> dict[str, Any] | None:
         """Return a shallow payload copy so request metadata can be added safely."""
@@ -170,8 +194,8 @@ def _cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if os.name == "posix" and (Path.home() / "Library" / "Caches").is_dir():
-        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v8"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v8"
+        return Path.home() / "Library" / "Caches" / "dngscan" / "preview-v9"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dngscan" / "preview-v9"
 
 
 def _evidence_cache_identity(path: Path) -> tuple[str, int, int, str]:
@@ -194,12 +218,11 @@ def _cache_identity(
     decoder: str = "libraw",
     coreimage_version: str = "auto",
     demosaic: str = "auto",
-) -> tuple[tuple[str, int, int, str, str, str, str, str, str], str]:
+) -> tuple[tuple[str, int, int, str, str, str, str, str], str]:
     evidence_key = _evidence_cache_identity(path)
     key = (
         *evidence_key,
         highlight,
-        wb,
         str(decoder),
         str(coreimage_version),
         str(demosaic),
@@ -241,6 +264,22 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
         "scene_highlight_mode": str(bundle.scene_highlight_mode),
         "orientation_flip": int(bundle.orientation_flip),
         "wb_mode": str(bundle.wb_mode),
+        "applied_wb": (
+            [float(value) for value in bundle.applied_wb]
+            if bundle.applied_wb is not None
+            else None
+        ),
+        "decode_wb": (
+            [float(value) for value in bundle.decode_wb]
+            if bundle.decode_wb is not None
+            else None
+        ),
+        "wb_xyz_to_cam": (
+            dg.np.asarray(bundle.wb_xyz_to_cam, dtype=dg.np.float64).tolist()
+            if bundle.wb_xyz_to_cam is not None
+            else None
+        ),
+        "wb_degradation": bundle.wb_degradation,
         "daylight_wb": (
             [float(value) for value in bundle.daylight_wb]
             if bundle.daylight_wb is not None
@@ -285,6 +324,7 @@ def _bundle_from_cache(
     masks: Any | None,
     guidance: RawGuidanceMaps | None,
 ) -> RawBundle:
+    np = dg.np
     evidence_shape = metadata.get("evidence_shape")
     crop = metadata.get("scene_geometry_crop")
     return RawBundle(
@@ -304,6 +344,14 @@ def _bundle_from_cache(
         scene_highlight_mode=str(metadata["scene_highlight_mode"]),
         orientation_flip=int(metadata["orientation_flip"]),
         wb_mode=str(metadata["wb_mode"]),
+        applied_wb=metadata.get("applied_wb"),
+        decode_wb=metadata.get("decode_wb"),
+        wb_xyz_to_cam=(
+            np.asarray(metadata["wb_xyz_to_cam"], dtype=np.float64)
+            if metadata.get("wb_xyz_to_cam") is not None
+            else None
+        ),
+        wb_degradation=metadata.get("wb_degradation"),
         daylight_wb=metadata["daylight_wb"],
         shot_make=metadata["shot_make"],
         shot_model=metadata["shot_model"],
@@ -493,7 +541,7 @@ class PreviewCache:
 
     def __init__(self) -> None:
         self.entries: OrderedDict[
-            tuple[str, int, int, str, str, str, str, str, str], PreviewEntry
+            tuple[str, int, int, str, str, str, str, str], PreviewEntry
         ] = OrderedDict()
         self.lock = threading.Lock()
         self.build_lock = threading.Lock()
@@ -518,28 +566,44 @@ class PreviewCache:
         key, digest = _cache_identity(
             path, highlight, wb, decoder, coreimage_version, demosaic
         )
+        cached: PreviewEntry | None = None
         with self.lock:
             cached = self.entries.get(key)
             if cached is not None and (not require_guidance or cached.bundle.raw_guidance is not None):
                 self.entries.move_to_end(key)
-                return cached
+            else:
+                cached = None
+        if cached is not None:
+            return cached.get_or_build_balance(
+                wb,
+                lambda: self._build_balance(cached, wb),
+            )
 
         with self.build_lock:
             with self.lock:
                 cached = self.entries.get(key)
                 if cached is not None and (not require_guidance or cached.bundle.raw_guidance is not None):
                     self.entries.move_to_end(key)
-                    return cached
+                else:
+                    cached = None
+
+            if cached is not None:
+                return cached.get_or_build_balance(
+                    wb,
+                    lambda: self._build_balance(cached, wb),
+                )
 
             cache_path = _cache_dir() / f"{digest}.npz"
             cached = _read_disk_entry(cache_path, path, require_guidance)
             if cached is None:
+                # The cold entry is always the one fixed as-shot DecodeContext.  WB no
+                # longer participates in the disk/memory identity or decoder call.
                 source = dg.load_raw(
                     path,
                     highlight,
                     scene_half_size=False,
                     demosaic=demosaic,
-                    wb_mode=wb,
+                    wb_mode="camera",
                     decoder=decoder,
                     coreimage_version=coreimage_version,
                 )
@@ -552,7 +616,16 @@ class PreviewCache:
                 self.entries.move_to_end(key)
                 while len(self.entries) > MAX_MEMORY_PROXY_ITEMS:
                     self.entries.popitem(last=False)
-            return cached
+            return cached.get_or_build_balance(
+                wb,
+                lambda: self._build_balance(cached, wb),
+            )
+
+    @staticmethod
+    def _build_balance(base: PreviewEntry, wb: str) -> PreviewEntry:
+        bundle = dg.rebalance_raw_bundle(base.bundle, wb)
+        analysis = dg.reanalyze_balanced_scene(base.analysis, bundle)
+        return PreviewEntry(bundle=bundle, analysis=analysis)
 
 
 PREVIEW_STORE = PreviewCache()

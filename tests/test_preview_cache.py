@@ -86,6 +86,10 @@ def _bundle() -> RawBundle:
         color_desc="RGBG",
         raw_pattern=[[0, 1], [3, 2]],
         camera_white_levels=[1000.0] * 4,
+        daylight_wb=[1.6, 1.0, 2.1, 1.0],
+        applied_wb=[2.0, 1.0, 1.5, 1.0],
+        decode_wb=[2.0, 1.0, 1.5, 1.0],
+        wb_xyz_to_cam=np.eye(3, dtype=np.float64),
         clip_masks=np.linspace(0.0, 1.0, 8 * 8 * 3, dtype=np.float16).reshape(8, 8, 3),
         scene_scale_mode="measured",
         baseline_exposure=0.75,
@@ -173,6 +177,44 @@ class PreviewCacheTest(unittest.TestCase):
         self.assertNotEqual(auto_key, dht_key)
         self.assertNotEqual(auto_digest, dht_digest)
 
+    def test_cache_identity_excludes_user_white_balance(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source:
+            path = Path(source.name)
+            camera_key, camera_digest = _cache_identity(
+                path, "clip", "camera", "libraw", "auto", "dht"
+            )
+            daylight_key, daylight_digest = _cache_identity(
+                path, "clip", "daylight", "libraw", "auto", "dht"
+            )
+        self.assertEqual(camera_key, daylight_key)
+        self.assertEqual(camera_digest, daylight_digest)
+
+    def test_switching_white_balance_reuses_fixed_decode_context(self) -> None:
+        cache = PreviewCache()
+        with tempfile.NamedTemporaryFile(suffix=".dng") as source, patch(
+            "dngscan.gui.preview_cache._read_disk_entry", return_value=None
+        ), patch(
+            "dngscan.gui.preview_cache._write_disk_entry"
+        ), patch(
+            "dngscan.gui.preview_cache.dg.load_raw", return_value=_bundle()
+        ) as load, patch(
+            "dngscan.gui.preview_cache.dg.analyze",
+            return_value=(_analysis(), None, None),
+        ) as analyze:
+            path = Path(source.name)
+            camera = cache.get(path, "clip", "camera", demosaic="dht")
+            daylight = cache.get(path, "clip", "daylight", demosaic="dht")
+            daylight_again = cache.get(path, "clip", "daylight", demosaic="dht")
+
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(load.call_args.kwargs["wb_mode"], "camera")
+        self.assertIs(daylight_again, daylight)
+        self.assertIsNot(camera, daylight)
+        self.assertEqual(camera.bundle.wb_mode, "camera")
+        self.assertEqual(daylight.bundle.wb_mode, "daylight")
+        self.assertEqual(len(cache.entries), 1)
+
     def test_cold_proxy_uses_full_resolution_selected_demosaic(self) -> None:
         cache = PreviewCache()
         with tempfile.NamedTemporaryFile(suffix=".dng") as source, patch(
@@ -240,6 +282,9 @@ class PreviewCacheTest(unittest.TestCase):
             restored.bundle.evidence_provider_version,
             "rawpy 0.27.0/LibRaw 0.22.0",
         )
+        self.assertEqual(restored.bundle.decode_wb, [2.0, 1.0, 1.5, 1.0])
+        self.assertEqual(restored.bundle.applied_wb, [2.0, 1.0, 1.5, 1.0])
+        np.testing.assert_array_equal(restored.bundle.wb_xyz_to_cam, np.eye(3))
         assert restored.bundle.raw_guidance is not None
         np.testing.assert_array_equal(
             restored.bundle.raw_guidance.clip_class,

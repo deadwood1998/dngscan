@@ -93,10 +93,10 @@ flowchart TB
     subgraph DECODERS["2. Scene 像素形成 - 解码器是独立选择轴"]
         direction TB
         SELECT{"Scene decoder"}
-        LR["LibRaw<br/>camera 或 daylight WB<br/>解拜耳选择<br/>clip / blend / reconstruct"]
+        LR["LibRaw<br/>固定 AsShot 重建预条件<br/>解拜耳选择<br/>clip / blend / reconstruct"]
         LRRGB["带方向的 linear Rec.2020 uint16<br/>关闭 auto-bright"]
         CIPROBE["CIRAWFilter 能力探测<br/>RAW 9 或显式 RAW 8/7 回退"]
-        CI["中性的 Core Image RAW 配方<br/>RAW 9：CoreML 重建 + 降噪<br/>旧版本：对应系统解码器<br/>高光恢复、镜头校正、DNG opcode"]
+        CI["固定 AsShot Core Image RAW 配方<br/>RAW 9：CoreML 重建 + 降噪<br/>旧版本：对应系统解码器<br/>高光恢复、镜头校正、DNG opcode"]
         CIRGB["extended-linear Rec.2020 RGBAh<br/>保留负分量与 1 以上数值"]
         LRREF["仅 aligned 模式<br/>half-size LibRaw reconstruct 参考"]
         ALIGN["Core Image 尺度策略<br/>aligned：解码后 G 中位比<br/>或 unity / 旧 measured"]
@@ -107,6 +107,7 @@ flowchart TB
 
     subgraph CONTRACT["3. 统一 scene 契约与分析"]
         direction TB
+        HOTWB["项目自有热白平衡<br/>ColorMatrix 恢复 camera-linear 增益<br/>preview / export 共用"]
         SCALE["Scene scale contract<br/>存储尺度与 WB 余量<br/>文件 BaselineExposure 配方<br/>可选 Core Image 对齐标量"]
         SCENE["RawBundle scene frame<br/>scene_rec2020_render + scene_scale<br/>scene-linear Rec.2020 交接"]
         ANALYSIS["Analysis<br/>按饱和堆积或 metadata 解析逐通道 full well<br/>硬 threshold、clip%、2x2 拓扑与 ceiling<br/>噪声底 / 可选诊断 SNR / 可用 DR<br/>解码后 XYZ-Y-EV 与输出色域压力"]
@@ -119,7 +120,7 @@ flowchart TB
         PLAN["不可变 RenderPlan"]
         REPORTS["可选六面板 / CSV / 文本报告"]
 
-        SCALE --> SCENE
+        HOTWB --> SCALE --> SCENE
         SCENE --> ANALYSIS
         ANALYSIS --> SPATIAL
         SCENE --> SAMPLE
@@ -139,8 +140,8 @@ flowchart TB
     RAW --> META
     RAW --> SELECT
     RAW --> LRREF
-    LRRGB --> SCALE
-    ALIGN --> SCALE
+    LRRGB --> HOTWB
+    ALIGN --> HOTWB
     CFA -.-> ANALYSIS
     META -.-> ANALYSIS
     CFA -.-> SPATIAL
@@ -163,7 +164,7 @@ flowchart TB
     class CFA,META evidence
     class LR,LRRGB,LRREF libraw
     class CIPROBE,CI,CIRGB,ALIGN apple
-    class SCALE,SCENE pixels
+    class HOTWB,SCALE,SCENE pixels
     class ANALYSIS,SPATIAL,METRICS,SAMPLE contract
     class EV,CONTROLS intent
     class COMPILE,PLAN plan

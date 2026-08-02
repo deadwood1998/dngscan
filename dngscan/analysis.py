@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Any
 
 from ._deps import np
@@ -718,6 +719,44 @@ def analyze(
         health_hist_empty_pct=health_hist,
     )
     return analysis, y, ev
+
+
+def reanalyze_balanced_scene(
+    capture: Analysis,
+    bundle: RawBundle,
+    *,
+    gamut_names: tuple[str, ...] | list[str] | None = None,
+) -> Analysis:
+    """Refresh only WB-dependent scene facts on an invariant capture analysis.
+
+    Ceiling/noise/clip/CFA/SNR facts come from the RAW and are intentionally reused.
+    EV and gamut facts come from the newly balanced scene.  Preview BalanceContexts run
+    this over their fixed 1920px proxy; export still runs ``analyze`` on the full scene.
+    Both paths share the identical WB matrix and pixel pipeline, while avoiding every
+    sensor-domain scan on an interactive balance change.
+    """
+    y = luminance_from_xyz_render(bundle.xyz_render, bundle.render_scale)
+    _ev, raw_p1, p1, p50, p99, p999, dr, floor_hit_pct, vs_gray = compute_ev_metrics(y)
+    gamut_pct, bright_pct = compute_gamut_metrics(
+        bundle.xyz_render,
+        bundle.render_scale,
+        y,
+        gamut_names,
+    )
+    return replace(
+        capture,
+        ev_p1=p1,
+        ev_raw_p1=raw_p1,
+        ev_median=p50,
+        ev_p99=p99,
+        ev_p999=p999,
+        ev_dr_p1_p999=dr,
+        ev_floor_hit_pct=floor_hit_pct,
+        median_vs_gray_ev=vs_gray,
+        median_y=float(np.median(y)),
+        gamut_out_pct=gamut_pct,
+        bright_pixel_pct=bright_pct,
+    )
 
 
 def downsample_mean(arr: Any, max_dim: int = 900) -> Any:

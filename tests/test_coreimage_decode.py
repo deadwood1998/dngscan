@@ -399,15 +399,22 @@ def _normalize(token: str) -> str:
 
 
 class LoadRawDecoderGuardTests(unittest.TestCase):
-    def test_daylight_rejected_for_coreimage(self) -> None:
+    def test_daylight_uses_project_hot_wb_after_fixed_coreimage_decode(self) -> None:
         from dngscan.raw_io import load_raw
 
         if not coreimage_decode.available():
             raise unittest.SkipTest("Core Image unavailable")
         if not SIGMA_DNG.is_file():
             raise unittest.SkipTest(f"missing {SIGMA_DNG}")
-        with self.assertRaises(ValueError):
-            load_raw(SIGMA_DNG, scene_half_size=True, decoder="coreimage", wb_mode="daylight")
+        bundle = load_raw(
+            SIGMA_DNG,
+            scene_half_size=True,
+            decoder="coreimage",
+            wb_mode="daylight",
+        )
+        self.assertEqual(bundle.wb_mode, "daylight")
+        self.assertEqual(bundle.decode_wb, bundle.camera_wb)
+        self.assertEqual(bundle.applied_wb, bundle.daylight_wb)
 
 
 if __name__ == "__main__":

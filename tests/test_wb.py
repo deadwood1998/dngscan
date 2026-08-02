@@ -13,6 +13,12 @@ from dngscan.wb import (
     kelvin_camera_multipliers,
     kelvin_mode_cct,
 )
+from dngscan.constants import XYZ_TO_RGB
+from dngscan.raw_io import (
+    apply_hot_wb_rec2020,
+    hot_wb_matrix_rec2020,
+    normalized_camera_wb,
+)
 
 SAMPLE = Path.home() / "Pictures" / "_SDI0150.DNG"
 
@@ -94,6 +100,64 @@ class KelvinMultiplierTests(unittest.TestCase):
             self.assertTrue(label)
         self.assertIsNone(kelvin_mode_cct("camera"))
         self.assertIsNone(kelvin_mode_cct("daylight"))
+
+
+class HotWhiteBalanceTests(unittest.TestCase):
+    MATRIX = np.array(
+        [[0.72, -0.16, -0.06], [-0.31, 1.18, 0.18], [-0.04, 0.12, 0.66]],
+        dtype=np.float64,
+    )
+
+    def test_matrix_is_camera_gain_conjugated_into_rec2020(self) -> None:
+        decode = [2.0, 1.0, 1.5, 1.0]
+        target = [1.5, 1.0, 2.25, 1.0]
+        actual = hot_wb_matrix_rec2020(self.MATRIX, decode, target)
+        camera_to_rec = np.asarray(XYZ_TO_RGB["Rec2020"]) @ np.linalg.inv(self.MATRIX)
+        relative = normalized_camera_wb(target) / normalized_camera_wb(decode)
+        expected = camera_to_rec @ np.diag(relative) @ np.linalg.inv(camera_to_rec)
+        np.testing.assert_allclose(actual, expected, rtol=2e-7, atol=2e-7)
+
+    def test_same_balance_is_identity_and_scene_codes_are_not_rounded(self) -> None:
+        wb = [2.0, 1.0, 1.5, 1.0]
+        matrix = hot_wb_matrix_rec2020(self.MATRIX, wb, wb)
+        np.testing.assert_allclose(matrix, np.eye(3), rtol=0.0, atol=2e-7)
+        scene = np.array([[[-2.0, 0.5, 70000.0], [1.0, 2.0, 3.0]]], dtype=np.float32)
+        out = apply_hot_wb_rec2020(scene, matrix)
+        np.testing.assert_allclose(out, scene, rtol=2e-7, atol=2e-7)
+        self.assertLess(float(out.min()), 0.0)
+        self.assertGreater(float(out.max()), 65535.0)
+
+    def test_target_white_point_can_use_a_different_color_matrix(self) -> None:
+        decode = [2.0, 1.0, 1.5, 1.0]
+        target = [1.5, 1.0, 2.25, 1.0]
+        target_matrix = self.MATRIX + np.diag([0.03, -0.02, 0.01])
+        actual = hot_wb_matrix_rec2020(
+            self.MATRIX,
+            decode,
+            target,
+            target_matrix,
+        )
+        xyz_to_rec = np.asarray(XYZ_TO_RGB["Rec2020"])
+        decode_stage = (
+            xyz_to_rec
+            @ np.linalg.inv(self.MATRIX)
+            @ np.diag(normalized_camera_wb(decode))
+        )
+        target_stage = (
+            xyz_to_rec
+            @ np.linalg.inv(target_matrix)
+            @ np.diag(normalized_camera_wb(target))
+        )
+        np.testing.assert_allclose(
+            actual,
+            target_stage @ np.linalg.inv(decode_stage),
+            rtol=2e-7,
+            atol=2e-7,
+        )
+
+    def test_second_green_does_not_perturb_three_channel_reduction(self) -> None:
+        reduced = normalized_camera_wb([4.0, 2.0, 6.0, 4.0])
+        np.testing.assert_allclose(reduced, [2.0, 1.0, 3.0])
 
 
 @unittest.skipUnless(SAMPLE.is_file(), "sample frame unavailable")
