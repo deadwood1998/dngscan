@@ -164,12 +164,23 @@ class HdrCurveTable:
         v = self.values
         u = (np.asarray(ev, dtype=np.float32) - self.ev_start) * self.inv_step
         u = np.clip(u, np.float32(0.0), np.float32(v.size - 1))
-        idx = u.astype(np.int32)
+        # np.clip deliberately preserves NaN.  Keep that public/native contract,
+        # but do not pass NaN through the platform-dependent float->int cast used
+        # for indexing: Linux/NumPy may produce INT_MIN while macOS produces zero.
+        # A temporary zero index is safe because the interpolated result is restored
+        # to NaN below before it can leave this function.
+        nan_mask = np.isnan(u)
+        has_nan = bool(np.any(nan_mask))
+        index_u = np.where(nan_mask, np.float32(0.0), u) if has_nan else u
+        idx = index_u.astype(np.int32)
         np.minimum(idx, np.int32(v.size - 2), out=idx)
-        frac = u - idx.astype(np.float32)
+        frac = index_u - idx.astype(np.float32)
         lo = v[idx]
         hi = v[idx + 1]
-        return lo + (hi - lo) * frac
+        out = lo + (hi - lo) * frac
+        if has_nan:
+            out = np.where(nan_mask, np.float32(np.nan), out)
+        return out
 
     def apply(self, scene_rgb: Any) -> Any:
         rgb = np.asarray(scene_rgb, dtype=np.float32)
