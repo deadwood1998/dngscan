@@ -126,6 +126,60 @@ def apply_agx_core_f32(rgb: np.ndarray, plan: Any) -> np.ndarray:
     return ext.apply_agx_core_f32(arr, plan)
 
 
+def supports_hdr_formation(formation_plan: Any) -> bool:
+    """Whether the native HDR formation kernel may be dispatched for this plan.
+
+    The kernel covers the full _form_hdr_chunk chain except the film channel-ratio
+    gain: with film_mode="full" and an active curve preset the gain field is a
+    per-pixel transfer the kernel does not model, so those plans keep the NumPy
+    path (same exclusion precedent as supports_agx).
+    """
+    if _fast_mode() == "off":
+        return False
+    if _load_extension() is None:
+        return False
+    if str(getattr(formation_plan, "film_mode", "observe")) == "full" and str(
+        getattr(formation_plan, "curve_preset", "none")
+    ) != "none":
+        return False
+    return True
+
+
+def compile_hdr_plan(
+    hdr_plan: Any,
+    formation_plan: Any,
+    inset_matrix: Any,
+    outset_matrix: Any,
+    formation_luma: Any,
+    curve_tables: tuple[Any, Any],
+    peak: float,
+    output_gamut: str,
+) -> Any:
+    from .fast_plan import compile_hdr_formation_plan as _compile
+
+    return _compile(
+        hdr_plan,
+        formation_plan,
+        inset_matrix,
+        outset_matrix,
+        formation_luma,
+        curve_tables,
+        peak,
+        output_gamut,
+    )
+
+
+def apply_hdr_formation_f32(rgb: Any, clip_masks: Any | None, plan: Any) -> np.ndarray:
+    ext = _require_extension()
+    arr = _output_array(rgb, "rgb")
+    if clip_masks is None:
+        return ext.apply_hdr_formation_f32(arr, None, plan)
+    masks = _output_array(clip_masks, "clip_masks")
+    if masks.shape != arr.shape:
+        raise ValueError("clip_masks must match rgb shape")
+    return ext.apply_hdr_formation_f32(arr, masks, plan)
+
+
 def supports_output_finalizer() -> bool:
     """Whether the independent SDR output kernel may be dispatched."""
     if _fast_mode() == "off":

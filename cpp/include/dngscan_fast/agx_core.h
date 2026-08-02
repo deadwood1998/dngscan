@@ -6,7 +6,7 @@
 
 namespace dngscan_fast {
 
-inline constexpr int NATIVE_ABI_VERSION = 5;
+inline constexpr int NATIVE_ABI_VERSION = 6;
 inline constexpr float EPS = 1e-12f;
 
 struct CurveParams {

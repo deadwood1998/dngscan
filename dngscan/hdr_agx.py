@@ -89,6 +89,42 @@ def _hdr_reference_needed(hdr_plan: HdrAgxPlan) -> bool:
     )
 
 
+def _compile_native_hdr_plan(
+    hdr_plan: HdrAgxPlan,
+    hdr_tone_plan: ToneCompressionPlan,
+    inset_matrix: Any,
+    outset_matrix: Any,
+    formation_y: Any,
+    curve_tables: tuple[HdrCurveTable, HdrCurveTable],
+    peak: float,
+    output_gamut: str,
+) -> Any | None:
+    """Native HDR formation plan, or None when the NumPy path must serve.
+
+    Same strict/fallback ladder as the SDR output finalizer: compile failures fall
+    back silently in auto mode and raise NativeKernelError under DNGSCAN_FAST=1.
+    """
+    if not fast_backend.supports_hdr_formation(hdr_tone_plan):
+        return None
+    try:
+        return fast_backend.compile_hdr_plan(
+            hdr_plan,
+            hdr_tone_plan,
+            inset_matrix,
+            outset_matrix,
+            formation_y,
+            curve_tables,
+            peak,
+            output_gamut,
+        )
+    except Exception as exc:
+        if fast_backend.strict_requested():
+            if isinstance(exc, fast_backend.NativeKernelError):
+                raise
+            raise fast_backend.NativeKernelError(str(exc)) from exc
+    return None
+
+
 def _form_hdr_chunk(
     intent_rec: Any,
     hdr_plan: HdrAgxPlan,
@@ -100,13 +136,33 @@ def _form_hdr_chunk(
     clip_masks_chunk: Any | None,
     peak: float,
     output_gamut: str,
+    native_plan: Any | None = None,
 ) -> Any:
     """One HDR display-linear chunk from shared scene-intent Rec.2020.
 
     The per-plan curve tables carry the compiled body+shoulder curve (§P3); the
     analytic evaluator in hdr_curve remains the oracle they are tested against.
     A pair of aliased tables encodes "no reference candidate needed".
+
+    With a compiled native plan the whole chain runs in the C++ kernel
+    (tests/test_hdr_native.py holds the two paths to per-pixel parity); the NumPy
+    body below is the reference implementation and the fallback.
     """
+    if native_plan is not None:
+        try:
+            arr = np.ascontiguousarray(intent_rec, dtype=np.float32)
+            masks = (
+                np.ascontiguousarray(clip_masks_chunk, dtype=np.float32)
+                if clip_masks_chunk is not None
+                else None
+            )
+            return fast_backend.apply_hdr_formation_f32(arr, masks, native_plan)
+        except fast_backend.NativeKernelError:
+            if fast_backend.strict_requested():
+                raise
+        except Exception as exc:
+            if fast_backend.strict_requested():
+                raise fast_backend.NativeKernelError(str(exc)) from exc
     inset, pre_hue = agx_engine.prepare_formation(intent_rec, hdr_tone_plan, inset_matrix)
     # Film channel-ratio gain, same construction as the SDR body (agx.apply_core):
     # the HDR plan is a replace() of the film plan so curve_preset rides along, and
@@ -186,6 +242,11 @@ def scene_render_to_hdr_display_linear(
     # outer ceiling; using it here would normalize every photograph to display peak.
     peak = _pack_peak(hdr_plan)
 
+    native_hdr_plan = _compile_native_hdr_plan(
+        hdr_plan, hdr_tone_plan, inset_matrix, outset_matrix,
+        formation_y, curve_tables, peak, output_gamut,
+    )
+
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb,
         scene_transform_engine.window_transport_tag(bundle)
@@ -212,6 +273,7 @@ def scene_render_to_hdr_display_linear(
             clip_masks[start:end] if clip_masks is not None else None,
             peak,
             output_gamut,
+            native_plan=native_hdr_plan,
         )
 
     ranges = [
@@ -281,6 +343,10 @@ def render_ultrahdr_agx_pair(
         body_params=body_params,
     )
     peak = _pack_peak(hdr_plan)
+    native_hdr_plan = _compile_native_hdr_plan(
+        hdr_plan, hdr_tone_plan, inset_matrix, outset_matrix,
+        formation_y, curve_tables, peak, output_gamut,
+    )
 
     scene = bundle.scene_rec2020_render
     h, w = scene.shape[:2]
@@ -368,6 +434,7 @@ def render_ultrahdr_agx_pair(
             sample_masks,
             peak,
             output_gamut,
+            native_plan=native_hdr_plan,
         )
         return sdr_final, hdr_final
 

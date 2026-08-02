@@ -20,7 +20,7 @@ from .constants import (
 )
 from .models import ToneCompressionPlan
 
-NATIVE_ABI_VERSION = 5
+NATIVE_ABI_VERSION = 6
 NATIVE_OUTPUT_GAMUT_FIT_ITERS = 16
 NATIVE_OUTPUT_GAMUT_TOLERANCE = 1e-4
 
@@ -128,6 +128,101 @@ def _build_output_plan(output_gamut: str, alpha: float) -> Any:
         gamut_fit_iters=NATIVE_OUTPUT_GAMUT_FIT_ITERS,
         gamut_tolerance=NATIVE_OUTPUT_GAMUT_TOLERANCE,
     )
+
+
+def _luma3(values: Any) -> tuple[float, float, float]:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size != 3:
+        raise ValueError("luminance weights must have 3 elements")
+    return (float(arr[0]), float(arr[1]), float(arr[2]))
+
+
+def _hdr_table_namespace(table: Any) -> Any:
+    from types import SimpleNamespace
+
+    values = np.ascontiguousarray(np.asarray(table.values, dtype=np.float32))
+    if values.ndim != 1 or values.size < 2:
+        raise ValueError("HDR curve table must be a 1-D array of >= 2 samples")
+    if not np.isfinite(values).all():
+        raise ValueError("HDR curve table contains non-finite samples")
+    ev_start = float(table.ev_start)
+    inv_step = float(table.inv_step)
+    if not (math.isfinite(ev_start) and math.isfinite(inv_step)) or inv_step <= 0.0:
+        raise ValueError("HDR curve table grid is malformed")
+    return SimpleNamespace(ev_start=ev_start, inv_step=inv_step, values=values)
+
+
+def compile_hdr_formation_plan(
+    hdr_plan: Any,
+    formation_plan: Any,
+    inset_matrix: Any,
+    outset_matrix: Any,
+    formation_luma: Any,
+    curve_tables: tuple[Any, Any],
+    peak: float,
+    output_gamut: str,
+) -> Any:
+    """Immutable native plan for one HDR formation chain (dngscan/hdr_agx.py).
+
+    Carries exactly what _form_hdr_chunk consumes: formation matrices, the compiled
+    curve-table pair (aliased tables encode "no reference candidate"), the blend and
+    fit luminance rows, and the scene-authorized peak. Not cached: it is compiled
+    once per render and holds per-plan table arrays.
+    """
+    from types import SimpleNamespace
+
+    from .hdr_color import output_luma_weights
+
+    if output_gamut not in OUTPUT_GAMUT_SPACES:
+        raise ValueError(f"unknown output gamut: {output_gamut}")
+    space = OUTPUT_GAMUT_SPACES[output_gamut]
+
+    native_table, reference_table = curve_tables
+    has_reference = reference_table is not native_table
+
+    global_rho = float(hdr_plan.color.channel_separation) * float(
+        hdr_plan.color.snr_gate
+    )
+    hue_restore = float(agx_engine._plan_hue_restore(formation_plan))
+    punch_strength = float(getattr(formation_plan, "punch_strength", 0.0))
+    peak = float(peak)
+    for name, value in (
+        ("global_rho", global_rho),
+        ("hue_restore", hue_restore),
+        ("punch_strength", punch_strength),
+        ("peak", peak),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"HDR plan {name} is not finite")
+    if peak <= 0.0:
+        raise ValueError("HDR plan peak must be positive")
+
+    plan = SimpleNamespace(
+        inset=_flat_matrix(np.asarray(inset_matrix, dtype=np.float64)),
+        outset=_flat_matrix(np.asarray(outset_matrix, dtype=np.float64)),
+        rec2020_to_xyz=_flat_matrix(RGB_TO_XYZ["Rec2020"]),
+        xyz_to_rec2020=_flat_matrix(XYZ_TO_RGB["Rec2020"]),
+        xyz_to_output=_flat_matrix(XYZ_TO_RGB[space]),
+        oklab_m1=_flat_matrix(OKLAB_M1),
+        oklab_m2=_flat_matrix(OKLAB_M2),
+        oklab_m1_inv=_flat_matrix(OKLAB_M1_INV),
+        oklab_m2_inv=_flat_matrix(OKLAB_M2_INV),
+        formation_luma=_luma3(formation_luma),
+        output_luma=_luma3(output_luma_weights(output_gamut)),
+        hue_restore=hue_restore,
+        punch_strength=punch_strength,
+        global_rho=global_rho,
+        peak=peak,
+        native_table=_hdr_table_namespace(native_table),
+        reference_table=_hdr_table_namespace(reference_table)
+        if has_reference
+        else None,
+        has_reference=has_reference,
+    )
+    for value in plan.inset + plan.outset:
+        if not math.isfinite(value):
+            raise ValueError("HDR formation matrices contain non-finite values")
+    return plan
 
 
 def compile_output_plan(output_gamut: str, alpha: float = 0.05) -> Any:

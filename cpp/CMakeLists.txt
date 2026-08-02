@@ -8,6 +8,7 @@ pybind11_add_module(
   _dngscan_fast
   src/bindings.cpp
   src/agx_core.cpp
+  src/hdr_core.cpp
   src/output_core.cpp
 )
 
