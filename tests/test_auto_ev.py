@@ -233,6 +233,7 @@ class ProbeNativeFinalizeTests(unittest.TestCase):
         self.assertLess(float(diff.max()), 1e-4)
 
     def test_native_failure_falls_back_to_the_exact_numpy_path(self) -> None:
+        import os
         import numpy as np
         from unittest import mock
         from dngscan import _fast as fast_backend
@@ -240,9 +241,17 @@ class ProbeNativeFinalizeTests(unittest.TestCase):
         from dngscan.render import finalize_output_linear
 
         sample = np.linspace(-0.1, 1.4, 300, dtype=np.float32).reshape(-1, 3)
-        with mock.patch.object(
+        boom = mock.patch.object(
             fast_backend, "compile_output_plan", side_effect=RuntimeError("boom")
-        ):
-            out = _probe_finalize_linear(sample, "p3", "none", 1.0, None)
+        )
+        # The silent fallback is the auto-mode contract; strict mode instead
+        # surfaces the failure (see _probe_finalize_linear's ladder).
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "auto"}):
+            with boom:
+                out = _probe_finalize_linear(sample, "p3", "none", 1.0, None)
         reference = finalize_output_linear(sample, "p3", "none", 1.0, None)
         self.assertTrue(np.array_equal(out, reference))
+        with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "1"}):
+            with boom:
+                with self.assertRaises(fast_backend.NativeKernelError):
+                    _probe_finalize_linear(sample, "p3", "none", 1.0, None)
