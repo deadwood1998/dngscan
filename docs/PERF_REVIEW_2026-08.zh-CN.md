@@ -19,11 +19,11 @@ HDR 导出的大头即来源于此。次级结构问题：GUI `/export` 在隔�
 | A2 | ultrahdr SDR 底图接入 `finalize_output_u8_f32` 融合核 | RSS 3.7→2.6GB；墙钟中性（关键路径在 A1） | ✅ ce3e7a7 |
 | A3 | `color.fit_to_output_gamut` 路由 `fit_output_gamut_f32`（惠及 auto_ev/render_output_linear） | 浮点路径微变，需按门禁单独评审 | 待做，并入 B5 评审 |
 | B4 | `/export` worker 按 `_cache_identity` 复用 npz 里已持久化的全分辨率 Analysis | GUI 导出 −1.5~2.5s（实测命中 1ms 替代 ~2.3s 重算） | ✅ |
-| B5 | auto-EV 探针传入已编译 plan、降采样、走原生 finalize | −1~3s/次导出；估计值微变需声明 | 待做 |
+| B5 | auto-EV 探针：plan 复用是纯去重（~0.1s）；降采样与原生 finalize 会微变估计值=声明级变化 | 大头（~2.7s 的 14 次探针渲染）需声明后才能动 | 冻结待批 |
 | C6 | GainMap 施加：`np.ix_`→步进视图、角点 gather 减半（**逐位相同**已验证） | 0.90→0.45s | ✅ 1bfa02b |
 | C7 | 掩膜羽化半分辨率先行（0.37→0.10s） | **改变掩膜数值=效果变化**，需单独审批 | 冻结待批 |
 | C8 | rawpy fork 构建开 `LIBRAW_USE_OPENMP`（DHT 2.4s，2-3× 空间） | 解码 −1~1.6s | 待做（换钉全套回归） |
-| D9 | 全帧 XYZ 副本（float64 路径、144MB 常驻）惰性化，Y 直接点积 | −0.28s −144MB | 待做 |
+| D9 | 修正：gamut 统计需要完整 XYZ，计算不可省；可做的是 analyze 后释放常驻（-144MB，want_png 时重建）与 Y 单通道同路径提取 | −144MB 常驻 | 待做（范围缩小） |
 | D10 | percentile 合并/CFA gather 复用/导出显示指标子采样 | −1~1.5s | 待做（子采样项是效果声明变化） |
 | E12a | `_base_roundtrip_error` 分带 + 精确 top-K（镜像既有先例；均值 float64 累加已声明） | −0.7s −700MB 瞬时 | ✅ 1bfa02b |
 | E12b | 导出抖动平面复用：预生成全帧噪声内存代价过高、按组重播种改字节——仅剩双缓冲重叠方案（~0.2s，复杂度高，缓办）；`_clip_masks_resized` 双拷贝与 `y/ev` 死重仍待做 | −0.3s −400MB | 部分冻结 |
