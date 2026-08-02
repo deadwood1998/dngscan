@@ -22,12 +22,13 @@ from dataclasses import replace
 from typing import Any
 
 from ._deps import np
+from . import _fast as fast_backend
 from . import agx as agx_engine
 from . import guidance as guidance_engine
 from . import punch as punch_engine
 from . import retreat as retreat_engine
 from . import scene_transform as scene_transform_engine
-from .color import encode_display_linear, rec2020_to_output
+from .color import encode_display_linear, fit_to_output_gamut, rec2020_to_output
 from .drt import curve_params_from_plan
 from .hdr_curve import HdrCurveTable, compile_hdr_curve_table_pair
 from .hdr_color import (
@@ -41,9 +42,11 @@ from .render import (
     STREAM_QUANTIZE_CHUNK,
     STREAM_RENDER_CHUNK,
     STREAM_THREAD_MIN_PIXELS,
+    _apply_output_color_ops,
     apply_tone_core,
-    dither_quantize_u8,
+    dither_quantize_u8_with_noise,
     finalize_output_linear,
+    generate_dither_noise,
     plan_with_look_overrides,
     scene_intent_rec2020,
 )
@@ -252,6 +255,21 @@ def render_ultrahdr_agx_pair(
     effective_tone = effective_plan.tone if isinstance(effective_plan, RenderPlan) else effective_plan
     color_plan = effective_plan.color if isinstance(effective_plan, RenderPlan) else None
 
+    # The SDR base shares render_output_u8's fused native finalizer (matrix →
+    # Oklab gamut fit → transfer → TPDF quantize). Ultrahdr forces look/filter
+    # off, so only the pre-fit color ops (highlight chroma retreat) stay in the
+    # render workers; the same strict/fallback ladder applies.
+    gamut_alpha = float(color_plan.gamut_fit_alpha) if color_plan is not None else 0.05
+    native_output_plan = None
+    if fast_backend.supports_output_finalizer():
+        try:
+            native_output_plan = fast_backend.compile_output_plan(
+                output_gamut, gamut_alpha
+            )
+        except Exception as exc:
+            if fast_backend.strict_requested():
+                raise fast_backend.NativeKernelError(str(exc)) from exc
+
     hdr_tone_plan = _hdr_tone_plan(hdr_plan)
     inset_matrix, outset_matrix = agx_engine.formation_matrices(hdr_tone_plan)
     formation_y = formation_luma_weights(outset_matrix)
@@ -322,15 +340,23 @@ def render_ultrahdr_agx_pair(
         output_linear = np.nan_to_num(
             output_linear, nan=0.0, posinf=1e6, neginf=-1e6
         ).astype(np.float32, copy=False)
-        finalized = finalize_output_linear(
-            output_linear, output_gamut, "none", 1.0, color_plan
-        )
-        sdr_final = np.nan_to_num(
-            finalized.astype(np.float32, copy=False),
-            nan=0.0,
-            posinf=1.0,
-            neginf=0.0,
-        )
+        if native_output_plan is not None:
+            sdr_final = np.ascontiguousarray(
+                _apply_output_color_ops(
+                    output_linear, output_gamut, "none", 1.0, color_plan
+                ),
+                dtype=np.float32,
+            )
+        else:
+            finalized = finalize_output_linear(
+                output_linear, output_gamut, "none", 1.0, color_plan
+            )
+            sdr_final = np.nan_to_num(
+                finalized.astype(np.float32, copy=False),
+                nan=0.0,
+                posinf=1.0,
+                neginf=0.0,
+            )
         hdr_final = _form_hdr_chunk(
             rec,
             hdr_plan,
@@ -352,8 +378,23 @@ def render_ultrahdr_agx_pair(
     rng = np.random.default_rng(0)
 
     def quantize_chunk(start: int, end: int, finalized: Any) -> None:
+        noise_a, noise_b = generate_dither_noise(rng, finalized.shape)
+        if native_output_plan is not None:
+            try:
+                sdr_out[start:end] = fast_backend.finalize_output_u8_f32(
+                    finalized, noise_a, noise_b, native_output_plan
+                )
+                return
+            except Exception as exc:
+                if fast_backend.strict_requested():
+                    if isinstance(exc, fast_backend.NativeKernelError):
+                        raise
+                    raise fast_backend.NativeKernelError(str(exc)) from exc
+            finalized = fit_to_output_gamut(
+                finalized, output_gamut, alpha=gamut_alpha
+            ).astype(np.float32, copy=False)
         encoded = encode_display_linear(finalized, output_gamut)
-        sdr_out[start:end] = dither_quantize_u8(encoded, rng)
+        sdr_out[start:end] = dither_quantize_u8_with_noise(encoded, noise_a, noise_b)
 
     def consume_in_quantize_groups(results: Any) -> None:
         group_start = 0
