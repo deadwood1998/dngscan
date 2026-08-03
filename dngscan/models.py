@@ -34,6 +34,13 @@ class RawEvidence:
     xyz_to_cam: Any | None
     provider: str = "libraw"
     provider_version: str | None = None
+    # LibRaw's decode matrix ``rgb_cam`` (camera -> linear sRGB, 3x4 with the second
+    # green in the fourth column).  Captured beside ``xyz_to_cam`` because some bodies
+    # (e.g. Sigma fp DNGs) ship an all-zero Adobe-table ``rgb_xyz_matrix`` while LibRaw
+    # still decodes through a fully valid ``rgb_cam`` built from the DNG ColorMatrix
+    # tags.  This is what the fixed reconstruction actually applied, so the hot-WB
+    # stage can fall back to it without guessing.
+    color_matrix: Any | None = None
 
 
 @dataclass
@@ -145,6 +152,12 @@ class RawBundle:
     # Multipliers baked into the one fixed reconstruction.  User WB is expressed as a
     # relative camera-channel transform from this immutable base.
     decode_wb: list[float] | None = None
+    # LibRaw's decode matrix ``rgb_cam`` (RawEvidence.color_matrix), retained beside
+    # ``wb_xyz_to_cam`` for the hot-WB C0 ladder: when the Adobe/DNG evidence matrix is
+    # missing or all-zero, this is the matrix the fixed decode really used.  Kept on the
+    # bundle (like ``wb_xyz_to_cam``) because compact preview-cache entries discard the
+    # large RawEvidence payload but must still rebalance.
+    wb_color_matrix: Any | None = None
 
 
 @dataclass

@@ -46,3 +46,23 @@ LibRaw 和 Apple RAW 都执行这一项目 WB。Apple 的 `neutralTemperature` �
 - decoder 集成：LibRaw 与 Core Image 的 `decode_wb` 均保持 camera AsShot，`applied_wb` 反映用户选择；daylight/Kelvin 都走项目 WB。
 - golden 集：至少覆盖 Bayer DHT/AHD/VNG、X-Trans、clip/blend/reconstruct、3200/5500/9300K、daylight、sRGB/P3、正常曝光与饱和高光。记录旧/新 scene float diff 与最终输出 diff，人工审片通过后生成新 golden。
 - 性能：在同一进程内先建立 camera DecodeContext，再轮换全部 WB。分别报告 decode 次数、WB matrix、scene reanalysis、plan/render 与端到端 p50/p95；禁止把磁盘 cache hit 冒充首次 prepare。
+
+## 裁决记录（2026-08-04，盲测通过）
+
+**协议**：双盲 A/B。旧 = 迁移前 main（e32af14），新 = 迁移 + C₀ 阶梯修复（#9 squash `0cf6f48` + `fc0dbcb`，即 PR #10 分支）。每对 A/B 随机盲序（seed 20260804），密钥在裁决后揭盲。全尺寸 SDR 导出，其余参数默认。第一轮曾误以未含 #10 的 main 作"新"侧——fp 样张的固定色温在其上静默退化为 AsShot，导致 96% 像素级伪差异——作废重做；这也再次证明 #10 是迁移可用的前提。
+
+**样张与逐对结果**（差异统计为 8bit 码值）：
+
+| 对 | 场景 | max / p99.9 / 变化像素>2 | 用户判决 | 揭盲 |
+|---|---|---|---|---|
+| 1 | X100VI RAF（X-Trans，零剪切）· 5500K · clip | 63 / 5 / 8.6% | 看不出 | — |
+| 2 | fp `_SDI0150` 混合光 · 5500K · clip | 48 / 5 / 2.9% | 看不出 | — |
+| 3 | 同上 · reconstruct | 55 / 7 / 5.2% | 看不出 | — |
+| 4 | fp `_SDI0199` 舞台 ISO25600 · 3200K · clip | 245 / 15 / 4.3% | A 好 | A = 旧 |
+| 5 | 同上 · reconstruct | 255 / 24 / 6.7% | B 好 | B = 新 |
+
+**用户总评**：整体几乎完全一样，颜色差距不可见，核心差距呈现为噪点形态不同。
+
+**结论**：同一场景两种高光模式下偏好指向相反两侧（clip 选旧、reconstruct 选新），结合"几乎全同"总评，判定为**无系统性方向**——差异属阈值附近的噪点口味，不构成旧路径优势。迁移语义**通过**：配平精度获视觉确认（与交叉验证 1e-5 量级吻合）；高光重建与解拜耳的路径依赖差异（含 X-Trans）均在"看不出"或"无方向偏好"之列。
+
+**金标**：现有 golden/SDR 冻结全部走 camera 路径，迁移前后逐字节不变（三方 sha 验证），无需重冻结。上节"golden 集"要求的非 camera 覆盖，在本裁决通过后按新语义生成即为基线。

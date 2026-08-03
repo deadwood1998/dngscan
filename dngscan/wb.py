@@ -134,6 +134,50 @@ def interpolated_color_matrix(calibration: Any, cct: float) -> Any:
     return w * m1 + (1.0 - w) * m2
 
 
+def asshot_reference_cct(calibration: Any, camera_wb: Any) -> float:
+    """CCT of the decode-side (as-shot) white, solved against the file's own tags.
+
+    This is the DNG-SDK-style fixed-point that ``interpolated_color_matrix`` documents
+    as unnecessary for *declared* targets: for an as-shot neutral the matrix depends on
+    the CCT and the CCT depends on the matrix, so iterate.  The camera multipliers are
+    the reciprocal of the camera-neutral response (see ``kelvin_camera_multipliers``);
+    inverting the interpolated matrix maps that neutral to XYZ, McCamy's approximation
+    maps chromaticity back to CCT, and the loop converges in a few steps.  The result
+    anchors the hot-WB decode matrix C0 to the illuminant the fixed reconstruction was
+    actually balanced for, instead of an arbitrary fixed reference.
+    """
+    values = np.asarray(list(camera_wb)[:3] if camera_wb else [], dtype=np.float64)
+    if values.size < 3 or not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+        raise ValueError(f"invalid as-shot multipliers for CCT solve: {camera_wb!r}")
+    neutral = values[1] / values
+    cct = 5000.0
+    for _ in range(16):
+        matrix = np.asarray(
+            interpolated_color_matrix(calibration, cct), dtype=np.float64
+        )[:3, :3]
+        try:
+            xyz = np.linalg.solve(matrix, neutral)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                f"singular colour calibration during as-shot CCT solve: {exc}"
+            ) from exc
+        total = float(np.sum(xyz))
+        if not np.all(np.isfinite(xyz)) or total <= 0.0 or float(xyz[1]) <= 0.0:
+            raise ValueError("non-physical as-shot white during CCT solve")
+        x = float(xyz[0]) / total
+        y = float(xyz[1]) / total
+        denominator = 0.1858 - y
+        if abs(denominator) < 1e-9:
+            raise ValueError("degenerate chromaticity during as-shot CCT solve")
+        n = (x - 0.3320) / denominator
+        candidate = 449.0 * n ** 3 + 3525.0 * n ** 2 + 6823.3 * n + 5520.33
+        candidate = min(25000.0, max(1667.0, float(candidate)))
+        if abs(candidate - cct) < 1.0:
+            return candidate
+        cct = candidate
+    return cct
+
+
 def solve_kelvin_wb(
     cct: float,
     *,

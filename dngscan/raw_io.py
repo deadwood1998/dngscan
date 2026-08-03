@@ -386,6 +386,109 @@ def normalized_camera_wb(wb_values: list[float] | None) -> Any:
     )
 
 
+def color_matrix_xyz_to_cam(color_matrix: Any | None) -> Any | None:
+    """Equivalent XYZ->camera matrix from LibRaw's decode matrix (``rgb_cam``).
+
+    ``color_matrix`` is LibRaw's camera -> linear-sRGB(D65) matrix — the one every
+    ``postprocess`` output conversion really goes through (Rec.2020 output is
+    ``(sRGB->Rec2020) @ rgb_cam``).  Its underlying camera->sRGB rows are normalized so
+    the post-WB camera neutral maps to sRGB white; on DNGs LibRaw builds it from
+    ColorMatrix2 (measured on Sigma fp: it equals the D65-row-normalized ColorMatrix2
+    to tag precision, while ``rgb_xyz_matrix`` is all-zero).  The 3x4 fourth column is
+    the second green; after LibRaw's three-channel reconstruction G2 is merged into G,
+    so the column folds into green (it is zero on three-colour sensors).  Inverting
+    through sRGB->XYZ yields an ``xyz_to_cam`` whose pseudo-inverse reproduces LibRaw's
+    true camera->Rec.2020 exactly — no Adobe-table approximation involved.  The
+    per-channel row normalization is harmless to the hot transform as long as decode
+    and target use this same matrix, because diagonal gains commute; that is why the
+    caller never mixes this convention with an unnormalized DNG target matrix.
+    Returns None when the matrix is absent, non-finite, empty, or singular.
+    """
+    if color_matrix is None:
+        return None
+    matrix = np.asarray(color_matrix, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] < 3 or matrix.shape[1] < 3:
+        return None
+    cam_to_srgb = matrix[:3, :3].copy()
+    if matrix.shape[1] >= 4:
+        cam_to_srgb[:, 1] += matrix[:3, 3]
+    if not np.all(np.isfinite(cam_to_srgb)) or float(np.abs(cam_to_srgb).sum()) <= 1e-9:
+        return None
+    from .constants import RGB_TO_XYZ
+
+    cam_to_xyz = np.asarray(RGB_TO_XYZ["sRGB"], dtype=np.float64) @ cam_to_srgb
+    try:
+        xyz_to_cam = np.linalg.inv(cam_to_xyz)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(xyz_to_cam)):
+        return None
+    return xyz_to_cam
+
+
+def resolve_hot_wb_c0(
+    bundle: RawBundle, target_cct: float | None = None
+) -> tuple[Any, Any, str]:
+    """(decode C0, target matrix, source) for the hot-WB stage, best rung first.
+
+    Calibration ladder, mirroring ``solve_wb_for_mode``'s philosophy — every rung must
+    correspond to what the fixed decode actually did:
+
+    1. ``wb_xyz_to_cam`` (evidence ``rgb_xyz_matrix``): unchanged behaviour for bodies
+       that already worked, including the DNG dual-illuminant target interpolation for
+       fixed-Kelvin modes — on this rung both matrices share the raw DNG ColorMatrix
+       scale convention, so mixing them is safe.
+    2. LibRaw ``color_matrix`` (``rgb_cam``): the matrix the decoder truly applied,
+       converted by ``color_matrix_xyz_to_cam``.  The target stays the *same* matrix:
+       its rows carry a D65-neutral normalization, and pairing it with an unnormalized
+       interpolated DNG matrix would insert those per-channel neutral scales into the
+       transform — a hidden white-balance shift.  The pure diagonal rebalance on this
+       rung reproduces exactly what LibRaw would have rendered with the target
+       multipliers, up to the declared demosaic-order difference.
+    3. The file's own DNG dual-illuminant tags: decode C0 is interpolated at the
+       as-shot CCT (``wb.asshot_reference_cct``, the DNG-SDK-style fixed point on the
+       decode-side multipliers), the target at the declared CCT — both in the same
+       unnormalized convention.
+    Missing everything raises ValueError; the caller degrades explicitly to camera.
+    """
+    candidate = bundle.wb_xyz_to_cam
+    if candidate is not None:
+        matrix = np.asarray(candidate, dtype=np.float64)
+        if (
+            matrix.ndim == 2
+            and matrix.shape[0] >= 3
+            and matrix.shape[1] == 3
+            and np.all(np.isfinite(matrix[:3, :3]))
+            and float(np.abs(matrix[:3, :3]).sum()) > 1e-9
+        ):
+            target = matrix
+            if target_cct is not None:
+                calibration = dng_metadata.read_dng_color_calibration(bundle.path)
+                if calibration is not None:
+                    from .wb import interpolated_color_matrix
+
+                    target = interpolated_color_matrix(calibration, target_cct)
+            return matrix, target, "evidence"
+    derived = color_matrix_xyz_to_cam(getattr(bundle, "wb_color_matrix", None))
+    if derived is not None:
+        return derived, derived, "color_matrix"
+    calibration = dng_metadata.read_dng_color_calibration(bundle.path)
+    if calibration is not None:
+        from .wb import asshot_reference_cct, interpolated_color_matrix
+
+        decode_cct = asshot_reference_cct(
+            calibration, bundle.decode_wb or bundle.camera_wb
+        )
+        decode = interpolated_color_matrix(calibration, decode_cct)
+        target = (
+            decode
+            if target_cct is None
+            else interpolated_color_matrix(calibration, target_cct)
+        )
+        return decode, target, "dng_calibration"
+    raise ValueError("camera ColorMatrix is unavailable for hot white balance")
+
+
 def hot_wb_matrix_rec2020(
     xyz_to_cam: Any,
     decode_wb: list[float],
@@ -492,19 +595,11 @@ def rebalance_raw_bundle(bundle: RawBundle, wb_mode: str) -> RawBundle:
             wb_degradation=note,
         )
     try:
-        target_xyz_to_cam = bundle.wb_xyz_to_cam
-        target_cct = kelvin_mode_cct(wb_mode)
-        if target_cct is not None:
-            calibration = dng_metadata.read_dng_color_calibration(bundle.path)
-            if calibration is not None:
-                from .wb import interpolated_color_matrix
-
-                target_xyz_to_cam = interpolated_color_matrix(
-                    calibration,
-                    target_cct,
-                )
+        decode_xyz_to_cam, target_xyz_to_cam, _c0_source = resolve_hot_wb_c0(
+            bundle, kelvin_mode_cct(wb_mode)
+        )
         transform = hot_wb_matrix_rec2020(
-            bundle.wb_xyz_to_cam,
+            decode_xyz_to_cam,
             decode_wb,
             target_wb,
             target_xyz_to_cam,
@@ -1262,6 +1357,11 @@ def load_raw(
             else np.asarray(evidence.xyz_to_cam, dtype=np.float64).copy()
         ),
         decode_wb=[float(x) for x in camera_wb],
+        wb_color_matrix=(
+            None
+            if evidence.color_matrix is None
+            else np.asarray(evidence.color_matrix, dtype=np.float64).copy()
+        ),
     )
     if effective_wb_mode == "camera":
         return base_bundle

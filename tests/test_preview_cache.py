@@ -90,6 +90,9 @@ def _bundle() -> RawBundle:
         applied_wb=[2.0, 1.0, 1.5, 1.0],
         decode_wb=[2.0, 1.0, 1.5, 1.0],
         wb_xyz_to_cam=np.eye(3, dtype=np.float64),
+        wb_color_matrix=np.hstack(
+            [np.eye(3, dtype=np.float64), np.zeros((3, 1), dtype=np.float64)]
+        ),
         clip_masks=np.linspace(0.0, 1.0, 8 * 8 * 3, dtype=np.float16).reshape(8, 8, 3),
         scene_scale_mode="measured",
         baseline_exposure=0.75,
@@ -285,6 +288,10 @@ class PreviewCacheTest(unittest.TestCase):
         self.assertEqual(restored.bundle.decode_wb, [2.0, 1.0, 1.5, 1.0])
         self.assertEqual(restored.bundle.applied_wb, [2.0, 1.0, 1.5, 1.0])
         np.testing.assert_array_equal(restored.bundle.wb_xyz_to_cam, np.eye(3))
+        np.testing.assert_array_equal(
+            restored.bundle.wb_color_matrix,
+            np.hstack([np.eye(3), np.zeros((3, 1))]),
+        )
         assert restored.bundle.raw_guidance is not None
         np.testing.assert_array_equal(
             restored.bundle.raw_guidance.clip_class,

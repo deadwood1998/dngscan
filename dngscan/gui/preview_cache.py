@@ -20,7 +20,11 @@ from dngscan.retreat import resize_clip_masks
 from .constants import PROXY_LONG_EDGE
 
 
-PREVIEW_CACHE_VERSION = 9
+# v10: bundle metadata gained wb_color_matrix (hot-WB C0 ladder rung 2).  Entries
+# written by v9 lack it, and on bodies whose rgb_xyz_matrix is all-zero (Sigma fp) a
+# stale entry would silently degrade every fixed-Kelvin/daylight rebalance back to
+# camera — a correctness change, so the version bump forces a re-decode.
+PREVIEW_CACHE_VERSION = 10
 PROXY_RESAMPLER = "lanczos"
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
@@ -279,6 +283,11 @@ def _bundle_metadata(bundle: RawBundle) -> dict[str, Any]:
             if bundle.wb_xyz_to_cam is not None
             else None
         ),
+        "wb_color_matrix": (
+            dg.np.asarray(bundle.wb_color_matrix, dtype=dg.np.float64).tolist()
+            if getattr(bundle, "wb_color_matrix", None) is not None
+            else None
+        ),
         "wb_degradation": bundle.wb_degradation,
         "daylight_wb": (
             [float(value) for value in bundle.daylight_wb]
@@ -349,6 +358,11 @@ def _bundle_from_cache(
         wb_xyz_to_cam=(
             np.asarray(metadata["wb_xyz_to_cam"], dtype=np.float64)
             if metadata.get("wb_xyz_to_cam") is not None
+            else None
+        ),
+        wb_color_matrix=(
+            np.asarray(metadata["wb_color_matrix"], dtype=np.float64)
+            if metadata.get("wb_color_matrix") is not None
             else None
         ),
         wb_degradation=metadata.get("wb_degradation"),

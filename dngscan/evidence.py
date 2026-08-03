@@ -77,6 +77,13 @@ def acquire_raw_evidence(path: Path) -> RawEvidence:
             )
             matrix = getattr(raw, "rgb_xyz_matrix", None)
             xyz_to_cam = None if matrix is None else np.asarray(matrix).copy()
+            # rgb_cam: the camera -> linear-sRGB matrix LibRaw actually decodes
+            # through.  Some DNGs (Sigma fp) leave rgb_xyz_matrix all-zero while
+            # this matrix is valid, so both are evidence.
+            decode_matrix = getattr(raw, "color_matrix", None)
+            color_matrix = (
+                None if decode_matrix is None else np.asarray(decode_matrix).copy()
+            )
 
             return RawEvidence(
                 path=path,
@@ -108,6 +115,7 @@ def acquire_raw_evidence(path: Path) -> RawEvidence:
                 orientation_flip=orientation_flip,
                 xyz_to_cam=xyz_to_cam,
                 provider_version=libraw_runtime_id(),
+                color_matrix=color_matrix,
             )
     except FileNotFoundError:
         raise
