@@ -184,25 +184,44 @@ def tone_plan_sample_scene_rec2020(
     )
 
 
-def scene_tone_metrics(
+def reliable_scene_ev_selection(
     bundle: RawBundle,
     analysis: Analysis,
     scene_transform: str = "none",
     scene_transform_strength: float = 1.0,
-    plan_exposure_gain: float | None = None,
+    exposure_gain: float | None = None,
     max_samples: int = 800_000,
-) -> SceneToneMetrics:
-    """Measure the reliable scene body separately from its highlight tail.
+) -> tuple[Any, Any, Any, bool]:
+    """The single declared reliable-sample selection behind every scene decision.
 
-    Reconstruction may make a clipped lamp visually plausible, but it cannot restore its
-    sensor headroom. On LibRaw we therefore exclude soft CFA-clipped sites from body
-    percentiles. Core Image's opcode geometry prevents spatial reuse, so that path removes
-    the aggregate clipped-cell fraction from the brightest luminance ranks instead. The
-    complete rendered tail remains available only for topology classification.
+    Returns ``(ev, body_mask, evidence_mask, evidence_ok)`` where ``ev`` is the
+    subsampled intent-scene luminance in EV relative to 18% gray, ``evidence_mask``
+    marks samples trustworthy enough to grant headroom (RAW-clip and floor-clamp
+    excluded, no fallback), ``body_mask`` is the possibly-fallback population SDR
+    body percentiles may use, and ``evidence_ok`` says whether the evidence mask
+    kept enough samples to speak for a reliable tail.
+
+    Tone planning (:func:`scene_tone_metrics`) and any observer of the planner's
+    inputs — for example the GUI's scene EV histogram — must consume this one
+    function so the display can never describe data the render did not see.
+
+    Samples sitting at the representable floor are clamped values, not measurements:
+    the decoder produced zero (or below one code value) and the clip above pinned them
+    to EV_REPORT_FLOOR. Letting them into the body percentiles is the black-end twin of
+    letting reconstructed highlights define the white point, so they are excluded while
+    enough real samples remain.
+
+    (That exclusion was written when the Core Image path left 1.78 % of pixels on the
+    floor against LibRaw's 0.001 %, and the cause was misread as Apple's black handling.
+    It was not: CIRAWFilter's shadowBias defaults to 5.0 and had not been zeroed, and
+    once it was (see coreimage_decode) that path leaves 0.006..0.18 %, below LibRaw's
+    own 0.16..1.9 %. The exclusion stays because it is right for any decoder — LibRaw
+    reaches the floor too, and a clamped sample is not evidence whoever produced it —
+    but it is a correctness guard, not a workaround for one back end.)
     """
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = subsample_step(flat.shape[0], max_samples)
-    gain = bundle.exposure_gain if plan_exposure_gain is None else plan_exposure_gain
+    gain = bundle.exposure_gain if exposure_gain is None else exposure_gain
     rec = scene_intent_rec2020(flat[::step, :3], bundle, gain)
     wb_adapt = scene_transform_engine.wb_adaptation_ratios(
         bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb,
@@ -214,19 +233,6 @@ def scene_tone_metrics(
     y = np.clip(rec2020_to_xyz(rec)[:, 1], 2.0 ** EV_REPORT_FLOOR, None)
     ev = np.log2(y) - GRAY_EV
 
-    # Samples sitting at the representable floor are clamped values, not measurements:
-    # the decoder produced zero (or below one code value) and the clip above pinned them
-    # to EV_REPORT_FLOOR. Letting them into the body percentiles is the black-end twin of
-    # letting reconstructed highlights define the white point, so they are excluded while
-    # enough real samples remain.
-    #
-    # This was written when the Core Image path left 1.78 % of pixels on the floor against
-    # LibRaw's 0.001 %, and the cause was misread as Apple's black handling. It was not:
-    # CIRAWFilter's shadowBias defaults to 5.0 and had not been zeroed, and once it was
-    # (see coreimage_decode) that path leaves 0.006..0.18 %, below LibRaw's own 0.16..1.9 %.
-    # The exclusion stays because it is right for any decoder — LibRaw reaches the floor
-    # too, and a clamped sample is not evidence whoever produced it — but it is a
-    # correctness guard, not a workaround for one back end.
     floor_ev = float(EV_REPORT_FLOOR) - GRAY_EV
     above_floor = ev > (floor_ev + 1e-3)
     reliable = above_floor.copy()
@@ -244,21 +250,50 @@ def scene_tone_metrics(
     # use the broader distribution for a defensive endpoint, but that fallback is not
     # allowed to call itself a reliable tail and grant HDR headroom.
     min_reliable = max(256, ev.size // 20)
-    evidence_reliable = reliable.copy()
-    evidence_count = int(np.count_nonzero(evidence_reliable))
+    evidence_reliable = reliable
+    evidence_ok = int(np.count_nonzero(evidence_reliable)) >= min_reliable
+
+    body = reliable
+    if int(np.count_nonzero(body)) < min_reliable:
+        body = above_floor if int(np.count_nonzero(above_floor)) >= 256 else np.ones_like(above_floor)
+    if int(np.count_nonzero(body)) < min_reliable:
+        body = np.ones((ev.shape[0],), dtype=bool)
+    return ev, body, evidence_reliable, evidence_ok
+
+
+def scene_tone_metrics(
+    bundle: RawBundle,
+    analysis: Analysis,
+    scene_transform: str = "none",
+    scene_transform_strength: float = 1.0,
+    plan_exposure_gain: float | None = None,
+    max_samples: int = 800_000,
+) -> SceneToneMetrics:
+    """Measure the reliable scene body separately from its highlight tail.
+
+    Reconstruction may make a clipped lamp visually plausible, but it cannot restore its
+    sensor headroom. On LibRaw we therefore exclude soft CFA-clipped sites from body
+    percentiles. Core Image's opcode geometry prevents spatial reuse, so that path removes
+    the aggregate clipped-cell fraction from the brightest luminance ranks instead. The
+    complete rendered tail remains available only for topology classification. The sample
+    selection itself lives in :func:`reliable_scene_ev_selection` and is shared with the
+    GUI's scene EV histogram by declaration.
+    """
+    ev, body_mask, evidence_reliable, evidence_ok = reliable_scene_ev_selection(
+        bundle,
+        analysis,
+        scene_transform,
+        scene_transform_strength,
+        plan_exposure_gain,
+        max_samples,
+    )
     reliable_sample_pct = float(np.mean(evidence_reliable) * 100.0)
     reliable_tail_p9999 = (
         float(np.percentile(ev[evidence_reliable], 99.99))
-        if evidence_count >= min_reliable
+        if evidence_ok
         else float("nan")
     )
-
-    if int(np.count_nonzero(reliable)) < min_reliable:
-        reliable = above_floor if int(np.count_nonzero(above_floor)) >= 256 else np.ones_like(above_floor)
-    reliable_ev = ev[reliable]
-    if reliable_ev.size < min_reliable:
-        reliable_ev = ev
-        reliable = np.ones((ev.shape[0],), dtype=bool)
+    reliable_ev = ev[body_mask]
 
     p1, p5, p50, p95, p99, p999 = [
         float(v) for v in np.percentile(reliable_ev, [1.0, 5.0, 50.0, 95.0, 99.0, 99.9])

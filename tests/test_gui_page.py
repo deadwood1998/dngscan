@@ -175,3 +175,59 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertNotIn('$("#toneCore").disabled=hdr', format_ui)
         self.assertIn("updateToneCoreExportUi()", format_ui)
         self.assertIn('id="toneCoreExportHint"', PAGE)
+
+
+class RealtimeHistogramPageTests(unittest.TestCase):
+    """Two histograms, each glued to the function it describes, display-only."""
+
+    def test_scene_histogram_sits_in_the_exposure_card_below_ev_fact(self) -> None:
+        exposure_card = PAGE[
+            PAGE.index('<div class="secTitle">曝光</div>'):
+            PAGE.index('<div class="card" id="toneAdjustCard">')
+        ]
+        self.assertIn('id="sceneHist"', exposure_card)
+        self.assertLess(
+            exposure_card.index('id="evFact"'), exposure_card.index('id="sceneHist"')
+        )
+        gap = PAGE[PAGE.index('id="evFact"'):PAGE.index('id="sceneHist"')]
+        self.assertLess(len(gap), 200, "scene histogram not adjacent to #evFact")
+
+    def test_display_histogram_sits_in_the_preview_card_below_preview_wrap(self) -> None:
+        preview_card = PAGE[
+            PAGE.index('<div class="card previewCard">'):
+            PAGE.index('<dialog class="outputDialog"')
+        ]
+        self.assertIn('id="displayHist"', preview_card)
+        self.assertLess(
+            preview_card.index('id="previewWrap"'), preview_card.index('id="displayHist"')
+        )
+        gap = PAGE[PAGE.index('id="previewWrap"'):PAGE.index('id="displayHist"')]
+        self.assertLess(len(gap), 300, "display histogram not adjacent to #previewWrap")
+
+    def test_histograms_render_from_the_preview_response_only(self) -> None:
+        self.assertIn("function renderSceneHistogram(", PAGE)
+        self.assertIn("function renderDisplayHistogram(", PAGE)
+        handle = PAGE[PAGE.index("function handleJobResult(") :]
+        handle = handle[: handle.index("\n}")]
+        self.assertIn("renderSceneHistogram(j.scene_histogram)", handle)
+        self.assertIn(
+            "renderDisplayHistogram(j.display_histogram,j.hdr_earned_ev)", handle
+        )
+
+    def test_histograms_are_display_only_no_interaction(self) -> None:
+        # First version is deliberately zero-interaction: no hover, no range
+        # selection, no listeners of any kind on either canvas.
+        for canvas in ("sceneHist", "displayHist"):
+            with self.subTest(canvas=canvas):
+                self.assertNotIn(f'#{canvas}").addEventListener', PAGE)
+                self.assertNotIn(f'#{canvas}").on', PAGE)
+                tag_start = PAGE.index(f'id="{canvas}"')
+                tag = PAGE[PAGE.rindex("<canvas", 0, tag_start):PAGE.index(">", tag_start)]
+                self.assertNotIn("onclick", tag)
+                self.assertNotIn("onmouse", tag)
+
+    def test_hdr_note_uses_served_scalar_and_draws_nothing_without_it(self) -> None:
+        renderer = PAGE[PAGE.index("function renderDisplayHistogram(") :]
+        renderer = renderer[: renderer.index("\n}")]
+        self.assertIn("earnedEv!=null", renderer)
+        self.assertIn("HDR 已挣余量", renderer)

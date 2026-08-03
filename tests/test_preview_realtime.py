@@ -135,6 +135,14 @@ class PreviewPlanCacheTests(unittest.TestCase):
         bundle.scene_decoder = "libraw"
         bundle.scene_decoder_runtime = "test"
         bundle.scene_rec2020_render = dg.np.zeros((12, 18, 3), dtype=dg.np.uint16)
+        # The realtime histograms run the real reliable-sample selection on this
+        # bundle; give it honest scalar decode facts instead of MagicMock attrs.
+        bundle.lens_filter = "none"
+        bundle.wb_mode = "camera"
+        bundle.camera_wb = None
+        bundle.applied_wb = None
+        bundle.daylight_wb = None
+        bundle.clip_masks = None
         entry = PreviewEntry(bundle=bundle, analysis=MagicMock())
         pixels = dg.np.zeros((12, 18, 3), dtype=dg.np.uint8)
         with patch(
