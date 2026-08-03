@@ -264,6 +264,9 @@ def estimate_ev_headroom(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     adjustments: dg.RenderAdjustments | None = None,
+    endpoint_mode: str = "adaptive",
+    film_curve: str = "none",
+    lens_filter: str | None = None,
 ) -> dict[str, float | str]:
     if analysis is None:
         return {}
@@ -284,6 +287,9 @@ def estimate_ev_headroom(
         lum_norm=lum_norm,
         agx_primaries=agx_primaries,
         adjustments=adjustments,
+        endpoint_mode=endpoint_mode,
+        film_curve=film_curve,
+        lens_filter=lens_filter,
     )
     return {
         "safe_ev_remaining": max(0.0, float(safe_ev - current_ev)),
@@ -839,6 +845,9 @@ def run_preview(params: dict) -> dict:
                 lum_norm=lum_norm,
                 agx_primaries=agx_primaries,
                 adjustments=adjustments,
+                endpoint_mode=endpoint_mode,
+                film_curve=film_curve,
+                lens_filter=lens_filter,
             )
             if not is_current():
                 raise PreviewSuperseded()
@@ -1202,6 +1211,9 @@ def run_export(params: dict) -> dict:
             lum_norm=lum_norm,
             agx_primaries=agx_primaries,
             adjustments=adjustments,
+            endpoint_mode=endpoint_mode,
+            film_curve=film_curve,
+            lens_filter=lens_filter,
         )
         ev = auto_ev_result.ev
     bundle = dg.with_intent_exposure(bundle, user_ev=ev, tone_core=tone_core)
@@ -1302,6 +1314,9 @@ def run_export(params: dict) -> dict:
                 lum_norm=lum_norm,
                 agx_primaries=agx_primaries,
                 adjustments=adjustments,
+                endpoint_mode=endpoint_mode,
+                film_curve=film_curve,
+                lens_filter=lens_filter,
             )
         )
         preview = (

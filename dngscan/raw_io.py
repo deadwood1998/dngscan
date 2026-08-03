@@ -583,10 +583,15 @@ def rebalance_raw_bundle(bundle: RawBundle, wb_mode: str) -> RawBundle:
         # Preserve the fixed decoder codes exactly.  Compact disk entries intentionally
         # omit XYZ, which is fine because the camera BalanceContext also keeps its
         # persisted full-resolution Analysis and never needs a scene-only reanalysis.
+        # An explicit camera request also invalidates any stale degradation note from a
+        # previous non-camera balance: the user chose AsShot, nothing degraded.  (The
+        # degraded fallbacks below are different: they return camera pixels WITH their
+        # note, because there the camera result is a truthfully-declared downgrade.)
         return replace(
             bundle,
             wb_mode="camera",
             applied_wb=list(bundle.camera_wb),
+            wb_degradation=None,
         )
     decode_wb = list(bundle.decode_wb or bundle.camera_wb)
     if wb_mode == "daylight":

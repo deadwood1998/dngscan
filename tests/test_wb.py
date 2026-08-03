@@ -421,5 +421,34 @@ class KelvinDecodeIntegrationTests(unittest.TestCase):
         self.assertLess(abs(solved[2] / (d[2] / d[1]) - 1.0), 0.05)
 
 
+class CameraRebalanceDegradationNoteTests(unittest.TestCase):
+    """Explicit camera requests clear stale notes; degraded fallbacks keep theirs."""
+
+    def test_explicit_camera_request_clears_stale_degradation_note(self) -> None:
+        bundle = _ladder_bundle(wb_degradation="旧的 5500K 退化注记")
+        balanced = rebalance_raw_bundle(bundle, "camera")
+        self.assertEqual(balanced.wb_mode, "camera")
+        self.assertIsNone(balanced.wb_degradation)
+        self.assertEqual(balanced.applied_wb, [float(v) for v in bundle.camera_wb])
+
+    def test_degraded_fallback_replaces_stale_note_with_its_own(self) -> None:
+        # No rung answers: the daylight request degrades to camera, and the note it
+        # carries must be the fresh degradation truth, not the stale one.
+        bundle = _ladder_bundle(wb_degradation="旧的 5500K 退化注记")
+        with _patch_calibration(None):
+            balanced = rebalance_raw_bundle(bundle, "daylight")
+        self.assertEqual(balanced.wb_mode, "camera")
+        self.assertIsNotNone(balanced.wb_degradation)
+        self.assertIn("退化", balanced.wb_degradation)
+        self.assertNotEqual(balanced.wb_degradation, "旧的 5500K 退化注记")
+
+    def test_missing_daylight_multipliers_keep_the_degradation_note(self) -> None:
+        bundle = _ladder_bundle(daylight_wb=None, wb_degradation="旧注记")
+        balanced = rebalance_raw_bundle(bundle, "daylight")
+        self.assertEqual(balanced.wb_mode, "camera")
+        self.assertIsNotNone(balanced.wb_degradation)
+        self.assertIn("daylight", balanced.wb_degradation)
+
+
 if __name__ == "__main__":
     unittest.main()

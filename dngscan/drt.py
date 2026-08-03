@@ -97,6 +97,16 @@ def apply_c1_endpoints(
 # where the curve crosses this level coming up from the black endpoint. It is a
 # measurement coordinate for reporting and for the bounded toe_end_offset adjustment,
 # not a curve parameter: view brightness and display looks apply after it.
+#
+# Declared semantics (floor-relative): the crossing is measured at the curve's
+# compiled black floor (``target_black_linear``, e.g. a film paper Dmax) PLUS this
+# offset. For the common zero-floor plans the reference is exactly the absolute
+# 0.002 level as before, byte for byte. For lifted-black plans an absolute 0.002 is
+# unreachable by construction — the curve never falls below its floor — so the
+# floor-relative reference is the only definition under which "toe end" remains a
+# real, monotone measurement and the toe_end_offset control keeps its declared
+# direction. When even this crossing does not exist the measurement is None; report
+# layers must state "not reached" or omit the fact rather than print a fake number.
 TOE_END_DISPLAY_LINEAR = 0.002
 
 # Legality bounds for the re-solved toe power. The lower bound keeps the sigmoid toe
@@ -118,33 +128,40 @@ def _value_at_ev(ev: float, params: dict[str, float | bool]) -> float:
 
 def toe_end_ev_from_params(
     params: dict[str, float | bool], level: float = TOE_END_DISPLAY_LINEAR
-) -> float:
-    """Scene EV where the compiled curve's display-linear output crosses ``level``.
+) -> float | None:
+    """Scene EV where the compiled curve rises ``level`` above its black floor.
 
-    The curve is monotone in EV, so a plain bisection is exact enough. Returns the
-    black endpoint when the curve never falls to the level (a lifted target_black
-    floor, e.g. film paper Dmax), and 0.0 in the degenerate case where even mid gray
-    sits below it.
+    The reference is floor-relative (see TOE_END_DISPLAY_LINEAR): for a zero
+    ``target_black_linear`` floor it is the absolute ``level``, unchanged; for a
+    lifted floor it is ``floor + level``, which the curve always leaves upward from
+    its black endpoint. The curve is monotone in EV, so a plain bisection is exact
+    enough. Returns None when no crossing exists (the curve already sits at or above
+    the reference at its black endpoint) — never a fabricated coordinate — and 0.0
+    in the degenerate case where even mid gray sits below the reference.
     """
     black = float(params["black_ev"])
+    floor_linear = float(params["target_black"]) ** float(params["gamma"])
+    effective_level = floor_linear + float(level)
     lo, hi = black + 1e-3, 0.0
-    if _value_at_ev(lo, params) >= level:
-        return black
-    if _value_at_ev(hi, params) < level:
+    if _value_at_ev(lo, params) >= effective_level:
+        return None
+    if _value_at_ev(hi, params) < effective_level:
         return 0.0
     for _ in range(48):
         mid = 0.5 * (lo + hi)
-        if _value_at_ev(mid, params) < level:
+        if _value_at_ev(mid, params) < effective_level:
             lo = mid
         else:
             hi = mid
     return 0.5 * (lo + hi)
 
 
-def compiled_curve_transitions(plan: Any) -> dict[str, float]:
+def compiled_curve_transitions(plan: Any) -> dict[str, float | None]:
     """Measured facts of the compiled curve, after every clamp and guard.
 
-    ``toe_end_ev`` is the near-black crossing defined above. ``toe_start_ev`` and
+    ``toe_end_ev`` is the near-black crossing defined above, or None when the
+    compiled curve has no such crossing (report layers must not print a number
+    for it in that case). ``toe_start_ev`` and
     ``shoulder_start_ev`` are the actual latitude transition anchors the solver kept
     after reserving its minimum segment runs and display-range clamps — the values a
     report may print as truth, as opposed to the requested plan fields.
@@ -184,20 +201,32 @@ def solve_toe_power_for_toe_end(plan: Any, target_toe_end_ev: float) -> float:
     display level is reached deeper in EV). The solve runs at plan-compile time only
     and touches nothing but ``toe_power``: black/white endpoints, pivot anchor,
     latitude anchors and the shoulder are all fixed inputs, so the sky-side of the
-    curve cannot move. Out-of-reach targets clamp to the legality bounds.
+    curve cannot move. Targets deeper than the most open toe can reach clamp to the
+    open bound (never the hard one); a plan whose crossing is unmeasurable at either
+    bound keeps its current toe power — no solve may be driven by a sentinel.
     """
     key = _curve_params_key(plan)
     black = float(getattr(plan, "black_ev", -10.0))
     target = min(-0.25, max(black + 0.05, float(target_toe_end_ev)))
     lo, hi = TOE_POWER_SOLVE_MIN, TOE_POWER_SOLVE_MAX
     # A lower toe power lifts the toe -> deeper crossing. Check reachability first.
-    if toe_end_ev_from_params(_params_for_toe_power(key, lo)) > target:
+    crossing_lo = toe_end_ev_from_params(_params_for_toe_power(key, lo))
+    crossing_hi = toe_end_ev_from_params(_params_for_toe_power(key, hi))
+    if crossing_lo is None or crossing_hi is None:
+        # No measurable crossing: refuse to move rather than fake a solve.
+        return float(getattr(plan, "toe_power", key[3]))
+    if crossing_lo > target:
+        # Requested deeper than even the most open toe reaches: open, do not harden.
         return lo
-    if toe_end_ev_from_params(_params_for_toe_power(key, hi)) < target:
+    if crossing_hi < target:
         return hi
     for _ in range(28):
         mid = 0.5 * (lo + hi)
         crossing = toe_end_ev_from_params(_params_for_toe_power(key, mid))
+        if crossing is None:
+            # Interior sentinel cannot happen for a monotone family whose bounds
+            # both crossed; bail out conservatively if it ever does.
+            return float(getattr(plan, "toe_power", key[3]))
         if abs(crossing - target) <= 0.01:
             return mid
         if crossing < target:

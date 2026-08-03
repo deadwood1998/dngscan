@@ -295,6 +295,122 @@ class ToeEndOffsetTests(unittest.TestCase):
         self.assertAlmostEqual(wild.tone.toe_power, bounded.tone.toe_power, places=6)
 
 
+class LiftedBlackToeEndTests(unittest.TestCase):
+    """Floor-relative toe-end semantics on lifted-black (film paper Dmax) plans.
+
+    The near-black reference is TOE_END_DISPLAY_LINEAR ABOVE the compiled
+    ``target_black_linear`` floor: identical to the absolute 0.002 level for
+    zero-floor plans, and the only definition under which lifted-floor plans keep a
+    real, monotone measurement. The old code returned the black endpoint as a
+    sentinel and the solver mistook it for a crossing, so every offset — either
+    sign — solved to the hardest legal toe (3.5), the reverse of the declared
+    control direction.
+    """
+
+    PRESETS = ("portra400", "kodachrome64", "vision3250d_theatrical")
+    OFFSETS = (-3.0, -1.0, -0.05, 0.0, 0.5)
+
+    @staticmethod
+    def _film_plan(preset: str) -> RenderPlan:
+        from dngscan.film_curve import apply_film_curve_preset
+
+        return _render_plan(apply_film_curve_preset(_tone_plan(), preset))
+
+    def test_offsets_keep_a_monotone_gradient_with_the_declared_direction(self) -> None:
+        for preset in self.PRESETS:
+            with self.subTest(preset=preset):
+                plan = self._film_plan(preset)
+                base_power = float(plan.tone.toe_power)
+                base_end = compiled_curve_transitions(plan.tone)["toe_end_ev"]
+                self.assertIsNotNone(base_end)
+                powers, ends = [], []
+                for offset in self.OFFSETS:
+                    adjusted = apply_render_adjustments(
+                        plan, RenderAdjustments(toe_end_offset=offset)
+                    )
+                    end = compiled_curve_transitions(adjusted.tone)["toe_end_ev"]
+                    self.assertIsNotNone(end)
+                    powers.append(float(adjusted.tone.toe_power))
+                    ends.append(float(end))
+                    if offset < 0.0:
+                        # More open (or clamped open), never harder than base.
+                        self.assertLessEqual(adjusted.tone.toe_power, base_power + 1e-9)
+                        self.assertLessEqual(end, base_end + 1e-9)
+                    elif offset > 0.0:
+                        self.assertGreaterEqual(adjusted.tone.toe_power, base_power - 1e-9)
+                        self.assertGreaterEqual(end, base_end - 1e-9)
+                for a, b in zip(powers, powers[1:]):
+                    self.assertLessEqual(a, b + 1e-9)
+                for a, b in zip(ends, ends[1:]):
+                    self.assertLessEqual(a, b + 1e-9)
+
+    def test_lifted_floor_toe_end_is_a_real_crossing_not_the_black_endpoint(self) -> None:
+        from dngscan.drt import TOE_END_DISPLAY_LINEAR, _value_at_ev, curve_params_from_plan
+
+        for preset in ("portra400", "kodachrome64"):
+            with self.subTest(preset=preset):
+                tone = self._film_plan(preset).tone
+                end = compiled_curve_transitions(tone)["toe_end_ev"]
+                self.assertIsNotNone(end)
+                self.assertGreater(end, float(tone.black_ev) + 0.05)
+                params = curve_params_from_plan(tone)
+                floor = float(params["target_black"]) ** float(params["gamma"])
+                self.assertAlmostEqual(
+                    _value_at_ev(float(end), params),
+                    floor + TOE_END_DISPLAY_LINEAR,
+                    places=4,
+                )
+
+    def test_zero_floor_measurement_is_unchanged_absolute_reference(self) -> None:
+        from dngscan.drt import TOE_END_DISPLAY_LINEAR, _value_at_ev, curve_params_from_plan
+
+        tone = _tone_plan()
+        end = compiled_curve_transitions(tone)["toe_end_ev"]
+        self.assertIsNotNone(end)
+        params = curve_params_from_plan(tone)
+        self.assertEqual(float(params["target_black"]), 0.0)
+        self.assertAlmostEqual(
+            _value_at_ev(float(end), params), TOE_END_DISPLAY_LINEAR, places=4
+        )
+
+    def test_unmeasurable_crossing_reports_none_and_the_solver_refuses_to_move(self) -> None:
+        from unittest import mock
+
+        from dngscan import drt
+
+        tone = _tone_plan()
+        with mock.patch.object(drt, "toe_end_ev_from_params", return_value=None):
+            self.assertIsNone(compiled_curve_transitions(tone)["toe_end_ev"])
+            solved = drt.solve_toe_power_for_toe_end(tone, -2.0)
+            self.assertEqual(solved, float(tone.toe_power))
+            plan = _render_plan(tone)
+            adjusted = apply_render_adjustments(
+                plan, RenderAdjustments(toe_end_offset=-1.0)
+            )
+            self.assertEqual(adjusted.tone.toe_power, tone.toe_power)
+
+    def test_unmeasurable_toe_end_serializes_to_null_for_the_page(self) -> None:
+        from dngscan.gui.service import _finite_or_none
+
+        self.assertIsNone(_finite_or_none(None))
+
+    def test_untouched_sliders_do_not_reclamp_film_preset_powers(self) -> None:
+        # vision3250d_theatrical compiles toe_power 3.45, outside the shadow
+        # slider's own clamp range; a zero shadow bias must leave it alone even
+        # when another slider is active.
+        plan = self._film_plan("vision3250d_theatrical")
+        self.assertGreater(float(plan.tone.toe_power), 2.5)
+        adjusted = apply_render_adjustments(
+            plan, RenderAdjustments(midtone_brightness=0.5)
+        )
+        self.assertEqual(adjusted.tone.toe_power, plan.tone.toe_power)
+        self.assertEqual(adjusted.tone.shoulder_power, plan.tone.shoulder_power)
+        moved = apply_render_adjustments(
+            plan, RenderAdjustments(shadow_transition=0.5)
+        )
+        self.assertLess(float(moved.tone.toe_power), float(plan.tone.toe_power))
+
+
 class ShoulderStartOffsetTests(unittest.TestCase):
     def test_positive_offset_raises_compiled_shoulder_start(self) -> None:
         plan = _render_plan(_tone_plan())

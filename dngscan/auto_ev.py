@@ -216,10 +216,20 @@ def max_safe_ev(
     agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
     tone_plan: RenderPlan | None = None,
+    endpoint_mode: str = "adaptive",
+    film_curve: str = "none",
+    lens_filter: str | None = None,
 ) -> float:
-    """Largest EV (>= from_ev) whose preview-scale output stays below highlight thresholds."""
+    """Largest EV (>= from_ev) whose preview-scale output stays below highlight thresholds.
+
+    The probe must consult the same compiled curve the real render will use, so the
+    caller's endpoint mode, film curve and declared lens filter all participate; a
+    None lens_filter keeps whatever the bundle already declares.
+    """
     if np is None:
         return float(from_ev)
+    if lens_filter is not None and lens_filter != getattr(bundle, "lens_filter", "none"):
+        bundle = replace(bundle, lens_filter=lens_filter)
     if tone_plan is None and analysis is not None:
         from .grade import RENDER_MODE
 
@@ -239,6 +249,8 @@ def max_safe_ev(
             lum_norm,
             agx_primaries=agx_primaries,
             adjustments=adjustments,
+            film_curve=film_curve,
+            endpoint_mode=endpoint_mode,
         )
 
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
@@ -339,6 +351,9 @@ def compute_auto_ev(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
+    endpoint_mode: str = "adaptive",
+    film_curve: str = "none",
+    lens_filter: str | None = None,
 ) -> AutoEvResult:
     """Reference the reliable decoded scene body to 18% gray without changing EV 0.
 
@@ -346,9 +361,16 @@ def compute_auto_ev(
     excluding unreliable RAW-clipped highlights. This makes the optional reference
     decoder-independent without introducing a hidden fixed correction. Highlight safety
     limits upward boost only; high-key scenes are never darkened toward gray.
+
+    The internal reference plan compiles with the caller's endpoint mode, film curve
+    and declared lens filter, so the brightness reference and the highlight-safety cap
+    are judged against the curve the real render will actually use; a None lens_filter
+    keeps whatever the bundle already declares.
     """
     from .grade import RENDER_MODE
 
+    if lens_filter is not None and lens_filter != getattr(bundle, "lens_filter", "none"):
+        bundle = replace(bundle, lens_filter=lens_filter)
     reference_bundle = replace(
         bundle,
         exposure_gain=compute_exposure_gain(exposure_mode_for_tone_core(tone_core), 0.0),
@@ -365,6 +387,8 @@ def compute_auto_ev(
         lum_norm,
         agx_primaries=agx_primaries,
         adjustments=adjustments,
+        film_curve=film_curve,
+        endpoint_mode=endpoint_mode,
     )
     target = scene_body_align_ev(reference_plan)
     cap = max_safe_ev(
@@ -384,6 +408,8 @@ def compute_auto_ev(
         agx_primaries=agx_primaries,
         adjustments=adjustments,
         tone_plan=reference_plan,
+        endpoint_mode=endpoint_mode,
+        film_curve=film_curve,
     )
     boost_target = max(target, baseline_ev)
     ev = min(boost_target, cap)
@@ -414,6 +440,9 @@ def resolve_export_ev(
     lum_norm: str = "y",
     agx_primaries: str = "base",
     adjustments: RenderAdjustments | None = None,
+    endpoint_mode: str = "adaptive",
+    film_curve: str = "none",
+    lens_filter: str | None = None,
 ) -> tuple[float, AutoEvResult | None]:
     if not is_ev_auto(ev):
         return float(ev), None
@@ -433,6 +462,9 @@ def resolve_export_ev(
         lum_norm,
         agx_primaries,
         adjustments,
+        endpoint_mode=endpoint_mode,
+        film_curve=film_curve,
+        lens_filter=lens_filter,
     )
     return result.ev, result
 

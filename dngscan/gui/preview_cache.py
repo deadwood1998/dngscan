@@ -638,6 +638,15 @@ class PreviewCache:
     @staticmethod
     def _build_balance(base: PreviewEntry, wb: str) -> PreviewEntry:
         bundle = dg.rebalance_raw_bundle(base.bundle, wb)
+        if bundle.wb_mode == "camera":
+            # The requested balance degraded to camera AsShot (missing multipliers or
+            # calibration).  The scene pixels are exactly the base proxy's, so the
+            # persisted camera Analysis is already the truth for them — and the proxy
+            # DecodeContext deliberately carries no xyz_render, so a scene-only
+            # reanalysis is both impossible and unnecessary here.  Keep the degraded
+            # bundle (it carries the wb_degradation note the UI must surface) and
+            # reuse the base analysis instead of recomputing it.
+            return PreviewEntry(bundle=bundle, analysis=base.analysis)
         analysis = dg.reanalyze_balanced_scene(base.analysis, bundle)
         return PreviewEntry(bundle=bundle, analysis=analysis)
 

@@ -575,32 +575,26 @@ def apply_render_adjustments(
     toe_end_bias = clamp_float(float(adjustments.toe_end_offset), -3.0, 0.5)
     shoulder_start_bias = clamp_float(float(adjustments.shoulder_start_offset), -0.5, 3.0)
 
+    # An untouched slider must not alter the compiled plan: the clamp ranges below
+    # belong to the *moved* value, and film-preset plans legitimately compile powers
+    # outside them (e.g. a fitted toe_power of 3.45). Re-clamping at zero bias would
+    # silently reshape such plans the moment any other slider is touched — and break
+    # the toe_end_offset control's monotone gradient across its own zero point.
+    def _biased(value: float, bias: float, rate: float, low: float, high: float) -> float:
+        if abs(bias) <= 1e-12:
+            return float(value)
+        return clamp_float(float(value) * (2.0 ** (rate * bias)), low, high)
+
     tone = replace(
         plan.tone,
         # At 18% gray this range is approximately -0.5 to +0.4 display EV. It is a
         # darktable-style interior power, not scene exposure, so both endpoints hold.
-        view_brightness=clamp_float(
-            float(plan.tone.view_brightness) * (2.0 ** (0.25 * brightness_bias)),
-            0.65,
-            1.65,
-        ),
-        contrast=clamp_float(
-            float(plan.tone.contrast) * (2.0 ** (0.25 * contrast_bias)),
-            1.5,
-            4.5,
-        ),
+        view_brightness=_biased(plan.tone.view_brightness, brightness_bias, 0.25, 0.65, 1.65),
+        contrast=_biased(plan.tone.contrast, contrast_bias, 0.25, 1.5, 4.5),
         # Positive UI direction means a more open toe and a softer shoulder. Lower
         # endpoint powers produce those two shapes in the C1 solver.
-        toe_power=clamp_float(
-            float(plan.tone.toe_power) * (2.0 ** (-0.45 * shadow_bias)),
-            0.65,
-            2.5,
-        ),
-        shoulder_power=clamp_float(
-            float(plan.tone.shoulder_power) * (2.0 ** (-0.45 * highlight_bias)),
-            1.25,
-            5.0,
-        ),
+        toe_power=_biased(plan.tone.toe_power, shadow_bias, -0.45, 0.65, 2.5),
+        shoulder_power=_biased(plan.tone.shoulder_power, highlight_bias, -0.45, 1.25, 5.0),
     )
     # Shoulder-start offset: a true latitude move along the fixed mid segment. The
     # curve solver's own clamps (minimum shoulder run, display-range ceiling) remain
@@ -624,10 +618,14 @@ def apply_render_adjustments(
         from . import drt as drt_engine
 
         base_toe_end = drt_engine.compiled_curve_transitions(tone)["toe_end_ev"]
-        solved_power = drt_engine.solve_toe_power_for_toe_end(
-            tone, base_toe_end + toe_end_bias
-        )
-        tone = replace(tone, toe_power=clamp_float(solved_power, 0.35, 3.5))
+        if base_toe_end is not None:
+            # A None base means the compiled curve has no measurable near-black
+            # crossing; there is no truthful coordinate to offset, so the control
+            # honestly does nothing instead of solving against a sentinel.
+            solved_power = drt_engine.solve_toe_power_for_toe_end(
+                tone, base_toe_end + toe_end_bias
+            )
+            tone = replace(tone, toe_power=clamp_float(solved_power, 0.35, 3.5))
     color = replace(
         plan.color,
         display_highlight_chroma_retreat=clamp_float(

@@ -595,6 +595,10 @@ def main(argv: list[str]) -> int:
                 args.tone_core,
                 args.lum_norm,
                 args.agx_primaries,
+                # The declared lens filter already rides the bundle (set above); the
+                # curve-shaping choices must reach the reference plan explicitly.
+                endpoint_mode=args.endpoint_mode,
+                film_curve=args.film_curve,
             )
         else:
             resolved_ev = float(ev_input)

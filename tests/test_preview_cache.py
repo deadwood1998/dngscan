@@ -390,3 +390,40 @@ class ExportAnalysisReuseTest(unittest.TestCase):
                 self.assertIsNone(
                     _cached_full_analysis(raw, "clip", "camera", "libraw", "auto", "auto")
                 )
+
+
+class DegradedBalanceOnProxyTests(unittest.TestCase):
+    """A degraded rebalance must never require the proxy's absent xyz_render.
+
+    GUI BalanceContexts feed proxy DecodeContexts whose xyz_render is deliberately
+    None. When the requested balance degrades back to camera (missing multipliers or
+    calibration), the balanced entry must still be renderable and must carry the
+    degradation note to the UI — a scene-only reanalysis over None is the crash this
+    pins down (previously a TypeError -> /preview 500).
+    """
+
+    def _proxy_entry(self, **bundle_overrides) -> PreviewEntry:
+        from dataclasses import replace
+
+        bundle = replace(_bundle(), xyz_render=None, **bundle_overrides)
+        return PreviewEntry(bundle=bundle, analysis=_analysis())
+
+    def test_degraded_balance_keeps_camera_pixels_and_the_note(self) -> None:
+        entry = self._proxy_entry(daylight_wb=None)
+        balanced = PreviewCache._build_balance(entry, "daylight")
+        self.assertEqual(balanced.bundle.wb_mode, "camera")
+        self.assertIsNotNone(balanced.bundle.wb_degradation)
+        self.assertIn("daylight", balanced.bundle.wb_degradation)
+        # Scene pixels are exactly the base proxy's, so the persisted camera
+        # analysis is already the truth for them: no reanalysis, no crash.
+        self.assertIs(balanced.analysis, entry.analysis)
+        self.assertIs(
+            balanced.bundle.scene_rec2020_render, entry.bundle.scene_rec2020_render
+        )
+
+    def test_successful_balance_still_reanalyzes_the_new_scene(self) -> None:
+        entry = PreviewEntry(bundle=_bundle(), analysis=_analysis())
+        balanced = PreviewCache._build_balance(entry, "daylight")
+        self.assertEqual(balanced.bundle.wb_mode, "daylight")
+        self.assertIsNone(balanced.bundle.wb_degradation)
+        self.assertIsNot(balanced.analysis, entry.analysis)

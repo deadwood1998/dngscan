@@ -268,3 +268,86 @@ class ProbeNativeFinalizeTests(unittest.TestCase):
                 ):
                     with self.assertRaises(fast_backend.NativeKernelError):
                         _probe_finalize_linear(sample, "p3", "none", 1.0, None)
+
+
+class AutoEvReferencePlanTests(unittest.TestCase):
+    """The auto-EV reference plan must be the plan the real render will use.
+
+    Previously compute_auto_ev / max_safe_ev compiled their internal reference plan
+    without endpoint_mode / film_curve / lens_filter, so the brightness reference and
+    the highlight-safety cap were judged against an adaptive curve even when the
+    actual render used evidence endpoints, a film preset, or declared front glass.
+    """
+
+    @staticmethod
+    def _scene():
+        from tests.golden_support import build_daylight_wide_dr
+
+        return build_daylight_wide_dr()
+
+    @staticmethod
+    def _capture_reference_plan(**kwargs):
+        import dngscan.auto_ev as auto_ev_mod
+        from dngscan.tone import build_render_plan as real_build
+
+        scene = AutoEvReferencePlanTests._scene()
+        captured = []
+
+        def recording(*args, **kw):
+            plan = real_build(*args, **kw)
+            captured.append((args, kw, plan))
+            return plan
+
+        with patch.object(auto_ev_mod, "build_render_plan", side_effect=recording):
+            auto_ev_mod.compute_auto_ev(scene.bundle, scene.analysis, "p3", **kwargs)
+        return captured[0]
+
+    def test_endpoint_mode_reaches_the_reference_plan_and_moves_black_ev(self) -> None:
+        _, kw_adaptive, plan_adaptive = self._capture_reference_plan()
+        _, kw_evidence, plan_evidence = self._capture_reference_plan(
+            endpoint_mode="evidence"
+        )
+        self.assertEqual(kw_adaptive.get("endpoint_mode", "adaptive"), "adaptive")
+        self.assertEqual(kw_evidence["endpoint_mode"], "evidence")
+        self.assertEqual(plan_evidence.tone.endpoint_mode, "evidence")
+        self.assertNotAlmostEqual(
+            plan_evidence.tone.black_ev, plan_adaptive.tone.black_ev, places=2
+        )
+
+    def test_film_curve_and_lens_filter_reach_the_reference_plan(self) -> None:
+        args, kw, plan = self._capture_reference_plan(
+            film_curve="portra400", lens_filter="85b"
+        )
+        self.assertEqual(kw["film_curve"], "portra400")
+        self.assertEqual(plan.tone.curve_preset, "portra400")
+        self.assertAlmostEqual(plan.tone.target_black_linear, 0.014949, places=6)
+        # The reference bundle the plan compiles from must see the declared glass.
+        self.assertEqual(args[0].lens_filter, "85b")
+
+    def test_max_safe_ev_compiles_its_own_plan_with_the_parameters(self) -> None:
+        import dngscan.auto_ev as auto_ev_mod
+        from dngscan.tone import build_render_plan as real_build
+
+        scene = self._scene()
+        captured = []
+
+        def recording(*args, **kw):
+            plan = real_build(*args, **kw)
+            captured.append((args, kw, plan))
+            return plan
+
+        with patch.object(auto_ev_mod, "build_render_plan", side_effect=recording):
+            auto_ev_mod.max_safe_ev(
+                scene.bundle,
+                scene.analysis,
+                "p3",
+                endpoint_mode="evidence",
+                film_curve="portra400",
+                lens_filter="85b",
+            )
+        args, kw, plan = captured[0]
+        self.assertEqual(kw["endpoint_mode"], "evidence")
+        self.assertEqual(kw["film_curve"], "portra400")
+        self.assertEqual(plan.tone.endpoint_mode, "adaptive")  # film preset supersedes
+        self.assertEqual(plan.tone.curve_preset, "portra400")
+        self.assertEqual(args[0].lens_filter, "85b")
