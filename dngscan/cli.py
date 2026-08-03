@@ -41,8 +41,8 @@ from .scene_transform import SCENE_TRANSFORM_CHOICES
 from .models import RenderAdjustments
 from .scene_scale import with_intent_exposure
 from .tone import (
-    LUM_NORM_CHOICES, TONE_CORE_CHOICES, apply_render_adjustments,
-    build_render_plan,
+    ENDPOINT_MODE_CHOICES, LUM_NORM_CHOICES, TONE_CORE_CHOICES,
+    apply_render_adjustments, build_render_plan,
 )
 
 
@@ -192,6 +192,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ("highlight-fade", "高光褪色 -1..1（显示端色度退让）"),
     ):
         parser.add_argument(f"--{_flag}", type=float, default=0.0, help=_help)
+    parser.add_argument(
+        "--endpoint-mode",
+        choices=ENDPOINT_MODE_CHOICES,
+        default="adaptive",
+        help=(
+            "曲线端点策略：adaptive=场景百分位自适应（默认，现状）；"
+            "evidence=端点钉在证据界——黑端点=实测噪声底 EV（有传感器先验用先验读出噪声，"
+            "无先验用单帧估计并注记），白端点只信可靠 RAW 尾部（保留最低白点地板；"
+            "证据缺席时如实回退自适应并注记）。pivot 锚定不变（0EV→18%%）"
+        ),
+    )
+    parser.add_argument(
+        "--toe-end-offset",
+        type=float,
+        default=0.0,
+        help=(
+            "趾部收黑点 EV 偏移 -3..+0.5（0=现状）。负值把曲线落到近黑的 EV 下移，"
+            "让更深的阴影保持可读、更晚坠向黑点；通过重解 toe 形状实现，"
+            "不移动黑点、白点与 pivot 锚"
+        ),
+    )
+    parser.add_argument(
+        "--shoulder-start-offset",
+        type=float,
+        default=0.0,
+        help=(
+            "肩部起点 EV 偏移 -0.5..+3（0=现状）。正值让明亮主体更久停留在线性中段、"
+            "更晚进入肩部压缩；不移动白点。越界请求由曲线合法性守卫钳制"
+        ),
+    )
     parser.add_argument(
         "--agx-primaries",
         choices=AGX_PRIMARIES_CLI_CHOICES,
@@ -387,6 +417,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ):
         if not -1.0 <= getattr(args, _name) <= 1.0:
             parser.error(f"--{_name.replace('_', '-')} must be between -1 and 1")
+    if not -3.0 <= args.toe_end_offset <= 0.5:
+        parser.error("--toe-end-offset must be between -3 and 0.5")
+    if not -0.5 <= args.shoulder_start_offset <= 3.0:
+        parser.error("--shoulder-start-offset must be between -0.5 and 3")
     if is_hdr_output_format(args.output_format) and args.grade != "none":
         parser.error(
             "Ultrahdr 第一版不支持 display look/filter；请使用 --grade none"
@@ -590,6 +624,7 @@ def main(argv: list[str]) -> int:
                 agx_primaries=args.agx_primaries,
                 film_curve=args.film_curve,
                 film_mode=args.film_mode,
+                endpoint_mode=args.endpoint_mode,
             )
             if jpeg_path is not None
             else None
@@ -603,6 +638,8 @@ def main(argv: list[str]) -> int:
                     shadow_transition=args.shadow_transition,
                     highlight_transition=args.highlight_transition,
                     highlight_fade=args.highlight_fade,
+                    toe_end_offset=args.toe_end_offset,
+                    shoulder_start_offset=args.shoulder_start_offset,
                 ),
             )
         if jpeg_path is not None:

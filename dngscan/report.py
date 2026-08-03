@@ -399,6 +399,11 @@ def jpeg_tone_plan_cn(
             extras.append(f"褪白={plan.target_white_linear:.3f}")
         if getattr(plan, "agx_primaries", "base") != "base":
             extras.append(f"primaries={plan.agx_primaries}")
+        if getattr(plan, "endpoint_mode", "adaptive") != "adaptive":
+            note = getattr(plan, "endpoint_note", None)
+            extras.append(
+                f"endpoint={plan.endpoint_mode}" + (f"（{note}）" if note else "")
+            )
         extra_text = ("；" + "，".join(extras)) if extras else ""
         return (
             f"{label} endpoint black={plan.black_ev:.2f}EV / toe接回={plan.toe_start_ev:.2f}EV / "

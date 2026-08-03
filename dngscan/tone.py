@@ -22,6 +22,7 @@ from .models import (
 
 TONE_CORE_CHOICES = ("gated", "agx", "lum", "neutral")
 LUM_NORM_CHOICES = ("y", "power", "max")
+ENDPOINT_MODE_CHOICES = ("adaptive", "evidence")
 
 
 def exposure_mode_for_tone_core(tone_core: str) -> str:
@@ -341,8 +342,10 @@ def build_tone_compression_plan(
     agx_primaries: str = "base",
     plan_exposure_gain: float | None = None,
     scene_metrics: SceneToneMetrics | None = None,
+    endpoint_mode: str = "adaptive",
 ) -> ToneCompressionPlan:
     agx_primaries = agx_engine.resolve_agx_primaries(agx_primaries)
+    endpoint_mode = endpoint_mode if endpoint_mode in ENDPOINT_MODE_CHOICES else "adaptive"
     if tone_core == "neutral":
         return neutral_tone_plan(target_gamut)
 
@@ -391,6 +394,41 @@ def build_tone_compression_plan(
         reliable_white_tail = metrics.tail_ev_p9999
     white_ev = max(reliable_white_tail + white_margin, min_white_ev)
     white_ev = clamp_float(white_ev, min_white_ev, 8.5)
+
+    # Evidence endpoint mode: pin the endpoints to what the sensor measured instead of
+    # where the scene percentiles happen to sit. The black endpoint follows the noise
+    # floor (prior read-noise when a sensor prior exists, single-frame estimate
+    # otherwise); the white endpoint may consult ONLY the reliable RAW tail — never the
+    # reconstructed one — while keeping the same defensive margin/minimum-white guards
+    # as adaptive so the shoulder side of the curve does not collapse onto the subject.
+    # Every degradation is recorded truthfully instead of silently falling back.
+    endpoint_note: str | None = None
+    if endpoint_mode == "evidence":
+        from .analysis import noise_floor_ev_estimate
+
+        notes: list[str] = []
+        floor_ev_est, floor_source = noise_floor_ev_estimate(analysis)
+        if math.isfinite(floor_ev_est):
+            black_ev = clamp_float(floor_ev_est, -14.0, -1.5)
+            if floor_source == "prior":
+                notes.append("黑端点=先验读出噪声底")
+            else:
+                notes.append("黑端点=单帧噪声底估计（无传感器先验）")
+        else:
+            notes.append("黑端点证据缺席，沿用自适应端点")
+        if math.isfinite(metrics.reliable_tail_ev_p9999):
+            white_ev = clamp_float(
+                max(metrics.reliable_tail_ev_p9999 + white_margin, min_white_ev),
+                min_white_ev,
+                8.5,
+            )
+            if metrics.reliable_tail_ev_p9999 + white_margin < min_white_ev:
+                notes.append(f"白端点=可靠尾部（受最低白点 +{min_white_ev:.2f}EV 保护）")
+            else:
+                notes.append("白端点=可靠尾部 p99.99")
+        else:
+            notes.append("白端点证据缺席，回退自适应白点（含重建尾部）")
+        endpoint_note = "；".join(notes)
 
     # These are strictly tone decisions. Colour clipping and output gamut live in
     # ColorGeometryPlan and must not change either curve endpoint or pivot contrast.
@@ -473,6 +511,8 @@ def build_tone_compression_plan(
         shoulder_start_ev=shoulder_start_ev,
         use_c1_endpoints=True,
         view_brightness=view_brightness,
+        endpoint_mode=endpoint_mode,
+        endpoint_note=endpoint_note,
     )
 
 
@@ -497,6 +537,8 @@ def apply_render_adjustments(
     shadow_bias = clamp_float(float(adjustments.shadow_transition), -1.0, 1.0)
     highlight_bias = clamp_float(float(adjustments.highlight_transition), -1.0, 1.0)
     fade_bias = clamp_float(float(adjustments.highlight_fade), -1.0, 1.0)
+    toe_end_bias = clamp_float(float(adjustments.toe_end_offset), -3.0, 0.5)
+    shoulder_start_bias = clamp_float(float(adjustments.shoulder_start_offset), -0.5, 3.0)
 
     tone = replace(
         plan.tone,
@@ -525,6 +567,32 @@ def apply_render_adjustments(
             5.0,
         ),
     )
+    # Shoulder-start offset: a true latitude move along the fixed mid segment. The
+    # curve solver's own clamps (minimum shoulder run, display-range ceiling) remain
+    # the legality guard, so any request compiles to a monotone C1 curve; the compiled
+    # transition fact reports what was actually kept.
+    if abs(shoulder_start_bias) > 1e-12:
+        new_lat_hi = max(0.0, float(tone.latitude_hi_ev) + shoulder_start_bias)
+        tone = replace(
+            tone,
+            latitude_hi_ev=new_lat_hi,
+            shoulder_start_ev=new_lat_hi,
+        )
+    # Toe-end offset: moves the scene EV at which the curve lands at near-black, by
+    # re-solving toe_power on the otherwise-finished tone plan. Deliberately NOT a
+    # latitude move: extending the linear latitude downward replaces the lifted toe
+    # sigmoid with the mid segment's lower line and measurably darkens deep shadows —
+    # the opposite of this control's declared meaning. Black/white endpoints, pivot
+    # anchor and the shoulder side are fixed inputs to the solve, so nothing above
+    # the toe moves. Runs at plan-compile time only.
+    if abs(toe_end_bias) > 1e-12:
+        from . import drt as drt_engine
+
+        base_toe_end = drt_engine.compiled_curve_transitions(tone)["toe_end_ev"]
+        solved_power = drt_engine.solve_toe_power_for_toe_end(
+            tone, base_toe_end + toe_end_bias
+        )
+        tone = replace(tone, toe_power=clamp_float(solved_power, 0.35, 3.5))
     color = replace(
         plan.color,
         display_highlight_chroma_retreat=clamp_float(
@@ -555,10 +623,12 @@ def build_render_plan(
     adjustments: RenderAdjustments | None = None,
     film_curve: str = "none",
     film_mode: str = "observe",
+    endpoint_mode: str = "adaptive",
 ) -> RenderPlan:
     """Compile independent scene, tone and colour plans from an immutable capture."""
     tone_core = tone_core if tone_core in TONE_CORE_CHOICES else "agx"
     lum_norm = lum_norm if lum_norm in LUM_NORM_CHOICES else "y"
+    endpoint_mode = endpoint_mode if endpoint_mode in ENDPOINT_MODE_CHOICES else "adaptive"
     agx_primaries = agx_engine.resolve_agx_primaries(agx_primaries)
     if tone_core == "gated":
         from .guidance import ensure_raw_guidance
@@ -591,6 +661,7 @@ def build_render_plan(
         agx_primaries=agx_primaries if mode == "agx" and tone_core == "agx" else "base",
         plan_exposure_gain=plan_gain,
         scene_metrics=scene,
+        endpoint_mode=endpoint_mode,
     )
     if film_curve != "none":
         from dataclasses import replace as _replace
@@ -601,7 +672,10 @@ def build_render_plan(
         # curve wholesale (whole-roll consistency is the point of choosing it). Scene
         # metrics stay untouched so HDR budgeting keeps reading the real capture, and
         # user adjustments below still stack on top of the declared coordinate.
+        # A declared film coordinate also supersedes any endpoint mode: its endpoints
+        # are the preset's, so the plan must not keep claiming evidence endpoints.
         tone = apply_film_curve_preset(tone, film_curve)
+        tone = _replace(tone, endpoint_mode="adaptive", endpoint_note=None)
         mode_value = film_mode if film_mode in ("observe", "full") else "observe"
         tone = _replace(tone, film_mode=mode_value)
     plan = RenderPlan(

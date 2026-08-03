@@ -196,6 +196,29 @@ daylight". There is no strength slider — glass has no half-installed state.
   decided by the earned headroom, whichever is smaller. The default +3.0 (roughly an
   800-nit screen) rarely needs changing.
 
+## 4.5 Tone card: endpoint mode and toe/shoulder offsets
+
+- **Endpoint mode**: where the curve's black/white endpoints come from.
+  **Scene-adaptive** (default) follows this frame's luminance percentiles — right for
+  most photos, but large deep-shadow areas (a backlit bridge underside, a dark alley)
+  can be declared "black" by the percentiles. **Evidence** pins the endpoints to
+  sensor evidence instead: black = the measured noise-floor EV (the sensor prior's
+  published read noise when available; a single-frame estimate otherwise, truthfully
+  noted), and white trusts only the reliable RAW tail (reconstructed highlights do
+  not count; absent evidence falls back with a note). The exposure anchor does not
+  move — 0 EV still maps to 18% gray — so overall brightness stays put.
+- **Toe end** (EV slider): the scene EV at which the curve lands at near-black.
+  Dragging left pushes that point deeper — deeper shadows stay readable and dive to
+  black later, implemented by re-solving the toe shape; **the black point, white
+  point and sky highlights do not move**. Dragging right closes the shadows earlier.
+- **Shoulder start** (EV slider): the scene EV where highlight compression begins.
+  Dragging right keeps bright subjects on the linear mid-slope longer before the
+  shoulder; **the white point does not move**.
+- The measured line at the bottom of the tone card reports the **compiled actual
+  values** (toe-end EV, shoulder-start EV, endpoint provenance). Out-of-range
+  requests are clamped by the curve legality guards; the line always shows what
+  actually took effect.
+
 ---
 
 ## 5. The compression cores, and which to pick

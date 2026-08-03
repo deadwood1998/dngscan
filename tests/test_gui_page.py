@@ -119,7 +119,7 @@ class PageInformationDisplayTests(unittest.TestCase):
             ("evFact", 'id="evReferenceBtn"'),      # body median by the EV controls
             ("wbFact", 'id="lensFilter"'),          # WB degradation closes the WB row
             ("clipFact", 'id="highlight"'),         # clip share by highlight recovery
-            ("toneFact", 'id="highlightTransition"'),  # compiled curve by tone sliders
+            ("toneFact", 'id="shoulderStartOffset"'),  # compiled curve by tone sliders
         ):
             with self.subTest(fact=fact_id):
                 gap = PAGE[PAGE.index(anchor):PAGE.index('id="%s"' % fact_id)]

@@ -396,23 +396,32 @@ def parse_punch(params: dict) -> float:
 
 def parse_render_adjustments(params: dict) -> dg.RenderAdjustments:
     fields = {
-        "midtone_brightness": "midtoneBrightness",
-        "midtone_contrast": "midtoneContrast",
-        "shadow_transition": "shadowTransition",
-        "highlight_transition": "highlightTransition",
-        "highlight_fade": "highlightFade",
+        "midtone_brightness": ("midtoneBrightness", -1.0, 1.0),
+        "midtone_contrast": ("midtoneContrast", -1.0, 1.0),
+        "shadow_transition": ("shadowTransition", -1.0, 1.0),
+        "highlight_transition": ("highlightTransition", -1.0, 1.0),
+        "highlight_fade": ("highlightFade", -1.0, 1.0),
+        "toe_end_offset": ("toeEndOffset", -3.0, 0.5),
+        "shoulder_start_offset": ("shoulderStartOffset", -0.5, 3.0),
     }
     values: dict[str, float] = {}
-    for field, key in fields.items():
+    for field, (key, low, high) in fields.items():
         raw = params.get(key, params.get(field, 0.0))
         try:
             value = float(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{key} 必须是数字") from exc
-        if not math.isfinite(value) or not -1.0 <= value <= 1.0:
-            raise ValueError(f"{key} 需在 -1 到 1 之间")
+        if not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"{key} 需在 {low:g} 到 {high:g} 之间")
         values[field] = value
     return dg.RenderAdjustments(**values)
+
+
+def parse_endpoint_mode(params: dict) -> str:
+    mode = str(params.get("endpointMode", params.get("endpoint_mode", "adaptive")))
+    if mode not in dg.ENDPOINT_MODE_CHOICES:
+        raise ValueError(f"未知端点模式：{mode}")
+    return mode
 
 
 def parse_scene_transform(params: dict) -> tuple[str, float]:
@@ -447,7 +456,7 @@ def _cache_float(value: float) -> float:
 
 def _adjustment_key(adjustments: dg.RenderAdjustments | None) -> tuple[float, ...]:
     if adjustments is None:
-        return (0.0, 0.0, 0.0, 0.0, 0.0)
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return tuple(
         _cache_float(value)
         for value in (
@@ -456,6 +465,8 @@ def _adjustment_key(adjustments: dg.RenderAdjustments | None) -> tuple[float, ..
             adjustments.shadow_transition,
             adjustments.highlight_transition,
             adjustments.highlight_fade,
+            adjustments.toe_end_offset,
+            adjustments.shoulder_start_offset,
         )
     )
 
@@ -472,6 +483,7 @@ def _cached_render_plan(
     agx_primaries: str,
     film_curve: str,
     adjustments: dg.RenderAdjustments | None,
+    endpoint_mode: str = "adaptive",
 ) -> dg.RenderPlan:
     """Compile expensive scene statistics once, then apply cheap UI biases."""
     key = (
@@ -484,6 +496,7 @@ def _cached_render_plan(
         agx_primaries,
         film_curve,
         str(getattr(bundle, "lens_filter", "none")),
+        endpoint_mode,
     )
     base = cached.get_or_build_plan(
         key,
@@ -500,6 +513,7 @@ def _cached_render_plan(
             agx_primaries=agx_primaries,
             film_curve=film_curve,
             adjustments=None,
+            endpoint_mode=endpoint_mode,
         ),
     )
     return dg.apply_render_adjustments(base, adjustments)
@@ -522,6 +536,7 @@ def _preview_pixel_key(
     lens_filter: str,
     film_curve: str,
     adjustments: dg.RenderAdjustments | None,
+    endpoint_mode: str = "adaptive",
 ) -> tuple[Any, ...]:
     return (
         gamut,
@@ -538,6 +553,7 @@ def _preview_pixel_key(
         agx_primaries,
         lens_filter,
         film_curve,
+        endpoint_mode,
         _adjustment_key(adjustments),
         # Exposure is represented by ``ev`` above; the scale contract guards against
         # accidentally sharing frames across decoder/cache versions.
@@ -609,6 +625,7 @@ def export_preview_jpeg(
     demosaic: str = "auto",
     lens_filter: str = "none",
     film_curve: str = "none",
+    endpoint_mode: str = "adaptive",
     include_metrics: bool = True,
     is_current: Callable[[], bool] | None = None,
 ) -> dict:
@@ -658,6 +675,7 @@ def export_preview_jpeg(
         lens_filter,
         film_curve,
         adjustments,
+        endpoint_mode,
     )
     frame_key = _preview_frame_key(pixel_key, include_metrics)
     if auto_ev is None:
@@ -683,6 +701,7 @@ def export_preview_jpeg(
                 agx_primaries,
                 film_curve,
                 adjustments,
+                endpoint_mode,
             )
             ensure_current()
             rgb_u8 = dg.render_output_u8(
@@ -764,6 +783,7 @@ def run_preview(params: dict) -> dict:
     tone_core, lum_norm = parse_tone_core(params)
     agx_primaries = parse_agx_primaries(params)
     lens_filter, film_curve = parse_film_params(params)
+    endpoint_mode = parse_endpoint_mode(params)
     try:
         cached = PREVIEW_STORE.get(
             inp,
@@ -822,6 +842,7 @@ def run_preview(params: dict) -> dict:
             demosaic=demosaic,
             lens_filter=lens_filter,
             film_curve=film_curve,
+            endpoint_mode=endpoint_mode,
             include_metrics=bool(params.get("includeMetrics", True)),
             is_current=is_current,
         )
@@ -859,6 +880,19 @@ def detected_scene_params(
     earned = None
     if reliable_tail is not None:
         earned = max(0.0, reliable_tail - float(dg.OUTPUT_REFERENCE_WHITE_STOPS))
+    # Compiled transition facts: the toe-end near-black crossing and the shoulder-start
+    # anchor the curve solver actually kept, after every clamp — the two numbers the
+    # new offset sliders move, measured from the same params the render consumes.
+    toe_end_ev = shoulder_start_ev = None
+    if getattr(tone, "tone_core", "agx") != "neutral":
+        try:
+            from dngscan.drt import compiled_curve_transitions
+
+            transitions = compiled_curve_transitions(tone)
+            toe_end_ev = _finite_or_none(transitions["toe_end_ev"])
+            shoulder_start_ev = _finite_or_none(transitions["shoulder_start_ev"])
+        except Exception:
+            pass
     return {
         "data_support": getattr(bundle, "camera_data_support", None),
         "wb_degradation": getattr(bundle, "wb_degradation", None),
@@ -870,6 +904,10 @@ def detected_scene_params(
         "black_ev": _finite_or_none(tone.black_ev),
         "white_ev": _finite_or_none(tone.white_ev),
         "contrast": _finite_or_none(tone.contrast),
+        "toe_end_ev": toe_end_ev,
+        "shoulder_start_ev": shoulder_start_ev,
+        "endpoint_mode": str(getattr(tone, "endpoint_mode", "adaptive")),
+        "endpoint_note": getattr(tone, "endpoint_note", None),
         "hdr_earned_ev": earned,
     }
 
@@ -890,6 +928,7 @@ def prepare_preview(params: dict) -> dict:
     adjustments = parse_render_adjustments(params)
     agx_primaries = parse_agx_primaries(params)
     lens_filter, film_curve = parse_film_params(params)
+    endpoint_mode = parse_endpoint_mode(params)
     # Do not compete with the full-resolution export worker for memory bandwidth.
     with RENDER_LOCK:
         entry = PREVIEW_STORE.get(
@@ -920,6 +959,7 @@ def prepare_preview(params: dict) -> dict:
             agx_primaries,
             film_curve,
             adjustments,
+            endpoint_mode,
         )
     height, width = entry.bundle.scene_rec2020_render.shape[:2]
     try:
@@ -950,6 +990,7 @@ def export_suffix_parts(
     tone_core: str = "agx",
     lum_norm: str = "y",
     agx_primaries: str = "base",
+    endpoint_mode: str = "adaptive",
 ) -> str:
     """Build the filename stem suffix for GUI JPEG/PNG exports."""
     parts = [tone_core]
@@ -957,6 +998,10 @@ def export_suffix_parts(
         parts.append(lum_norm)
     if tone_core == "agx" and agx_primaries != "base":
         parts.append(agx_primaries)
+    if endpoint_mode != "adaptive":
+        # Evidence endpoints change the compiled curve; the filename must not let an
+        # evidence export silently overwrite the adaptive one.
+        parts.append(endpoint_mode)
     if highlight != "clip":
         parts.append(highlight)
     if gamut != "srgb":
@@ -1085,6 +1130,7 @@ def run_export(params: dict) -> dict:
         raise RuntimeError("HDR 输出当前只实现 AgX tone core")
     agx_primaries = parse_agx_primaries(params)
     lens_filter, film_curve = parse_film_params(params)
+    endpoint_mode = parse_endpoint_mode(params)
     bundle = dg.load_raw(
         inp,
         highlight,
@@ -1146,6 +1192,7 @@ def run_export(params: dict) -> dict:
         agx_primaries=agx_primaries,
         adjustments=adjustments,
         film_curve=film_curve,
+        endpoint_mode=endpoint_mode,
     )
 
     grade_id = str(params.get("grade", "none"))
@@ -1161,6 +1208,7 @@ def run_export(params: dict) -> dict:
         tone_core,
         lum_norm,
         agx_primaries,
+        endpoint_mode,
     )
     out_ext = ".heic" if output_format == "ultrahdr-heic" else ".jpg"
     out_path = outdir / f"{inp.stem}_{suffix}{out_ext}"

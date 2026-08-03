@@ -284,6 +284,16 @@ class ToneCompressionPlan:
     # Display-referred dark-scene lift, implemented like darktable's look brightness:
     # it leaves encoded black/white fixed and is never an exposure gain.
     view_brightness: float = 1.0
+    # Which endpoint policy compiled black_ev / white_ev. "adaptive" (default) follows
+    # the scene body/tail percentiles exactly as before; "evidence" pins the black
+    # endpoint to the measured sensor noise floor (prior read-noise when the sensor
+    # prior is available, single-frame estimate otherwise) and the white endpoint to
+    # the reliable RAW tail. Informational for reports; consumers must read the
+    # endpoint fields themselves, never re-derive behaviour from this name.
+    endpoint_mode: str = "adaptive"
+    # Truthful note about how the evidence endpoints were sourced or degraded
+    # (e.g. "黑端点=单帧噪声底估计（无传感器先验）"). None under adaptive compilation.
+    endpoint_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -365,6 +375,17 @@ class RenderAdjustments:
     shadow_transition: float = 0.0
     highlight_transition: float = 0.0
     highlight_fade: float = 0.0
+    # Toe-end offset in scene EV, range [-3.0, +0.5]. Moves the compiled curve's
+    # toe-end point (the scene EV where display output falls to the near-black
+    # reference level) by re-solving toe_power; the black endpoint itself and the
+    # shoulder/white side do not move. Negative keeps deeper shadows readable
+    # longer before the final dive to black; positive tightens them earlier.
+    toe_end_offset: float = 0.0
+    # Shoulder-start offset in scene EV, range [-0.5, +3.0]. Moves the shoulder
+    # transition (linear-latitude top anchor) along the mid segment; the white
+    # endpoint does not move. Positive keeps bright subjects on the mid slope
+    # longer; negative starts shoulder compression earlier.
+    shoulder_start_offset: float = 0.0
 
     def is_identity(self) -> bool:
         return all(
@@ -375,6 +396,8 @@ class RenderAdjustments:
                 self.shadow_transition,
                 self.highlight_transition,
                 self.highlight_fade,
+                self.toe_end_offset,
+                self.shoulder_start_offset,
             )
         )
 

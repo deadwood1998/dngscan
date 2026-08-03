@@ -11,7 +11,8 @@ from . import priors as sensor_priors
 from .color import apply_rgb_matrix3, clamp_float, XYZ_TO_RGB
 from .constants import (
     CEILING_MIN_PILE_FRACTION, CEILING_MIN_PILE_PIXELS, EPS, EV_REPORT_FLOOR, GAMUT_EPS,
-    GRAY_EV, NOISE_DR_EPS, SNR_BRIGHT_UNRELIABLE_STOP, SNR_LOW_PERCENTILE, SNR_TILE,
+    GRAY_EV, MIDGRAY_HEADROOM_STOPS, NOISE_DR_EPS, SNR_BRIGHT_UNRELIABLE_STOP,
+    SNR_LOW_PERCENTILE, SNR_TILE,
 )
 from .models import Analysis, RawBundle
 
@@ -323,6 +324,46 @@ def normalized_raw_signal(
 def estimate_raw_noise_floor(bundle: RawBundle, fullwell_by_channel: dict[int, int]) -> float:
     signal = normalized_raw_signal(bundle.raw_image, bundle.raw_colors, bundle.black_levels, fullwell_by_channel)
     return estimate_noise_floor(signal)
+
+
+def noise_floor_ev_estimate(analysis: Analysis) -> tuple[float, str]:
+    """Scene EV of the sensor noise floor under the fixed mid-gray exposure anchor.
+
+    Tone planning renders with the constant anchor (mid gray = clip / 2**headroom at
+    EV 0), which puts the RAW full well at exactly +MIDGRAY_HEADROOM_STOPS scene EV.
+    A noise floor expressed as a fraction ``f`` of the full well therefore sits at
+    ``MIDGRAY_HEADROOM_STOPS + log2(f)`` scene EV — the same convention every scene
+    tone metric already uses.
+
+    Two sources, following the existing prior/degradation philosophy:
+
+    - ``("prior", ...)``: the sensor prior's published read noise in electrons over
+      the frame's own electron-domain full well (recovered from the stored
+      ``noise_floor_e / noise_floor`` ratio, so no extra fields are needed). This is
+      the SNR=1 engineering floor and is unbiased by scene photon noise.
+    - ``("frame", ...)``: single-frame tile-σ estimate (``usable_dr_ev``) when no
+      prior is available. It includes photon noise of the darkest scene tiles and
+      therefore reads conservatively shallow; callers should note the degradation.
+    - ``("none", nan)``: no usable estimate at all.
+    """
+    noise_e = analysis.noise_floor_e
+    read_e = analysis.prior_read_noise_e
+    nf = float(analysis.noise_floor)
+    if (
+        noise_e is not None
+        and read_e is not None
+        and nf > 0.0
+        and float(noise_e) > 0.0
+        and float(read_e) > 0.0
+    ):
+        fullwell_e = float(noise_e) / nf
+        if math.isfinite(fullwell_e) and fullwell_e > 0.0:
+            floor_fraction = float(read_e) / fullwell_e
+            if 0.0 < floor_fraction < 1.0:
+                return MIDGRAY_HEADROOM_STOPS + math.log2(floor_fraction), "prior"
+    if math.isfinite(analysis.usable_dr_ev):
+        return MIDGRAY_HEADROOM_STOPS - float(analysis.usable_dr_ev), "frame"
+    return float("nan"), "none"
 
 
 def cfa_positions_for_channel(bundle: RawBundle, cid: int) -> list[tuple[int, int]]:

@@ -214,6 +214,25 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
       <input type="range" id="highlightTransition" min="-1" max="1" step="0.05" value="0" title="向左更直接，向右更柔和。">
     </div>
   </div>
+  <div class="row" style="margin-top:12px">
+    <div style="flex:1;min-width:170px">
+      <label title="adaptive=端点追随场景百分位（默认）；evidence=端点钉在证据界：黑端点=实测噪声底 EV（有传感器先验用先验读出噪声），白端点只信可靠 RAW 尾部。pivot 锚定不变（0EV→18%）。">端点模式</label>
+      <select id="endpointMode">
+        <option value="adaptive">场景自适应 · 默认</option>
+        <option value="evidence">证据界 · 噪声底/可靠尾部</option>
+      </select>
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <div class="sliderField">
+      <div class="labelRow"><label title="把曲线落到近黑的 EV 位置下移：让更深的阴影保持可读、更晚坠向黑点；重解趾部形状实现，不移动黑点、白点与曝光锚。">趾部收黑</label><span class="val" id="toeEndOffsetVal">自动</span></div>
+      <input type="range" id="toeEndOffset" min="-3" max="0.5" step="0.05" value="0" title="向左更深的阴影仍可读（更晚收黑），向右更早收黑、暗部更紧。">
+    </div>
+    <div class="sliderField">
+      <div class="labelRow"><label title="移动肩部压缩的起点 EV：让明亮主体更久停留在线性中段、更晚进入肩部；不移动白点。">肩部起点</label><span class="val" id="shoulderStartOffsetVal">自动</span></div>
+      <input type="range" id="shoulderStartOffset" min="-0.5" max="3" step="0.05" value="0" title="向右更晚进入肩部压缩，向左更早。">
+    </div>
+  </div>
   <div class="ctlFact" id="toneFact"></div>
 </div>
 
@@ -416,8 +435,10 @@ function setGradeStrengthLabel(){const v=+$("#gradeStrength").value;$("#gradeStr
 function updateGradeUi(){$("#gradeStrengthBlock").style.display=$("#grade").value!=="none"?"block":"none";}
 function setPunchLabel(){const v=+$("#punch").value;$("#punchVal").textContent=v.toFixed(2);}
 function fmtBias(v){return Math.abs(v)<0.001?"自动":(v>0?"+":"")+v.toFixed(2);}
+function fmtEvBias(v){return Math.abs(v)<0.001?"自动":(v>0?"+":"")+v.toFixed(2)+" EV";}
 function setAdjustmentLabels(){
   ["midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"].forEach(id=>{$("#"+id+"Val").textContent=fmtBias(+$("#"+id).value);});
+  ["toeEndOffset","shoulderStartOffset"].forEach(id=>{$("#"+id+"Val").textContent=fmtEvBias(+$("#"+id).value);});
 }
 function setSceneTransformStrengthLabel(){const v=+$("#sceneTransformStrength").value;$("#sceneTransformStrengthVal").textContent=v.toFixed(2);}
 function updateSceneTransformUi(){$("#sceneTransformStrengthBlock").style.display=$("#sceneTransform").value!=="none"?"block":"none";}
@@ -599,6 +620,8 @@ function saveSettings(){
     sceneTransform:$("#sceneTransform").value,sceneTransformStrength:$("#sceneTransformStrength").value,punch:$("#punch").value,
     midtoneBrightness:$("#midtoneBrightness").value,midtoneContrast:$("#midtoneContrast").value,
     shadowTransition:$("#shadowTransition").value,highlightTransition:$("#highlightTransition").value,highlightFade:$("#highlightFade").value,
+    endpointMode:$("#endpointMode").value,
+    toeEndOffset:$("#toeEndOffset").value,shoulderStartOffset:$("#shoulderStartOffset").value,
     hdrHeadroom:$("#hdrHeadroom").value,outdir:$("#outdir").value,png:$("#png").checked
   }));}catch(e){}
 }
@@ -653,7 +676,8 @@ function restoreSettings(){
   if(s.sceneTransform&&[...$("#sceneTransform").options].some(o=>o.value===s.sceneTransform))$("#sceneTransform").value=s.sceneTransform;
   if(s.sceneTransformStrength!==undefined)$("#sceneTransformStrength").value=s.sceneTransformStrength;
   if(s.punch!==undefined)$("#punch").value=s.punch;
-  ["midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"].forEach(id=>{if(s[id]!==undefined)$("#"+id).value=s[id];});
+  ["midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade","toeEndOffset","shoulderStartOffset"].forEach(id=>{if(s[id]!==undefined)$("#"+id).value=s[id];});
+  if(s.endpointMode&&[...$("#endpointMode").options].some(o=>o.value===s.endpointMode))$("#endpointMode").value=s.endpointMode;
   if(s.format)$("#format").value=s.format;
   if(s.hdrHeadroom!==undefined)$("#hdrHeadroom").value=s.hdrHeadroom;
   if(s.outdir)$("#outdir").value=s.outdir;
@@ -701,6 +725,15 @@ $("#punch").oninput=()=>{setPunchLabel();saveSettings();scheduleLivePreview();};
 [
   "midtoneBrightness","midtoneContrast","shadowTransition","highlightTransition","highlightFade"
 ].forEach(id=>$("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();scheduleLivePreview();});
+[
+  "toeEndOffset","shoulderStartOffset"
+].forEach(id=>{
+  $("#"+id).oninput=()=>{setAdjustmentLabels();saveSettings();scheduleLivePreview();};
+  // The compiled toe-end / shoulder-start facts in #toneFact come from /prepare; a
+  // released slider refreshes them so the printed EV matches the curve on screen.
+  $("#"+id).addEventListener("change",()=>{preparePreview();});
+});
+$("#endpointMode").addEventListener("change",()=>{saveSettings();preparePreview();});
 $("#sceneTransformStrength").oninput=()=>{setSceneTransformStrengthLabel();saveSettings();scheduleLivePreview();};
 restoreSettings();
 checkHdrBackend();
@@ -771,6 +804,8 @@ function payload(){
     midtoneBrightness:+$("#midtoneBrightness").value,midtoneContrast:+$("#midtoneContrast").value,
     shadowTransition:+$("#shadowTransition").value,highlightTransition:+$("#highlightTransition").value,
     highlightFade:["ultrahdr","ultrahdr-heic"].includes($("#format").value)?0:+$("#highlightFade").value,
+    endpointMode:$("#endpointMode").value,
+    toeEndOffset:+$("#toeEndOffset").value,shoulderStartOffset:+$("#shoulderStartOffset").value,
     hdrHeadroom:+$("#hdrHeadroom").value,ev:+$("#ev").value,quality:+$("#quality").value,
     outdir:$("#outdir").value.trim(),png:$("#png").checked
   };
@@ -860,6 +895,9 @@ function renderDetectedParams(d){
   const toneBits=[];
   if(d.black_ev!==null&&d.white_ev!==null)toneBits.push("编译曲线 "+ev(d.black_ev)+" .. "+ev(d.white_ev));
   if(d.contrast!==null)toneBits.push("对比 "+(+d.contrast).toFixed(2));
+  if(d.toe_end_ev!==null&&d.toe_end_ev!==undefined)toneBits.push("趾部收黑 "+ev(d.toe_end_ev));
+  if(d.shoulder_start_ev!==null&&d.shoulder_start_ev!==undefined)toneBits.push("肩部起点 "+ev(d.shoulder_start_ev));
+  if(d.endpoint_mode==="evidence")toneBits.push("端点 证据界"+(d.endpoint_note?"（"+d.endpoint_note+"）":""));
   setFact("#toneFact",toneBits.join(" · "));
   if(d.reliable_tail_ev!==null){
     const bits=["实测可靠尾部 "+ev(d.reliable_tail_ev)+"（p99.99）"];
