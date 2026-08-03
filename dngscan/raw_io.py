@@ -449,6 +449,13 @@ def resolve_hot_wb_c0(
        as-shot CCT (``wb.asshot_reference_cct``, the DNG-SDK-style fixed point on the
        decode-side multipliers), the target at the declared CCT — both in the same
        unnormalized convention.
+    4. The project fallback matrix table (``camera_matrices``) — bodies newer than the
+       pinned LibRaw shooting non-DNG containers, where rungs 1-3 all miss.  The same
+       single-illuminant matrix serves both sides (no per-CCT interpolation exists on
+       this rung; diagonal gains commute through the shared matrix, so the convention
+       stays consistent), exactly the rung ``solve_wb_for_mode`` already uses for the
+       target multipliers on these bodies.  Salvaged from the parallel session's
+       ladder draft — its one increment over the merged fix.
     Missing everything raises ValueError; the caller degrades explicitly to camera.
     """
     candidate = bundle.wb_xyz_to_cam
@@ -486,6 +493,13 @@ def resolve_hot_wb_c0(
             else interpolated_color_matrix(calibration, target_cct)
         )
         return decode, target, "dng_calibration"
+    from .camera_matrices import fallback_xyz_to_cam
+
+    hit = fallback_xyz_to_cam(bundle.shot_make, bundle.shot_model)
+    if hit is not None:
+        matrix, _note = hit
+        decode = np.asarray(matrix, dtype=np.float64)
+        return decode, decode, "fallback_table"
     raise ValueError("camera ColorMatrix is unavailable for hot white balance")
 
 

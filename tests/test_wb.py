@@ -242,7 +242,8 @@ def _patch_calibration(value):
 
 
 class HotWbC0LadderTests(unittest.TestCase):
-    """The decode-side C0 ladder: evidence matrix -> LibRaw rgb_cam -> DNG tags -> refusal."""
+    """The decode-side C0 ladder: evidence matrix -> LibRaw rgb_cam -> DNG tags ->
+    project fallback table -> refusal."""
 
     def test_rung1_evidence_matrix_wins_and_keeps_current_behaviour(self) -> None:
         bundle = _ladder_bundle(
@@ -304,7 +305,24 @@ class HotWbC0LadderTests(unittest.TestCase):
             target, interpolated_color_matrix(calib, 5500.0)
         )
 
-    def test_rung4_everything_missing_is_a_refusal(self) -> None:
+    def test_rung4_fallback_table_serves_bodies_newer_than_libraw(self) -> None:
+        # A7R-VI-class scenario: non-DNG container, body absent from LibRaw's
+        # tables (empty evidence matrix, no usable rgb_cam, no DNG tags) — the
+        # same fallback matrix that already solves the target multipliers now
+        # also anchors C0, instead of degrading to camera.
+        from dngscan.camera_matrices import fallback_xyz_to_cam
+
+        bundle = _ladder_bundle(shot_make="FUJIFILM", shot_model="X-E5")
+        with _patch_calibration(None):
+            decode, target, source = resolve_hot_wb_c0(bundle, 5500.0)
+        self.assertEqual(source, "fallback_table")
+        matrix, _note = fallback_xyz_to_cam("FUJIFILM", "X-E5")
+        np.testing.assert_allclose(decode, np.asarray(matrix, dtype=np.float64))
+        # Single-illuminant rung: the same matrix serves both sides so the
+        # convention never mixes (diagonal gains commute through it).
+        np.testing.assert_allclose(target, decode, rtol=0.0, atol=0.0)
+
+    def test_rung5_everything_missing_is_a_refusal(self) -> None:
         bundle = _ladder_bundle()
         with _patch_calibration(None):
             with self.assertRaisesRegex(ValueError, "unavailable"):
