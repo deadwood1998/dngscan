@@ -22,6 +22,7 @@ from .constants import (
     REALTIME_PREVIEW_JPEG_QUALITY,
     REALTIME_PREVIEW_JPEG_SUBSAMPLING,
 )
+from .histogram import display_histogram, hdr_earned_ev, scene_ev_base, scene_ev_histogram
 from .preview_cache import PREVIEW_STORE, PreviewEntry, downsample_mean
 from .preview_scheduler import PREVIEW_COORDINATOR
 
@@ -670,20 +671,24 @@ def export_preview_jpeg(
         ensure_current()
         rgb_u8 = cached.get_pixels(pixel_key) if auto_ev is None else None
         pixel_cache_hit = rgb_u8 is not None
+        # The compiled plan is consulted even on a pixel-cache hit: the histogram
+        # annotations (curve endpoints, reliable tail, earned HDR headroom) must
+        # quote the exact plan those pixels consumed. The base compile is
+        # LRU-cached, so on interactive frames this is a dictionary hit.
+        render_plan = _cached_render_plan(
+            cached,
+            proxy_bundle,
+            gamut,
+            scene_transform,
+            scene_transform_strength,
+            punch_scale,
+            tone_core,
+            lum_norm,
+            agx_primaries,
+            film_curve,
+            adjustments,
+        )
         if rgb_u8 is None:
-            render_plan = _cached_render_plan(
-                cached,
-                proxy_bundle,
-                gamut,
-                scene_transform,
-                scene_transform_strength,
-                punch_scale,
-                tone_core,
-                lum_norm,
-                agx_primaries,
-                film_curve,
-                adjustments,
-            )
             ensure_current()
             rgb_u8 = dg.render_output_u8(
                 proxy_bundle, cached.analysis, gamut, render_plan,
@@ -696,6 +701,24 @@ def export_preview_jpeg(
             if auto_ev is None:
                 rgb_u8 = cached.put_pixels(pixel_key, rgb_u8)
         icc_profile = dg.output_icc_profile_bytes(gamut)
+        # Both histograms ride the same response as the frame they describe, so
+        # the page's latest-wins logic keeps image and histograms in lockstep.
+        # The scene EV0 population is compiled once per proxy/transform state
+        # (user EV is an exact shift, see gui.histogram); the display histogram
+        # reads the u8 frame before any auto-EV overlay is painted on it.
+        scene_hist_base = cached.get_or_build_plan(
+            (
+                "scene_ev_hist",
+                scene_transform,
+                _cache_float(scene_transform_strength),
+                lens_filter,
+            ),
+            lambda: scene_ev_base(
+                proxy_bundle, cached.analysis, scene_transform, scene_transform_strength
+            ),
+        )
+        scene_hist = scene_ev_histogram(scene_hist_base, render_plan, ev)
+        display_hist = display_histogram(rgb_u8)
         if auto_ev is not None:
             rgb_u8 = annotate_preview_rgb_u8(rgb_u8, dg.auto_ev_overlay_lines(auto_ev))
         metrics = preview_metrics_from_u8(rgb_u8, gamut) if include_metrics else {}
@@ -719,6 +742,9 @@ def export_preview_jpeg(
         "ev_auto": auto_ev_payload(auto_ev),
         "cache_hit": False,
         "pixel_cache_hit": pixel_cache_hit,
+        "scene_histogram": scene_hist,
+        "display_histogram": display_hist,
+        "hdr_earned_ev": hdr_earned_ev(render_plan),
     }
     if auto_ev is None:
         cached.put_frame(frame_key, payload)

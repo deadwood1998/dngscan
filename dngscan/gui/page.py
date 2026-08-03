@@ -75,6 +75,7 @@ button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color
 .reportGrid dt{color:#9aa3b2;white-space:nowrap}
 .reportGrid dd{margin:0;color:#e6e9f0;font-variant-numeric:tabular-nums}
 .reportGrid dd.warn{color:#f0b35e}
+.histCanvas{display:none;width:100%;height:92px;margin-top:10px;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
 .ctlFact{margin-top:6px;color:#8fa0c4;font-size:11.5px;line-height:1.5;font-variant-numeric:tabular-nums;white-space:pre-line}
 .ctlFact:empty{display:none}
 .ctlFact.warn{color:#f0b35e}
@@ -188,6 +189,7 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
         <button type="button" id="evReferenceBtn" title="将可靠主体中位对齐 18% 灰，并限制高光溢出。"><span class="m">亮度参考</span></button>
       </div>
       <div class="ctlFact" id="evFact"></div>
+      <canvas id="sceneHist" class="histCanvas" title="可靠场景亮度直方图：EV 相对 18% 灰，与 tone 规划同一采样口径（剔除 RAW 剪切与地板钳制样本）。注记线为编译曲线端点、0 EV 与可靠尾部 p99.99。"></canvas>
     </div>
   </div>
 </div>
@@ -331,6 +333,7 @@ GRADE_OPTIONS
     <dl class="reportGrid" id="deliveryReportBody"></dl>
   </details>
   <div id="previewWrap"><img id="preview"><div id="spinner"></div></div>
+  <canvas id="displayHist" class="histCanvas" title="显示码值直方图：与预览同帧的 1920px 已渲染帧，RGB 三通道与 luma，0–255。HDR 格式下为 SDR 底图直方图。"></canvas>
 </div>
 </div>
 
@@ -1014,10 +1017,93 @@ function renderDeliveryReport(j){
   body.innerHTML=rows.join("");
   box.style.display=rows.length?"block":"none";
 }
+// Realtime histograms: pure canvas, display-only by design (no hover, no
+// selection, no listeners). Both are drawn from the same /preview response as
+// the frame they describe, so latest-wins keeps image and histograms in step.
+const HIST_TOP=15,HIST_PAD=4,HIST_FONT="11px -apple-system,system-ui,sans-serif";
+function histSetup(canvas){
+  const w=canvas.clientWidth||600,h=canvas.clientHeight||92;
+  if(canvas.width!==w)canvas.width=w;
+  if(canvas.height!==h)canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  ctx.clearRect(0,0,w,h);
+  return ctx;
+}
+function histLogs(counts){return counts.map(v=>Math.log1p(v));}
+function histMarkers(ctx,markers,W,H){
+  // Left-to-right label layout with a bottom fallback row, so close markers
+  // (e.g. 0EV next to p99.99) never paint over each other.
+  markers.sort((a,b)=>a.x-b.x);
+  let endTop=-1e9,endBottom=-1e9;
+  for(const m of markers){
+    if(!(m.x>=0&&m.x<=W))continue;
+    ctx.save();
+    if(m.dash)ctx.setLineDash([3,3]);
+    ctx.strokeStyle=m.color;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(m.x+.5,HIST_TOP-3);ctx.lineTo(m.x+.5,H-HIST_PAD);ctx.stroke();
+    ctx.setLineDash([]);ctx.fillStyle=m.color;ctx.font=HIST_FONT;
+    const tw=ctx.measureText(m.label).width;
+    let tx=m.x+3;if(tx+tw>W-2)tx=m.x-tw-3;
+    if(tx>=endTop+4){ctx.fillText(m.label,tx,10);endTop=tx+tw;}
+    else if(tx>=endBottom+4){ctx.fillText(m.label,tx,H-HIST_PAD-2);endBottom=tx+tw;}
+    ctx.restore();
+  }
+}
+function histSeries(ctx,logs,max,W,H,stroke,fill){
+  const n=logs.length,base=H-HIST_PAD,span=H-HIST_TOP-HIST_PAD;
+  ctx.beginPath();ctx.moveTo(0,base);
+  for(let i=0;i<n;i++)ctx.lineTo((i+0.5)/n*W,base-Math.max(0,logs[i]/max)*span);
+  ctx.lineTo(W,base);
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();}
+}
+function renderSceneHistogram(h){
+  const c=$("#sceneHist");
+  if(!h||!h.counts){c.style.display="none";return;}
+  c.style.display="block";
+  const ctx=histSetup(c),W=c.width,H=c.height;
+  const logs=histLogs(h.counts),max=Math.max(1e-6,...logs);
+  const n=logs.length,bw=W/n,base=H-HIST_PAD,span=H-HIST_TOP-HIST_PAD;
+  ctx.fillStyle="rgba(91,140,255,.6)";
+  for(let i=0;i<n;i++){
+    const v=logs[i]/max;if(v<=0)continue;
+    ctx.fillRect(i*bw,base-v*span,Math.max(bw-0.5,0.75),v*span);
+  }
+  const evx=ev=>(ev-h.ev_min)/(h.ev_max-h.ev_min)*W;
+  const markers=[{x:evx(h.pivot_ev||0),color:"#7d8698",label:"0EV",dash:true}];
+  if(h.black_ev!=null)markers.push({x:evx(h.black_ev),color:"#8fa0c4",label:"黑 "+(+h.black_ev).toFixed(1)});
+  if(h.white_ev!=null)markers.push({x:evx(h.white_ev),color:"#e7e9ee",label:"白 "+(+h.white_ev).toFixed(1)});
+  if(h.reliable_tail_ev!=null)markers.push({x:evx(h.reliable_tail_ev),color:"#ffc46b",label:"p99.99"});
+  histMarkers(ctx,markers,W,H);
+}
+function renderDisplayHistogram(h,earnedEv){
+  const c=$("#displayHist");
+  if(!h||!h.luma){c.style.display="none";return;}
+  c.style.display="block";
+  const ctx=histSetup(c),W=c.width,H=c.height;
+  const series=[["r","rgba(255,122,122,.9)"],["g","rgba(126,217,135,.9)"],["b","rgba(122,162,255,.9)"]];
+  const lumaLogs=histLogs(h.luma);
+  let max=Math.max(...lumaLogs);
+  const chLogs={};
+  for(const [name] of series){chLogs[name]=histLogs(h[name]);max=Math.max(max,...chLogs[name]);}
+  if(!(max>0))max=1;
+  histSeries(ctx,lumaLogs,max,W,H,null,"rgba(231,233,238,.28)");
+  for(const [name,stroke] of series)histSeries(ctx,chLogs[name],max,W,H,stroke,null);
+  const hdr=["ultrahdr","ultrahdr-heic"].includes($("#format").value);
+  if(hdr&&earnedEv!=null){
+    ctx.fillStyle="#ffc46b";ctx.font=HIST_FONT;
+    const note="SDR 底图 · HDR 已挣余量 +"+(+earnedEv).toFixed(1)+" EV";
+    ctx.fillText(note,W-ctx.measureText(note).width-6,10);
+  }
+}
 function handleJobResult(j, prefix){
   if(!j.ok)return false;
   applyJobEv(j);
   renderDeliveryReport(j);
+  // Full exports do not recompute the realtime histograms; the last live pair
+  // stays valid for the same parameters, so absent fields leave them untouched.
+  if(j.scene_histogram)renderSceneHistogram(j.scene_histogram);
+  if(j.display_histogram)renderDisplayHistogram(j.display_histogram,j.hdr_earned_ev);
   // Scene facts live in the detection card and export truth in the delivery report;
   // a successful preview needs no small print. Auto-EV keeps its one-line feedback.
   setStatus(j.ev_auto?prefix+"：EV "+fmtEv(j.ev)+fullFrameReferenceText(j):"","ok");
