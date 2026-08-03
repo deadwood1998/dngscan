@@ -46,9 +46,9 @@ CaptureInvariant + BalanceContext ────> analysis -> proxy -> RenderPlan
 
 `CaptureInvariant` 只缓存真正与 WB 无关的原始域结果：evidence、sensor facts、ceiling/noise/clip/CFA 指标和 full-size mask。key 至少包含文件内容摘要、活动区/方向、LibRaw 与 sensor DB/evidence ABI；值不可变并带校验和。
 
-`BalanceContext` 继续包含 selected decoder、decoder/Core Image 版本、WB、高光、解拜耳和由这些数据产生的 scene/analysis/proxy。decoder 切换可以复用同一 `CaptureInvariant`，不能误用另一 decoder 的 scene。
+`DecodeContext` 包含 selected decoder、decoder/Core Image 版本、高光、解拜耳和固定 AsShot 解拜耳预条件；`BalanceContext` 只包含用户 WB 矩阵、WB 后 scene/analysis/proxy。decoder 切换可以复用同一 `CaptureInvariant`，不能误用另一 decoder 的 scene。
 
-WB-neutral scene 只保留为实验，不进入默认方案。LibRaw 的 WB 可能影响解拜耳和高光恢复，Apple RAW 的 temperature/tint 也在 Core Image RAW filter 内生效；把 WB 移到解码后矩阵会改变现有算法。除非它能对两条路径分别通过完整逐字节门禁，否则仍按现有方式生成新的 `BalanceContext`。首次载入后可以用低优先级、可取消任务预热常用 WB，连续滑动采用 debounce/latest-wins，但只能发布完整的精确帧，不能发布近似 WB。
+2026-08-02 的产品决策把 WB 从 decoder-coupled 参数迁移为项目自有热阶段：LibRaw 与 Apple RAW 都只按固定 AsShot 预条件重建一次，再用 `C·Gtarget·Gdecode^-1·C^-1` 在 Rec.2020 中实现 camera-linear 重平衡。该迁移相对旧 LibRaw/Apple 内置 WB 是一次明确的算法版本变化，旧 oracle 只用于迁移 A/B 与审片，不能要求逐 bit 相同；新 oracle 冻结后，preview/export、cache hit/miss 和后续 native/Metal/CUDA 优化仍执行本文的逐字节门禁。详细边界见 `HOT_WHITE_BALANCE_MIGRATION.zh-CN.md`。
 
 #### 3. 全分辨率 analysis 做 exact native 融合
 
@@ -111,6 +111,6 @@ Mac/Metal、CUDA 和 CPU 各自独立 feature flag、ABI 和回退。ANE/NPU 只
 5. RenderPlan 单次 transformed sample；
 6. exact native analysis 与 exact scene-transform；
 7. 修正矩阵舍入和双平面 dither 后启用 exact output fast path；
-8. Metal，然后 CUDA；WB-neutral 继续保持实验关闭。
+8. Metal，然后 CUDA；均以冻结后的项目 hot-WB oracle 为准。
 
 每一项必须是可独立关闭、可独立回退的提交。合入条件同时满足：严格等价门禁全绿、目标平台有真实 profile 收益、峰值内存和取消语义达标；三者缺一不可。

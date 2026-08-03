@@ -2,6 +2,7 @@
 """RAW decode via rawpy and scene-linear render buffers."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -363,6 +364,175 @@ def scene_rec2020_to_xyz_render(scene_rec2020: Any, scene_scale: float) -> Any:
         return out.reshape(scene.shape)
     xyz = rec2020_to_xyz(scene.reshape(-1, 3)).reshape(scene.shape)
     return xyz.astype(scene.dtype, copy=False)
+
+
+def normalized_camera_wb(wb_values: list[float] | None) -> Any:
+    """Return finite RGB camera gains with green fixed to one.
+
+    LibRaw accepts four CFA multipliers (two greens on Bayer sensors), while its normal
+    three-channel reconstruction has already merged G2 into green.  The public WB modes
+    solve/declare both greens from G1, so G1 remains the explicit normalization anchor;
+    a zero/missing metadata G2 therefore cannot perturb the hot transform.
+    """
+    if not wb_values or len(wb_values) < 3:
+        raise ValueError("white-balance multipliers are unavailable")
+    values = np.asarray(wb_values[:4], dtype=np.float64)
+    if not np.all(np.isfinite(values[:3])) or np.any(values[:3] <= 0.0):
+        raise ValueError(f"invalid white-balance multipliers: {wb_values!r}")
+    green = float(values[1])
+    return np.asarray(
+        [float(values[0]) / green, float(values[1]) / green, float(values[2]) / green],
+        dtype=np.float64,
+    )
+
+
+def hot_wb_matrix_rec2020(
+    xyz_to_cam: Any,
+    decode_wb: list[float],
+    target_wb: list[float],
+    target_xyz_to_cam: Any | None = None,
+) -> Any:
+    """Rec.2020 matrix changing only user WB after one fixed reconstruction.
+
+    ``xyz_to_cam`` is the fixed decoder ColorMatrix (XYZ -> camera channels).  Let C be
+    camera -> Rec.2020 and G the diagonal WB gains.  A decoder scene reconstructed with
+    immutable ``C0/G0`` is rebalanced by ``Ctarget Gtarget (C0 G0)^-1``; DNG fixed-Kelvin
+    modes may therefore use their white-point-interpolated target matrix.  This is the
+    algebraic camera-linear cache boundary: adaptive demosaic/highlight decisions remain
+    fixed, while the user-authored balance is a cheap linear hot-stage shared by preview
+    and export.
+    """
+    matrix = np.asarray(xyz_to_cam, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] < 3 or matrix.shape[1] != 3:
+        raise ValueError("camera ColorMatrix is unavailable for hot white balance")
+    xyz_to_camera = matrix[:3, :]
+    if not np.all(np.isfinite(xyz_to_camera)) or float(np.abs(xyz_to_camera).sum()) <= 1e-9:
+        raise ValueError("camera ColorMatrix is empty for hot white balance")
+    target_matrix = np.asarray(
+        xyz_to_cam if target_xyz_to_cam is None else target_xyz_to_cam,
+        dtype=np.float64,
+    )
+    if target_matrix.ndim != 2 or target_matrix.shape[0] < 3 or target_matrix.shape[1] != 3:
+        raise ValueError("target camera ColorMatrix is unavailable for hot white balance")
+    target_xyz_to_camera = target_matrix[:3, :]
+    if not np.all(np.isfinite(target_xyz_to_camera)) or float(np.abs(target_xyz_to_camera).sum()) <= 1e-9:
+        raise ValueError("target camera ColorMatrix is empty for hot white balance")
+    camera_to_xyz = np.linalg.pinv(xyz_to_camera)
+    target_camera_to_xyz = np.linalg.pinv(target_xyz_to_camera)
+    from .constants import XYZ_TO_RGB
+
+    xyz_to_rec2020 = np.asarray(XYZ_TO_RGB["Rec2020"], dtype=np.float64)
+    decode_camera_to_rec2020 = xyz_to_rec2020 @ camera_to_xyz
+    target_camera_to_rec2020 = xyz_to_rec2020 @ target_camera_to_xyz
+    decode_stage = decode_camera_to_rec2020 @ np.diag(normalized_camera_wb(decode_wb))
+    target_stage = target_camera_to_rec2020 @ np.diag(normalized_camera_wb(target_wb))
+    condition = float(np.linalg.cond(decode_stage))
+    if not np.isfinite(condition) or condition > 1e6:
+        raise ValueError(f"camera ColorMatrix is ill-conditioned ({condition:.3g})")
+    transform = target_stage @ np.linalg.inv(decode_stage)
+    result = transform.astype(np.float32)
+    result.setflags(write=False)
+    return result
+
+
+def apply_hot_wb_rec2020(scene_rec2020: Any, matrix: Any) -> Any:
+    """Apply one hot-WB matrix in bounded chunks, preserving signed headroom."""
+    source = np.asarray(scene_rec2020)
+    if source.ndim != 3 or source.shape[2] < 3:
+        raise ValueError("scene Rec.2020 buffer must be HxWx3")
+    flat = source[:, :, :3].reshape(-1, 3)
+    out = np.empty((flat.shape[0], 3), dtype=np.float32)
+    m = np.asarray(matrix, dtype=np.float32)
+    chunk = 1_000_000
+    for start in range(0, flat.shape[0], chunk):
+        end = min(start + chunk, flat.shape[0])
+        values = flat[start:end].astype(np.float32, copy=False)
+        out[start:end, 0] = m[0, 0] * values[:, 0] + m[0, 1] * values[:, 1] + m[0, 2] * values[:, 2]
+        out[start:end, 1] = m[1, 0] * values[:, 0] + m[1, 1] * values[:, 1] + m[1, 2] * values[:, 2]
+        out[start:end, 2] = m[2, 0] * values[:, 0] + m[2, 1] * values[:, 1] + m[2, 2] * values[:, 2]
+    return out.reshape(source.shape[0], source.shape[1], 3)
+
+
+def rebalance_raw_bundle(bundle: RawBundle, wb_mode: str) -> RawBundle:
+    """Derive one user balance without re-reading or re-demosaicing the RAW.
+
+    The input is expected to be the immutable camera/as-shot DecodeContext.  Missing
+    calibration degrades visibly to that base instead of silently using an unrelated
+    chromatic adaptation.
+    """
+    if wb_mode not in WB_CHOICES:
+        raise ValueError(f"unknown wb mode: {wb_mode}")
+    if wb_mode == "camera":
+        # Preserve the fixed decoder codes exactly.  Compact disk entries intentionally
+        # omit XYZ, which is fine because the camera BalanceContext also keeps its
+        # persisted full-resolution Analysis and never needs a scene-only reanalysis.
+        return replace(
+            bundle,
+            wb_mode="camera",
+            applied_wb=list(bundle.camera_wb),
+        )
+    decode_wb = list(bundle.decode_wb or bundle.camera_wb)
+    if wb_mode == "daylight":
+        target_wb = list(bundle.daylight_wb or [])
+        note = None if target_wb else "LibRaw daylight multipliers unavailable; degraded to camera AsShot"
+    else:
+        target_wb, note = solve_wb_for_mode(
+            wb_mode,
+            bundle.path,
+            bundle.wb_xyz_to_cam,
+            make=bundle.shot_make,
+            model=bundle.shot_model,
+        )
+        target_wb = list(target_wb or [])
+    if not target_wb:
+        return replace(
+            bundle,
+            wb_mode="camera",
+            applied_wb=list(bundle.camera_wb),
+            wb_degradation=note,
+        )
+    try:
+        target_xyz_to_cam = bundle.wb_xyz_to_cam
+        target_cct = kelvin_mode_cct(wb_mode)
+        if target_cct is not None:
+            calibration = dng_metadata.read_dng_color_calibration(bundle.path)
+            if calibration is not None:
+                from .wb import interpolated_color_matrix
+
+                target_xyz_to_cam = interpolated_color_matrix(
+                    calibration,
+                    target_cct,
+                )
+        transform = hot_wb_matrix_rec2020(
+            bundle.wb_xyz_to_cam,
+            decode_wb,
+            target_wb,
+            target_xyz_to_cam,
+        )
+    except ValueError as exc:
+        degradation = f"声明 {wb_mode} 白平衡不可用（{exc}）；已退化为相机 AsShot"
+        return replace(
+            bundle,
+            wb_mode="camera",
+            applied_wb=list(bundle.camera_wb),
+            wb_degradation=degradation,
+        )
+
+    scene = apply_hot_wb_rec2020(bundle.scene_rec2020_render, transform)
+    xyz = scene_rec2020_to_xyz_render(scene, bundle.scene_scale)
+    return replace(
+        bundle,
+        scene_rec2020_render=scene,
+        xyz_render=xyz,
+        render_scale=bundle.scene_scale,
+        wb_mode=wb_mode,
+        applied_wb=[float(value) for value in target_wb],
+        wb_degradation=note,
+        _clip_masks_cache_shape=None,
+        _clip_masks_resized=None,
+        _raw_guidance_cache_shape=None,
+        _raw_guidance_resized=None,
+    )
 
 
 def render_to_xyz(
@@ -749,6 +919,9 @@ def load_raw(
         raise FileNotFoundError(f"Input path is not a file: {path}")
     if decoder not in DECODER_CHOICES:
         raise ValueError(f"unknown decoder: {decoder}; expected one of {DECODER_CHOICES}")
+    if wb_mode not in WB_CHOICES:
+        raise ValueError(f"unknown wb mode: {wb_mode}")
+    requested_wb_mode = wb_mode
     rawpy_highlight_mode(scene_highlight_mode)
     # CIRAWFilter exposes one calibrated reconstruction path rather than LibRaw's
     # clip/blend/reconstruct switch. Its comparison reference must always use
@@ -805,7 +978,7 @@ def load_raw(
     # Fixed-Kelvin WB is a scene recipe derived from evidence calibration. It is not
     # evidence itself, and therefore remains free to degrade per scene decoder.
     kelvin_wb, wb_note = solve_wb_for_mode(
-        wb_mode,
+        requested_wb_mode,
         path,
         evidence.xyz_to_cam,
         make=shot.make,
@@ -835,12 +1008,13 @@ def load_raw(
             shot.model,
         )
     wb_degradation: str | None = None
-    kelvin_requested = kelvin_mode_cct(wb_mode) is not None
+    kelvin_requested = kelvin_mode_cct(requested_wb_mode) is not None
+    effective_wb_mode = requested_wb_mode
     if kelvin_requested and kelvin_wb is None:
         wb_degradation = wb_note
-        if decoder == "libraw":
-            # The scene render must not claim a balance it cannot realise.
-            wb_mode = "camera"
+        # Project-owned hot WB needs the same explicit camera calibration on both scene
+        # decoders.  If it is absent, neither path may claim the requested declaration.
+        effective_wb_mode = "camera"
     elif wb_note:
         wb_degradation = wb_note
 
@@ -858,7 +1032,19 @@ def load_raw(
                         white_level,
                     )
                     lens_shading = "gainmap"
-                wb_kwargs = wb_postprocess_kwargs(wb_mode, daylight_wb, kelvin_wb)
+                # Demosaic/highlight always sees one immutable per-capture
+                # preconditioner.  User WB is deliberately not passed into LibRaw.
+                # Supplying the as-shot values explicitly also avoids a decoder-specific
+                # camera-WB fallback changing this fixed boundary.
+                if camera_wb and len(camera_wb) >= 3 and all(
+                    np.isfinite(value) and value > 0.0 for value in camera_wb[:3]
+                ):
+                    fixed_wb = [float(value) for value in camera_wb[:4]]
+                    while len(fixed_wb) < 4:
+                        fixed_wb.append(fixed_wb[1])
+                    wb_kwargs = {"use_camera_wb": False, "user_wb": fixed_wb}
+                else:
+                    wb_kwargs = {"use_camera_wb": True}
                 demosaic_alg = resolve_demosaic_algorithm(raw, demosaic)
                 scene_rec2020_render = render_to_scene_rec2020(
                     raw,
@@ -876,9 +1062,7 @@ def load_raw(
 
         if np.issubdtype(scene_rec2020_render.dtype, np.integer):
             encoded_max = float(np.iinfo(scene_rec2020_render.dtype).max)
-            applied_wb = _applied_wb_for_mode(
-                wb_mode, camera_wb, daylight_wb, kelvin_wb
-            )
+            applied_wb = camera_wb
             scene_scale = libraw_scene_scale(
                 encoded_max,
                 effective_highlight_mode,
@@ -911,16 +1095,9 @@ def load_raw(
         )
 
     if decoder == "coreimage":
-        neutral_cct = kelvin_mode_cct(wb_mode)
-        if wb_mode != "camera" and neutral_cct is None:
-            # Fixed-Kelvin modes are declarations CIRAWFilter accepts natively
-            # (neutralTemperature/neutralTint); "daylight" is defined as LibRaw's
-            # metadata multipliers, and that specific mapping remains unvalidated.
-            raise ValueError(
-                "Core Image decoder supports --wb camera and the fixed-Kelvin modes; "
-                "'daylight' (LibRaw's metadata multipliers) has no validated "
-                "CIRAWFilter mapping"
-            )
+        # Keep Apple's reconstruction fixed as well.  neutralTemperature belongs to the
+        # old decoder-coupled path; the project hot-WB matrix runs after this call.
+        neutral_cct = None
         from . import coreimage_decode
 
         if not coreimage_decode.available():
@@ -972,22 +1149,10 @@ def load_raw(
             try:
                 # A fresh handle: reading the mosaic above leaves this LibRaw handle
                 # unable to postprocess (LibRawOutOfOrderCallError).
-                # The reference must decode under the same declared balance as the
-                # Core Image render, or the green-median alignment would compare two
-                # different illuminant interpretations of one scene.
-                # If the Kelvin solve degraded (no calibration for this body), the
-                # reference decode falls back to as-shot while Core Image realises
-                # the declaration natively — a cross-balance alignment. Declared in
-                # the degradation note rather than hidden; the scale keeps working
-                # with reduced trust.
-                reference_wb_mode = (
-                    "camera" if (kelvin_requested and kelvin_wb is None) else wb_mode
-                )
-                if reference_wb_mode != wb_mode and wb_degradation:
-                    wb_degradation += (
-                        "；RAW9 主解码仍按声明色温（原生接口），但对齐参考解码退化为"
-                        "相机 AsShot——尺度对齐跨光源，可信度降低"
-                    )
+                # Both decoders now compare the same fixed as-shot DecodeContext.  User
+                # WB happens only after this scalar alignment and therefore cannot make
+                # the A/B scale measurement cross illuminants.
+                reference_wb_mode = "camera"
                 with rawpy.imread(str(path)) as reference_raw:
                     reference_scene = render_to_scene_rec2020(
                         reference_raw,
@@ -1048,7 +1213,7 @@ def load_raw(
     if scene_rec2020_render is None or xyz_render is None:
         raise RuntimeError("scene decoder did not produce a render buffer")
 
-    return RawBundle(
+    base_bundle = RawBundle(
         path=path,
         raw_image=raw_image,
         raw_colors=raw_colors,
@@ -1066,7 +1231,7 @@ def load_raw(
         # selector does not map onto CIRAWFilter and must not be reported as if it did.
         scene_highlight_mode=effective_highlight_mode,
         orientation_flip=orientation_flip,
-        wb_mode=wb_mode,
+        wb_mode="camera",
         wb_degradation=wb_degradation,
         camera_data_support=camera_data_support,
         daylight_wb=daylight_wb,
@@ -1075,7 +1240,7 @@ def load_raw(
         shot_iso=shot.iso,
         baseline_exposure=effective_baseline_exposure,
         baseline_exposure_baked_in=baseline_exposure_baked_in,
-        applied_wb=_applied_wb_for_mode(wb_mode, camera_wb, daylight_wb, kelvin_wb),
+        applied_wb=[float(x) for x in camera_wb],
         lens_shading=lens_shading,
         clip_masks=clip_masks,
         scene_decoder=scene_decoder,
@@ -1091,4 +1256,16 @@ def load_raw(
         evidence=evidence,
         evidence_provider=evidence.provider,
         evidence_provider_version=evidence.provider_version,
+        wb_xyz_to_cam=(
+            None
+            if evidence.xyz_to_cam is None
+            else np.asarray(evidence.xyz_to_cam, dtype=np.float64).copy()
+        ),
+        decode_wb=[float(x) for x in camera_wb],
     )
+    if effective_wb_mode == "camera":
+        return base_bundle
+    balanced = rebalance_raw_bundle(base_bundle, effective_wb_mode)
+    if wb_degradation and not balanced.wb_degradation:
+        balanced.wb_degradation = wb_degradation
+    return balanced

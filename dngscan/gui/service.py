@@ -993,6 +993,14 @@ def _cached_full_analysis(
     """
     from . import preview_cache as pc
 
+    # The WB-independent disk entry stores the fixed camera DecodeContext's full-res
+    # analysis.  Interactive BalanceContexts refresh scene metrics on the proxy, but an
+    # export must not mistake those for full-resolution percentiles.  Non-camera WB
+    # therefore recomputes only at export until the exact fused full-res analysis cache
+    # lands; the expensive RAW evidence/demosaic work is already gone from the WB stage.
+    if wb != "camera":
+        return None
+
     if decoder == "coreimage":
         # Mirror PreviewCache.get's parameter normalization for this decoder.
         highlight, demosaic = "reconstruct", "auto"

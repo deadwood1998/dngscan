@@ -135,6 +135,16 @@ class RawBundle:
     evidence: RawEvidence | None = None
     evidence_provider: str = "libraw"
     evidence_provider_version: str | None = None
+    # Camera ColorMatrix (XYZ -> camera channels) used by the project-owned hot-WB
+    # stage.  The decoder always reconstructs with the fixed as-shot preconditioner;
+    # this matrix lets later WB choices recover/reapply camera-channel gains without
+    # reopening the RAW or asking the decoder to demosaic again.  Kept separately from
+    # ``evidence`` because compact preview-cache entries deliberately discard the large
+    # RawEvidence payload while retaining this tiny calibration fact.
+    wb_xyz_to_cam: Any | None = None
+    # Multipliers baked into the one fixed reconstruction.  User WB is expressed as a
+    # relative camera-channel transform from this immutable base.
+    decode_wb: list[float] | None = None
 
 
 @dataclass

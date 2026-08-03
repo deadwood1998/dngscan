@@ -9,7 +9,7 @@ import numpy as np
 from dngscan.constants import SCENE_MIDGRAY
 from dngscan.drt import curve_params_from_plan
 from dngscan.hdr_agx_math import compile_hdr_shoulder
-from dngscan.hdr_curve import apply_hdr_curve, apply_hdr_curve_pair
+from dngscan.hdr_curve import HdrCurveTable, apply_hdr_curve, apply_hdr_curve_pair
 from dngscan.models import HdrToneCurve, ToneCompressionPlan
 
 
@@ -117,6 +117,19 @@ class HdrCurveTableTests(unittest.TestCase):
         ev = np.linspace(tone.black_ev, tone.white_ev + 1.0, 200_001)
         ev = ev + rng.uniform(-4e-4, 4e-4, ev.shape)
         return ev.astype(np.float32)
+
+    def test_non_finite_ev_contract_is_platform_independent(self) -> None:
+        table = HdrCurveTable(
+            -1.0,
+            1.0,
+            np.asarray([0.1, 0.5, 0.9], dtype=np.float32),
+        )
+        out = table.apply_to_ev(
+            np.asarray([np.nan, -np.inf, np.inf], dtype=np.float32)
+        )
+        self.assertTrue(np.isnan(out[0]))
+        self.assertEqual(out[1], table.values[0])
+        self.assertEqual(out[2], table.values[-1])
 
     def _assert_table_matches_oracle(self, peak_linear: float) -> None:
         from dngscan.hdr_curve import compile_hdr_curve_table

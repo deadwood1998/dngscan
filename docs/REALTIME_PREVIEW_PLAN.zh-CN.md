@@ -91,7 +91,7 @@ seed-0 TPDF 噪声只依赖预览尺寸和固定的 quantize-group 顺序。曾�
 
 ### 完整管线 profile：白平衡与首次胶片模拟
 
-用户可感知的「调整白平衡需要数秒」不是 1920px 热渲染造成的。当前页面在白平衡变化时调用 `preparePreview()`；选择胶片组合还会先把 WB 改成 5500K/3200K，再调用同一个冷准备入口。WB 是代理缓存键的一部分，因此一个尚未缓存的新 WB 会完整执行 evidence、全分辨率解拜耳、分析、Lanczos 代理和 RenderPlan。胶片预设随后才开始第一帧热渲染。
+下面记录的是 hot-WB 迁移前的基线：当时页面在白平衡变化时调用 `preparePreview()`；选择胶片组合还会先把 WB 改成 5500K/3200K，再调用同一个冷准备入口。WB 曾是代理缓存键的一部分，因此一个尚未缓存的新 WB 会完整执行 evidence、全分辨率解拜耳、分析、Lanczos 代理和 RenderPlan。现已改为固定 AsShot DecodeContext + 项目热 WB，WB 不再进入 decode/cache identity；迁移设计与门禁见 `HOT_WHITE_BALANCE_MIGRATION.zh-CN.md`。下表保留为改造前性能对照，不能当作当前实现说明。
 
 以下为 M4 Max 上空代理缓存的单次实测。时间是嵌套调用的 wall time；表内大阶段可相加，子阶段仅解释父阶段，不能重复相加。
 

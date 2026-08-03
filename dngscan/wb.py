@@ -114,7 +114,7 @@ def kelvin_camera_multipliers(cct: float, xyz_to_cam: Any) -> list[float]:
     return [float(mult[0]), 1.0, float(mult[2]), 1.0]
 
 
-def _interpolated_matrix(calibration: Any, cct: float) -> Any:
+def interpolated_color_matrix(calibration: Any, cct: float) -> Any:
     """Adobe-style dual-illuminant interpolation of the DNG colour matrices.
 
     Weights are linear in reciprocal CCT between the two calibration illuminants,
@@ -147,7 +147,10 @@ def solve_kelvin_wb(
     non-DNG formats. No calibration at all is a refusal, not a guess.
     """
     if dng_calibration is not None:
-        return kelvin_camera_multipliers(cct, _interpolated_matrix(dng_calibration, cct))
+        return kelvin_camera_multipliers(
+            cct,
+            interpolated_color_matrix(dng_calibration, cct),
+        )
     if xyz_to_cam is not None:
         return kelvin_camera_multipliers(cct, xyz_to_cam)
     raise ValueError(
