@@ -66,3 +66,18 @@ LibRaw 和 Apple RAW 都执行这一项目 WB。Apple 的 `neutralTemperature` �
 **结论**：同一场景两种高光模式下偏好指向相反两侧（clip 选旧、reconstruct 选新），结合"几乎全同"总评，判定为**无系统性方向**——差异属阈值附近的噪点口味，不构成旧路径优势。迁移语义**通过**：配平精度获视觉确认（与交叉验证 1e-5 量级吻合）；高光重建与解拜耳的路径依赖差异（含 X-Trans）均在"看不出"或"无方向偏好"之列。
 
 **金标**：现有 golden/SDR 冻结全部走 camera 路径，迁移前后逐字节不变（三方 sha 验证），无需重冻结。上节"golden 集"要求的非 camera 覆盖，在本裁决通过后按新语义生成即为基线。
+
+## C₀ 锚定统一（缝 A 修复，2026-08-04）
+
+**缺陷**：`resolve_hot_wb_c0` 阶梯 rung 1 直接把 evidence `rgb_xyz_matrix`（LibRaw 的 `cam_xyz`，DNG 上源自 ColorMatrix2，固定锚在其标定光源 ~D65）用作解码侧 C₀，而固定色温模式的目标侧从文件双光源标定在 target_cct 处插值——`Ctarget·Gtarget·(C₀·Gdecode)⁻¹` 两侧光源锚不一致（合成标定实测锚差 ~1500 K；fp 实拍标定上按帧可达 ~3000 K，见下）。#10 引入的 AsShot-CCT 不动点（`wb.asshot_reference_cct`）只在 rung 3 生效，携带可用 evidence 矩阵的健康 DNG 永远走不到。
+
+**决策**（用户 2026-08-04 拍板）："后续管线可能调用 C₀，正确性优先"——修。rung 1 改为：文件存在 DNG 颜色标定时，解码侧 C₀ 也从标定在 AsShot CCT 处插值（与 rung 3 同机制），目标侧维持 target_cct 插值，两侧同为未归一 DNG 约定，锚一致（source 标签 `evidence+cct`）；无标定或非 Kelvin 目标（daylight）时 evidence 矩阵同时作两侧（source `evidence`，对角增益可交换，约定自洽）——绝不出现一侧插值一侧 evidence 的混用（那正是 rung 2 文档警告的隐性白平衡偏移）。AsShot-CCT 不动点解算失败时回退 evidence 两侧而非退化 camera。rung 2/3/4 不动。
+
+**量化**（fp `_SDI0150` / `_SDI0199`，5500K 与 3200K）：
+
+- **本仓库 fp 样张实测为零差**：fp 的 `rgb_xyz_matrix` evidence 全零，两张样张全部走 rung 2（`color_matrix`），修复对其为 no-op——半尺寸场景缓冲修复前后逐像素浮点差 p50/p99/p99.9/max 全部为 0（bit 相同），全尺寸输出 JPEG（camera/5500K/3200K 全部模式）sha256 逐字节不变。camera 路径 sha 不变的硬门禁同时满足。
+- **rung 1 实际生效量级（模拟测量）**：以 ColorMatrix2（即 DNG 上 LibRaw `cam_xyz` 的来源，D65 锚）替身 evidence 矩阵、在同一 fp 半尺寸场景像素上对比修复前后变换：`_SDI0150`（AsShot-CCT 解得 3491 K，与 D65 锚差 3013 K）5500K 相对归一逐像素差 p50 0.0092 / p99 0.352 / p99.9 0.941 / max 1.447，3200K p50 0.0061 / p99 0.176 / p99.9 0.700 / max 0.700；`_SDI0199`（AsShot-CCT 6724 K，超出 cct2=6504 K 被 clamp 到 ColorMatrix2 本身）两模式差恒为 0——锚差越大、场景越暖，缝越宽。
+
+**同批合入——rung 2 采纳门（缝 B）**：rawpy 的 `color_matrix` 读的是 LibRaw 采纳门*之前*的嵌入 `cmatrix`（钉扎 `identify.cpp`：仅 DNG 容器且 `cmatrix[0][0] > 0.125` 才 memcpy 进 `rgb_cam`，非 DNG 永不采纳，被拒时解码走恒等色彩 `raw_color=1`）。rung 2 现按同一判据设门（`metadata.is_dng_container` 判 IFD0 DNGVersion 标签 + 阈值 0.125），不满足则落到 rung 3/4 或显式降级，绝不用解码器从未施加过的矩阵建 C₀。fp/iPhone 等 DNG（`cmatrix[0][0]≈1.3–1.4`）通过采纳门，行为不变，由上面的 sha 验证顺带覆盖。
+
+**与原裁决的关系**：上节盲测裁决（2026-08-04）针对的是修复前行为；其全部样张（fp 走 rung 2、X100VI RAF 无 DNG 标定走 rung 1 evidence 两侧）在本修复下逐字节不变，裁决对这些路径继续有效。但对真正命中 rung 1+标定的机型（evidence 矩阵非零且带双光源标定的 DNG，如 Adobe 转制 DNG），模拟量级（相对归一 p99.9 最高 ~0.94）明显超出原裁决所见差异量级（8bit p99.9 ≤ 24）；如后续在此类文件上量化出的数字超出原裁决量级，需用户重新过目——此判断留给用户在 PR review 时作出。

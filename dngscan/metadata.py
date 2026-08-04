@@ -33,6 +33,10 @@ TAG_COLOR_MATRIX_1 = 50721
 TAG_COLOR_MATRIX_2 = 50722
 TAG_CALIBRATION_ILLUMINANT_1 = 50778
 TAG_CALIBRATION_ILLUMINANT_2 = 50779
+# DNG §4: presence of DNGVersion in IFD0 is what makes a TIFF container a DNG.
+# LibRaw keys its embedded-cmatrix adoption on the same fact (identify.cpp sets
+# dng_version from this tag), so the hot-WB rung-2 gate must test it too.
+TAG_DNG_VERSION = 50706
 
 # EXIF LightSource code -> correlated colour temperature (K). Only codes that name a
 # concrete illuminant are mapped; anything else leaves the matrix unpaired.
@@ -263,6 +267,31 @@ def _matrix_from_values(vals: list) -> tuple[tuple[float, float, float], ...] | 
     if all(abs(v) < 1e-12 for row in rows for v in row):
         return None
     return rows
+
+
+def is_dng_container(path: Path) -> bool:
+    """True when the file is a TIFF container carrying a DNGVersion tag in IFD0.
+
+    Mirrors what LibRaw's ``identify.cpp`` records as ``dng_version`` — the fact the
+    rung-2 embedded-matrix adoption gate keys on.  Best-effort: any parse trouble is
+    reported as "not a DNG" (the callers then fall to lower ladder rungs).
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+            if len(head) < 8 or head[:2] not in (b"II", b"MM"):
+                return False
+            endian = "<" if head[:2] == b"II" else ">"
+            (magic,) = struct.unpack(endian + "H", head[2:4])
+            if magic != 42:
+                return False
+            (ifd0_off,) = struct.unpack(endian + "L", head[4:8])
+            for tag, _typ, _num, _raw in _read_ifd_entries(fh, ifd0_off, endian):
+                if tag == TAG_DNG_VERSION:
+                    return True
+    except (OSError, struct.error):
+        return False
+    return False
 
 
 def read_dng_color_calibration(path: Path) -> DngColorCalibration | None:

@@ -241,11 +241,17 @@ def _patch_calibration(value):
     )
 
 
+def _patch_dng_container(value: bool):
+    return mock.patch.object(
+        raw_io_module.dng_metadata, "is_dng_container", return_value=value
+    )
+
+
 class HotWbC0LadderTests(unittest.TestCase):
     """The decode-side C0 ladder: evidence matrix -> LibRaw rgb_cam -> DNG tags ->
     project fallback table -> refusal."""
 
-    def test_rung1_evidence_matrix_wins_and_keeps_current_behaviour(self) -> None:
+    def test_rung1_without_calibration_evidence_serves_both_sides(self) -> None:
         bundle = _ladder_bundle(
             wb_xyz_to_cam=_EVIDENCE_MATRIX.copy(), wb_color_matrix=_RGB_CAM.copy()
         )
@@ -254,11 +260,50 @@ class HotWbC0LadderTests(unittest.TestCase):
         self.assertEqual(source, "evidence")
         np.testing.assert_allclose(decode, _EVIDENCE_MATRIX)
         np.testing.assert_allclose(target, _EVIDENCE_MATRIX)
+
+    def test_rung1_with_calibration_anchors_both_sides_by_interpolation(self) -> None:
+        # Seam A fix: the evidence matrix (LibRaw cam_xyz, D65-pinned on DNGs) must
+        # not serve as decode C0 against a target interpolated at the declared CCT.
+        # With calibration tags present both sides interpolate from the file's own
+        # dual-illuminant tags — decode at the as-shot CCT, target at the declared
+        # CCT — the same anchoring rung 3 already used.
+        bundle = _ladder_bundle(
+            wb_xyz_to_cam=_EVIDENCE_MATRIX.copy(), wb_color_matrix=_RGB_CAM.copy()
+        )
         calib = _synthetic_calibration()
         with _patch_calibration(calib):
-            _decode, target, source = resolve_hot_wb_c0(bundle, 5500.0)
-        self.assertEqual(source, "evidence")
+            decode, target, source = resolve_hot_wb_c0(bundle, 5500.0)
+        self.assertEqual(source, "evidence+cct")
+        asshot_cct = asshot_reference_cct(calib, bundle.decode_wb)
+        np.testing.assert_allclose(
+            decode, interpolated_color_matrix(calib, asshot_cct)
+        )
         np.testing.assert_allclose(target, interpolated_color_matrix(calib, 5500.0))
+
+    def test_rung1_daylight_mode_stays_symmetric_on_evidence(self) -> None:
+        # target_cct None (daylight): both sides keep the evidence matrix — never
+        # one interpolated side against one evidence side.
+        bundle = _ladder_bundle(wb_xyz_to_cam=_EVIDENCE_MATRIX.copy())
+        with _patch_calibration(_synthetic_calibration()):
+            decode, target, source = resolve_hot_wb_c0(bundle, None)
+        self.assertEqual(source, "evidence")
+        np.testing.assert_allclose(decode, _EVIDENCE_MATRIX)
+        np.testing.assert_allclose(target, _EVIDENCE_MATRIX)
+
+    def test_rung1_unsolvable_asshot_cct_falls_back_to_evidence_both_sides(self) -> None:
+        # A file with a usable evidence matrix whose as-shot multipliers cannot
+        # anchor a CCT must not degrade to camera: the self-consistent
+        # single-matrix convention is still available.
+        bundle = _ladder_bundle(
+            wb_xyz_to_cam=_EVIDENCE_MATRIX.copy(),
+            decode_wb=[0.0, 1.0, 1.0, 0.0],
+            camera_wb=[0.0, 1.0, 1.0, 0.0],
+        )
+        with _patch_calibration(_synthetic_calibration()):
+            decode, target, source = resolve_hot_wb_c0(bundle, 5500.0)
+        self.assertEqual(source, "evidence")
+        np.testing.assert_allclose(decode, _EVIDENCE_MATRIX)
+        np.testing.assert_allclose(target, _EVIDENCE_MATRIX)
 
     def test_rung2_libraw_decode_matrix_used_when_evidence_is_zero(self) -> None:
         bundle = _ladder_bundle(
@@ -266,7 +311,7 @@ class HotWbC0LadderTests(unittest.TestCase):
             wb_color_matrix=_RGB_CAM.copy(),
         )
         # DNG tags being present must NOT outrank the matrix the decoder truly used.
-        with _patch_calibration(_synthetic_calibration()):
+        with _patch_calibration(_synthetic_calibration()), _patch_dng_container(True):
             decode, target, source = resolve_hot_wb_c0(bundle, 5500.0)
         self.assertEqual(source, "color_matrix")
         expected = np.linalg.inv(
@@ -276,6 +321,34 @@ class HotWbC0LadderTests(unittest.TestCase):
         # Same-matrix target: the rgb_cam convention must never be mixed with an
         # unnormalized interpolated DNG matrix (hidden per-channel WB shift).
         np.testing.assert_allclose(target, decode, rtol=0.0, atol=0.0)
+
+    def test_rung2_gate_rejects_non_dng_containers(self) -> None:
+        # Seam B: rawpy's color_matrix is rawdata.color.cmatrix from *before*
+        # LibRaw's adoption gate (pinned identify.cpp) — on non-DNG files LibRaw
+        # never memcpys it into rgb_cam and decodes identity colour, so a non-zero
+        # cmatrix there must not anchor C0.  The ladder falls to rung 4 here.
+        bundle = _ladder_bundle(
+            wb_color_matrix=_RGB_CAM.copy(),
+            shot_make="FUJIFILM",
+            shot_model="X-E5",
+        )
+        with _patch_calibration(None), _patch_dng_container(False):
+            _decode, _target, source = resolve_hot_wb_c0(bundle, 5500.0)
+        self.assertEqual(source, "fallback_table")
+
+    def test_rung2_gate_rejects_sub_threshold_cmatrix(self) -> None:
+        # LibRaw's pinned threshold: cmatrix[0][0] must exceed 0.125 to be adopted.
+        low = _RGB_CAM.copy()
+        low[0, 0] = 0.1
+        bundle = _ladder_bundle(wb_color_matrix=low)
+        calib = _synthetic_calibration()
+        with _patch_calibration(calib), _patch_dng_container(True):
+            decode, _target, source = resolve_hot_wb_c0(bundle, 5500.0)
+        self.assertEqual(source, "dng_calibration")
+        reference_cct = asshot_reference_cct(calib, bundle.decode_wb)
+        np.testing.assert_allclose(
+            decode, interpolated_color_matrix(calib, reference_cct)
+        )
 
     def test_rung2_folds_the_second_green_column(self) -> None:
         base = _RGB_CAM.copy()
@@ -335,7 +408,7 @@ class HotWbC0LadderTests(unittest.TestCase):
             wb_color_matrix=_RGB_CAM.copy(),
         )
         source_scene = np.array(bundle.scene_rec2020_render, copy=True)
-        with _patch_calibration(calib):
+        with _patch_calibration(calib), _patch_dng_container(True):
             balanced = rebalance_raw_bundle(bundle, "5500k")
         self.assertEqual(balanced.wb_mode, "5500k")
         self.assertIsNone(balanced.wb_degradation)

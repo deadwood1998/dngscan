@@ -434,12 +434,31 @@ def resolve_hot_wb_c0(
     Calibration ladder, mirroring ``solve_wb_for_mode``'s philosophy — every rung must
     correspond to what the fixed decode actually did:
 
-    1. ``wb_xyz_to_cam`` (evidence ``rgb_xyz_matrix``): unchanged behaviour for bodies
-       that already worked, including the DNG dual-illuminant target interpolation for
-       fixed-Kelvin modes — on this rung both matrices share the raw DNG ColorMatrix
-       scale convention, so mixing them is safe.
+    1. ``wb_xyz_to_cam`` (evidence ``rgb_xyz_matrix``): when the file carries DNG
+       colour calibration tags and a fixed-Kelvin target is requested, *both* sides
+       come from the file's own dual-illuminant interpolation — decode C0 at the
+       as-shot CCT (``wb.asshot_reference_cct``, the same fixed point rung 3 uses),
+       the target at the declared CCT, both in the same unnormalized DNG convention
+       (source ``"evidence+cct"``, anchor unification effective 2026-08-04).  The
+       evidence matrix itself is LibRaw's ``cam_xyz`` — on DNGs sourced from
+       ColorMatrix2 and therefore pinned to its calibration illuminant (~D65); using
+       it directly as C0 against a target interpolated at the declared CCT would put
+       the two sides on different illuminant anchors (the former "seam A", a ~1500 K
+       anchor gap measured on synthetic calibrations).  Without calibration tags (or
+       for non-Kelvin targets) the evidence matrix serves both sides unchanged
+       (source ``"evidence"``): a single matrix on both sides is self-consistent
+       because diagonal gains commute through it, and mixing an interpolated side
+       with an evidence side is exactly the hidden white-balance shift rung 2 warns
+       about.
     2. LibRaw ``color_matrix`` (``rgb_cam``): the matrix the decoder truly applied,
-       converted by ``color_matrix_xyz_to_cam``.  The target stays the *same* matrix:
+       converted by ``color_matrix_xyz_to_cam``.  Guarded by LibRaw's own embedded
+       cmatrix adoption test (pinned ``identify.cpp``): rawpy's ``color_matrix``
+       surfaces ``rawdata.color.cmatrix`` from *before* that gate, and LibRaw only
+       memcpys it into ``rgb_cam`` for DNG containers (``dng_version`` non-zero, i.e.
+       a DNGVersion tag in IFD0) whose ``cmatrix[0][0] > 0.125``; on every other file
+       the decode ran identity colour (``raw_color=1``), so building C0 from the
+       rejected cmatrix would describe a transform the decoder never applied — the
+       rung must fall through instead.  The target stays the *same* matrix:
        its rows carry a D65-neutral normalization, and pairing it with an unnormalized
        interpolated DNG matrix would insert those per-channel neutral scales into the
        transform — a hidden white-balance shift.  The pure diagonal rebalance on this
@@ -468,17 +487,42 @@ def resolve_hot_wb_c0(
             and np.all(np.isfinite(matrix[:3, :3]))
             and float(np.abs(matrix[:3, :3]).sum()) > 1e-9
         ):
-            target = matrix
             if target_cct is not None:
                 calibration = dng_metadata.read_dng_color_calibration(bundle.path)
                 if calibration is not None:
-                    from .wb import interpolated_color_matrix
+                    from .wb import asshot_reference_cct, interpolated_color_matrix
 
+                    try:
+                        decode_cct = asshot_reference_cct(
+                            calibration, bundle.decode_wb or bundle.camera_wb
+                        )
+                    except ValueError:
+                        # As-shot CCT unsolvable: fall back to the evidence matrix
+                        # on *both* sides (self-consistent single-matrix rung)
+                        # rather than degrading a file that has a usable matrix.
+                        return matrix, matrix, "evidence"
+                    decode = interpolated_color_matrix(calibration, decode_cct)
                     target = interpolated_color_matrix(calibration, target_cct)
-            return matrix, target, "evidence"
-    derived = color_matrix_xyz_to_cam(getattr(bundle, "wb_color_matrix", None))
-    if derived is not None:
-        return derived, derived, "color_matrix"
+                    return decode, target, "evidence+cct"
+            return matrix, matrix, "evidence"
+    raw_cmatrix = getattr(bundle, "wb_color_matrix", None)
+    if raw_cmatrix is not None:
+        # LibRaw adoption gate (seam B): only a DNG container whose embedded
+        # cmatrix[0][0] > 0.125 ever had this matrix copied into rgb_cam; anything
+        # else decoded through identity colour and must fall to the next rung.
+        cmatrix = np.asarray(raw_cmatrix, dtype=np.float64)
+        adopted = (
+            cmatrix.ndim == 2
+            and cmatrix.shape[0] >= 1
+            and cmatrix.shape[1] >= 1
+            and np.isfinite(cmatrix[0, 0])
+            and float(cmatrix[0, 0]) > 0.125
+            and dng_metadata.is_dng_container(bundle.path)
+        )
+        if adopted:
+            derived = color_matrix_xyz_to_cam(raw_cmatrix)
+            if derived is not None:
+                return derived, derived, "color_matrix"
     calibration = dng_metadata.read_dng_color_calibration(bundle.path)
     if calibration is not None:
         from .wb import asshot_reference_cct, interpolated_color_matrix

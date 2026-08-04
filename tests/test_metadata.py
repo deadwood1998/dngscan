@@ -38,6 +38,16 @@ def _tiff_with_shot_info(make: bytes, model: bytes, iso: int) -> bytes:
     return out
 
 
+def _tiff_with_dng_version() -> bytes:
+    """Minimal little-endian TIFF whose IFD0 carries only DNGVersion (tag 50706)."""
+    ifd0_off = 8
+    # DNGVersion: 4 BYTEs, inline (1.4.0.0)
+    entry = struct.pack("<HHL", 50706, 1, 4) + bytes((1, 4, 0, 0))
+    out = b"II" + struct.pack("<H", 42) + struct.pack("<L", ifd0_off)
+    out += struct.pack("<H", 1) + entry + struct.pack("<L", 0)
+    return out
+
+
 def _jpeg_with_exif(tiff: bytes) -> bytes:
     app1_payload = b"Exif\x00\x00" + tiff
     app1 = b"\xff\xe1" + struct.pack(">H", len(app1_payload) + 2) + app1_payload
@@ -98,6 +108,24 @@ class MetadataTest(unittest.TestCase):
         self.assertEqual(info.make, "FUJIFILM")
         self.assertEqual(info.model, "X100V")
         self.assertIsNone(info.iso)
+
+    def test_dng_container_probe_requires_the_dng_version_tag(self) -> None:
+        # A plain TIFF (NEF-style, no DNGVersion) must not read as a DNG container,
+        # while adding tag 50706 to IFD0 must.  This is what LibRaw's identify.cpp
+        # records as dng_version — the rung-2 cmatrix adoption gate keys on it.
+        plain = _tiff_with_shot_info(b"NIKON CORPORATION", b"Z 6_2", 3200)
+        dng = _tiff_with_dng_version()
+        with TemporaryDirectory() as td:
+            p_plain = Path(td) / "shot.nef"
+            p_plain.write_bytes(plain)
+            p_dng = Path(td) / "shot.dng"
+            p_dng.write_bytes(dng)
+            p_junk = Path(td) / "junk.bin"
+            p_junk.write_bytes(b"not a raw file at all")
+            self.assertFalse(metadata.is_dng_container(p_plain))
+            self.assertTrue(metadata.is_dng_container(p_dng))
+            self.assertFalse(metadata.is_dng_container(p_junk))
+            self.assertFalse(metadata.is_dng_container(Path(td) / "missing.dng"))
 
     def test_garbage_file_returns_empty(self) -> None:
         with TemporaryDirectory() as td:
