@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""GUI page information-display contract.
+"""GUI page information-display and responsive-layout contract.
 
 The docs state the evidence layer's limits; the GUI must state them *at
 interaction time*. Three load-bearing wires, each snapped silently once:
@@ -12,15 +12,42 @@ interaction time*. Three load-bearing wires, each snapped silently once:
 3. The per-file two-decoder tier report fires on selection for every decoder,
    not only when Apple RAW is chosen.
 
+The responsive contract additionally freezes the supported phone viewport
+matrix, the five mobile control groups, safe-area/touch requirements, and the
+portrait/landscape composition. Browser geometry tests remain the release
+gate; these assertions stop the contract wires from disappearing before that
+gate runs.
+
 These are substring assertions against the served HTML: crude, but they turn
 "someone refactored preparePreview and the error path went quiet again" from
 a field report into a test failure.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from dngscan.gui.page import PAGE, render_page
+
+
+MOBILE_VIEWPORT_CONTRACT = (
+    (375, 667, "portrait"),
+    (393, 852, "portrait"),
+    (412, 915, "portrait"),
+    (852, 393, "landscape"),
+)
+MOBILE_PAGE_CONTRACT = (
+    ("mobileDecodeTab", "mobileDecodeCard", "decode"),
+    ("mobileExposureTab", "mobileExposureCard", "exposure"),
+    ("mobileToneTab", "toneAdjustCard", "tone"),
+    ("mobileImagingTab", "mobileImagingCard", "imaging"),
+    ("mobileColorTab", "colorPanel", "color"),
+)
+MOBILE_CONTRACT_DOC = (
+    Path(__file__).resolve().parents[1]
+    / "docs"
+    / "REALTIME_PREVIEW_PLAN.zh-CN.md"
+)
 
 
 class PageInformationDisplayTests(unittest.TestCase):
@@ -130,24 +157,52 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn('tab.addEventListener("click"', PAGE)
         self.assertIn('tab.addEventListener("keydown"', PAGE)
 
-    def test_mobile_layout_keeps_preview_and_pages_one_control_card(self) -> None:
-        self.assertIn("viewport-fit=cover", PAGE)
+    def test_mobile_ui_contract_names_the_release_viewports_and_invariants(self) -> None:
+        contract = MOBILE_CONTRACT_DOC.read_text(encoding="utf-8")
+        for width, height, _orientation in MOBILE_VIEWPORT_CONTRACT:
+            with self.subTest(viewport=(width, height)):
+                self.assertIn(f"`{width}×{height}`", contract)
+        for invariant in (
+            "document/body 尺寸等于 viewport",
+            "预览和导航可见",
+            "活动卡片及其控件不越界",
+            "触控目标达标",
+            "不建立移动端专用的颜色、预览或导出算法",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, contract)
+
+    def test_mobile_breakpoints_cover_the_release_viewport_matrix(self) -> None:
         self.assertIn(
             "@media (max-width:767px), (max-width:900px) and (max-height:500px)",
             PAGE,
         )
-        self.assertIn("env(safe-area-inset-top,0px)", PAGE)
+        for width, height, orientation in MOBILE_VIEWPORT_CONTRACT:
+            with self.subTest(viewport=(width, height)):
+                matches = width <= 767 or (width <= 900 and height <= 500)
+                self.assertTrue(matches)
+                self.assertEqual(orientation, "portrait" if height > width else "landscape")
+
+    def test_mobile_layout_keeps_preview_and_pages_current_control_group(self) -> None:
+        self.assertIn("viewport-fit=cover", PAGE)
         self.assertIn("grid-template-rows:minmax(160px,32%) minmax(0,1fr) auto", PAGE)
         self.assertIn('<nav class="mobileNav" role="tablist"', PAGE)
+        mobile_nav = PAGE[
+            PAGE.index('<nav class="mobileNav"'):
+            PAGE.index("</nav>", PAGE.index('<nav class="mobileNav"'))
+        ]
+        for tab_id, controlled_id, target in MOBILE_PAGE_CONTRACT:
+            with self.subTest(tab=tab_id):
+                self.assertEqual(mobile_nav.count(f'id="{tab_id}"'), 1)
+                self.assertIn(f'aria-controls="{controlled_id}"', mobile_nav)
+                self.assertIn(f'data-mobile-target="{target}"', mobile_nav)
         for card_id, target in (
             ("mobileDecodeCard", "decode"),
             ("mobileExposureCard", "exposure"),
             ("toneAdjustCard", "tone"),
             ("mobileImagingCard", "imaging"),
         ):
-            with self.subTest(card=card_id):
-                self.assertIn(f'id="{card_id}" data-mobile-card="{target}"', PAGE)
-                self.assertIn(f'data-mobile-target="{target}"', PAGE)
+            self.assertIn(f'id="{card_id}" data-mobile-card="{target}"', PAGE)
         color_panel = PAGE[
             PAGE.index('<section class="dashboardPanel" id="colorPanel"'):
             PAGE.index('</section>', PAGE.index('<section class="dashboardPanel" id="colorPanel"'))
@@ -155,7 +210,29 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertEqual(color_panel.count('data-mobile-card="color"'), 3)
         self.assertIn('data-mobile-target="color"', PAGE)
         self.assertIn("function setMobileCard(", PAGE)
-        self.assertIn("min-height:48px", PAGE)
+        self.assertIn('tab.setAttribute("aria-selected",active?"true":"false")', PAGE)
+        self.assertIn('tab.addEventListener("keydown"', PAGE)
+        for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"):
+            self.assertIn(f'"{key}"', PAGE)
+
+    def test_mobile_layout_honours_safe_areas_and_touch_targets(self) -> None:
+        mobile = PAGE[
+            PAGE.index("@media (max-width:767px),"):
+            PAGE.index("@media (max-width:900px) and (max-height:500px)")
+        ]
+        for edge in ("top", "right", "bottom", "left"):
+            self.assertIn(f"env(safe-area-inset-{edge},0px)", mobile)
+        for touch_rule in (
+            ".topBar input[type=file]{min-width:0;min-height:44px",
+            "input[type=text],input[type=number],select{min-height:44px",
+            "input[type=range]{height:44px",
+            ".modes button,.modes button#evReferenceBtn{min-width:0;min-height:44px",
+            "button.go,button.ghost{min-height:44px",
+            ".mobileNav button{min-width:0;min-height:48px",
+        ):
+            with self.subTest(rule=touch_rule):
+                self.assertIn(touch_rule, mobile)
+        self.assertIn(".dialogPanel::-webkit-scrollbar{display:none}", mobile)
 
     def test_mobile_landscape_uses_preview_controls_and_vertical_navigation(self) -> None:
         media = PAGE[PAGE.index("@media (max-width:900px) and (max-height:500px)") :]
