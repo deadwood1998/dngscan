@@ -130,6 +130,42 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertIn('tab.addEventListener("click"', PAGE)
         self.assertIn('tab.addEventListener("keydown"', PAGE)
 
+    def test_mobile_layout_keeps_preview_and_pages_one_control_card(self) -> None:
+        self.assertIn("viewport-fit=cover", PAGE)
+        self.assertIn(
+            "@media (max-width:767px), (max-width:900px) and (max-height:500px)",
+            PAGE,
+        )
+        self.assertIn("env(safe-area-inset-top,0px)", PAGE)
+        self.assertIn("grid-template-rows:minmax(160px,32%) minmax(0,1fr) auto", PAGE)
+        self.assertIn('<nav class="mobileNav" role="tablist"', PAGE)
+        for card_id, target in (
+            ("mobileDecodeCard", "decode"),
+            ("mobileExposureCard", "exposure"),
+            ("toneAdjustCard", "tone"),
+            ("mobileImagingCard", "imaging"),
+        ):
+            with self.subTest(card=card_id):
+                self.assertIn(f'id="{card_id}" data-mobile-card="{target}"', PAGE)
+                self.assertIn(f'data-mobile-target="{target}"', PAGE)
+        color_panel = PAGE[
+            PAGE.index('<section class="dashboardPanel" id="colorPanel"'):
+            PAGE.index('</section>', PAGE.index('<section class="dashboardPanel" id="colorPanel"'))
+        ]
+        self.assertEqual(color_panel.count('data-mobile-card="color"'), 3)
+        self.assertIn('data-mobile-target="color"', PAGE)
+        self.assertIn("function setMobileCard(", PAGE)
+        self.assertIn("min-height:48px", PAGE)
+
+    def test_mobile_landscape_uses_preview_controls_and_vertical_navigation(self) -> None:
+        media = PAGE[PAGE.index("@media (max-width:900px) and (max-height:500px)") :]
+        media = media[:media.index("</style>")]
+        self.assertIn(
+            "grid-template-columns:minmax(250px,42%) minmax(0,1fr) 54px",
+            media,
+        )
+        self.assertIn("grid-template-rows:repeat(5,minmax(0,1fr))", media)
+
     def test_measured_facts_sit_next_to_their_controls(self) -> None:
         # Data-to-function adjacency: each measured fact renders inside the
         # block whose control consumes it, not in a separate overview card the
@@ -203,7 +239,7 @@ class RealtimeHistogramPageTests(unittest.TestCase):
     def test_scene_histogram_sits_in_the_exposure_card_below_ev_fact(self) -> None:
         exposure_card = PAGE[
             PAGE.index('<div class="secTitle">曝光</div>'):
-            PAGE.index('<div class="card" id="toneAdjustCard">')
+            PAGE.index('<div class="card" id="toneAdjustCard"')
         ]
         self.assertIn('id="sceneHist"', exposure_card)
         self.assertLess(
