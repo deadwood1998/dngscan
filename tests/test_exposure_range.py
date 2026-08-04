@@ -534,8 +534,8 @@ class GuiPageContractTests(unittest.TestCase):
         from dngscan.gui.page import PAGE
 
         card = PAGE[
-            PAGE.index('<div class="card" id="toneAdjustCard">'):
-            PAGE.index('<div class="card">', PAGE.index('<div class="card" id="toneAdjustCard">'))
+            PAGE.index('<div class="card" id="toneAdjustCard"'):
+            PAGE.index('<div class="card"', PAGE.index('<div class="card" id="toneAdjustCard"') + 1)
         ]
         self.assertIn('id="endpointMode"', card)
         self.assertIn('value="adaptive"', card)

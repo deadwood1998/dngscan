@@ -5,22 +5,32 @@ from __future__ import annotations
 import json
 
 PAGE = """<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>dngscan</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden}
 body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;background:#15171c;color:#e7e9ee}
-.wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
+.wrap{width:100%;height:100dvh;max-width:1900px;margin:0 auto;padding:10px 14px;display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
 h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
-.topBar{display:flex;flex-direction:column;gap:8px;align-items:stretch;margin:0 0 12px}
+.brandDetail{display:inline}
+.topBar{display:grid;grid-template-columns:max-content minmax(280px,1fr);grid-template-rows:auto auto;column-gap:14px;row-gap:4px;align-items:center;min-width:0;margin:0 0 8px}
+.topBar h1{grid-row:1 / span 2}
 .topBar input[type=file]{width:100%;min-width:260px}
-.topBar .ctlFact{min-width:260px}
-.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
-.secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}
-.workspace{display:grid;grid-template-columns:minmax(360px,460px) minmax(0,1fr);gap:12px;align-items:start}
-.controlPanel{min-width:0}
-.previewCard{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;margin-bottom:0}
+.topBar .ctlFact{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:12px;margin:0;min-width:0}
+.secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+.workspace{display:grid;grid-template-columns:minmax(520px,36%) minmax(0,1fr);gap:10px;min-width:0;min-height:0;height:100%;overflow:hidden}
+.controlPanel{display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px;min-width:0;min-height:0;overflow:hidden}
+.dashboardTabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;background:#1d2028;border:1px solid #2b2f3a;border-radius:9px}
+.dashTab{border:1px solid transparent;border-radius:7px;background:transparent;color:#939baa;padding:7px 10px;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.dashTab:hover{color:#dce3f3;background:#242936}
+.dashTab.active{color:#fff;background:#2b3953;border-color:#48628d;box-shadow:0 1px 8px rgba(0,0,0,.18)}
+.dashboardPanel{display:none;grid-template-columns:minmax(0,1fr);gap:8px;align-content:start;min-height:0;overflow:hidden}
+.dashboardPanel.active{display:grid}
+.previewCard{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.mobileNav{display:none}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 label{display:block;font-size:12px;color:#9aa1b0;margin:0 0 6px}
 input[type=text],input[type=number],select{width:100%;background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#e7e9ee;padding:8px 10px;font:inherit}
@@ -54,7 +64,7 @@ button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color
 .coreFacts b{color:#e7e9ee;font-weight:500}
 #controlHint{margin-top:10px;color:#9aa7c0;font-size:12px;line-height:1.55;min-height:0}
 #controlHint:empty{display:none}
-#status{margin-top:8px;white-space:pre-line}
+#status{position:absolute;z-index:3;top:8px;left:8px;right:8px;max-height:3em;margin:0;padding:5px 8px;overflow:hidden;border:1px solid rgba(82,91,110,.72);border-radius:6px;background:rgba(17,20,26,.9);white-space:pre-line;pointer-events:none}
 #status:empty{display:none}
 .err{color:#ff8a8a}.ok{color:#8ae08a}.warn{color:#ffc46b}
 .browserList{display:none;margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;max-height:260px;overflow:auto;background:#12141a}
@@ -75,7 +85,7 @@ button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color
 .reportGrid dt{color:#9aa3b2;white-space:nowrap}
 .reportGrid dd{margin:0;color:#e6e9f0;font-variant-numeric:tabular-nums}
 .reportGrid dd.warn{color:#f0b35e}
-.histCanvas{display:none;width:100%;height:92px;margin-top:10px;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
+.histCanvas{display:none;width:100%;height:82px;margin-top:8px;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
 .ctlFact{margin-top:6px;color:#8fa0c4;font-size:11.5px;line-height:1.5;font-variant-numeric:tabular-nums;white-space:pre-line}
 .ctlFact:empty{display:none}
 .ctlFact.warn{color:#f0b35e}
@@ -88,16 +98,91 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
 .dialogHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 .dialogTitle{margin:0;font-size:17px;font-weight:600}
 .dialogActions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid #2b2f3a}
-@media (max-width:980px){
-  .wrap{padding:14px}
-  .workspace{display:block}
-  .previewCard{position:static;height:auto;min-height:60vh}
+@media (max-width:1240px){
+  .workspace{grid-template-columns:minmax(470px,46%) minmax(0,1fr)}
   .modes button .d{display:none}
+}
+@media (max-height:900px){
+  body{font-size:13px}
+  .wrap{padding:8px 10px}
+  .topBar{margin-bottom:6px;row-gap:2px}
+  .card{padding:9px}
+  .secTitle{margin-bottom:7px}
+  .dashboardPanel,.controlPanel{gap:6px}
+  input[type=text],input[type=number],select{padding:6px 8px}
+  .modes{margin-top:5px}
+  .modes button{min-height:40px;padding:5px 3px}
+  .dashboardPanel .row[style*="margin-top:12px"]{margin-top:8px!important}
+  .coreFacts{margin-top:8px}
+  #controlHint{margin-top:6px;line-height:1.35}
+  .histCanvas{height:68px;margin-top:6px}
+}
+@media (max-width:767px), (max-width:900px) and (max-height:500px){
+  body{font-size:12.5px}
+  .wrap{padding:max(6px,env(safe-area-inset-top,0px)) max(8px,env(safe-area-inset-right,0px)) max(6px,env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px));grid-template-rows:auto minmax(0,1fr)}
+  h1{font-size:15px}
+  .brandDetail{display:none}
+  .topBar{grid-template-columns:max-content minmax(0,1fr);grid-template-rows:auto auto;column-gap:8px;row-gap:2px;margin-bottom:6px}
+  .topBar h1{grid-row:1}
+  .topBar input[type=file]{min-width:0;min-height:44px;padding:3px}
+  .topBar input[type=file]::file-selector-button{min-height:36px;padding:5px 8px;margin-right:6px}
+  .topBar .ctlFact{grid-column:1 / -1;max-height:1.5em}
+  .workspace{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(160px,32%) minmax(0,1fr) auto;gap:6px}
+  .previewCard{grid-column:1;grid-row:1;padding:7px}
+  .controlPanel{grid-column:1;grid-row:2;display:block;overflow:hidden}
+  .dashboardTabs{display:none}
+  .dashboardPanel,.dashboardPanel.active,.dashboardPanel[hidden]{display:contents!important}
+  .dashboardPanel>.card{display:none!important}
+  body[data-mobile-card="decode"] [data-mobile-card="decode"],
+  body[data-mobile-card="exposure"] [data-mobile-card="exposure"],
+  body[data-mobile-card="tone"] [data-mobile-card="tone"],
+  body[data-mobile-card="imaging"] [data-mobile-card="imaging"],
+  body[data-mobile-card="color"] [data-mobile-card="color"]{display:block!important}
+  .mobileNav{grid-column:1;grid-row:3;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;padding:3px;background:#1d2028;border:1px solid #2b2f3a;border-radius:9px}
+  .mobileNav button{min-width:0;min-height:48px;border:1px solid transparent;border-radius:7px;background:transparent;color:#939baa;padding:4px 2px;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+  .mobileNav button.active{color:#fff;background:#2b3953;border-color:#48628d}
+  .card{padding:8px}
+  .secTitle{margin-bottom:5px}
+  .dashboardPanel .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 8px}
+  .dashboardPanel .row>div{min-width:0!important}
+  .dashboardPanel .row>.evMain,.dashboardPanel .ctlFact{grid-column:1 / -1}
+  .dashboardPanel .row[style*="margin-top:12px"]{margin-top:6px!important}
+  label{margin-bottom:3px;line-height:1.3}
+  input[type=text],input[type=number],select{min-height:44px;padding:5px 7px}
+  input[type=range]{height:44px;margin:0}
+  .labelRow{margin-bottom:0}
+  .modes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-top:3px}
+  .modes button,.modes button#evReferenceBtn{min-width:0;min-height:44px;padding:3px 1px}
+  .modes button .m{font-size:11.5px}
+  .coreFacts{margin-top:5px;gap:4px}
+  .coreFacts span{padding:3px 5px;font-size:11px}
+  #controlHint{margin-top:4px;line-height:1.3;max-height:2.6em;overflow:hidden}
+  .ctlFact{max-height:3em;overflow:hidden}
+  [data-mobile-card="decode"] .ctlFact{max-height:1.5em;white-space:nowrap;text-overflow:ellipsis}
+  #toneFact{max-height:1.5em;white-space:nowrap;text-overflow:ellipsis}
+  #previewWrap{min-height:0;margin-top:5px}
+  .histCanvas{height:56px;margin-top:4px}
+  .actions{gap:5px}
+  button.go,button.ghost{min-height:44px;padding:6px 11px}
+  .previewLive{font-size:11px;padding:3px 7px}
+  #status{top:5px;left:5px;right:5px;max-height:3em}
+  #deliveryReport{margin-top:5px;padding:5px 8px}
+  dialog.outputDialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+  .dialogPanel{max-height:calc(100dvh - 16px);padding:12px;scrollbar-width:none}
+  .dialogPanel::-webkit-scrollbar{display:none}
+}
+@media (max-width:900px) and (max-height:500px){
+  .workspace{grid-template-columns:minmax(250px,42%) minmax(0,1fr) 54px;grid-template-rows:minmax(0,1fr)}
+  .previewCard{grid-column:1;grid-row:1}
+  .controlPanel{grid-column:2;grid-row:1}
+  .mobileNav{grid-column:3;grid-row:1;grid-template-columns:1fr;grid-template-rows:repeat(5,minmax(0,1fr))}
+  .mobileNav button{min-height:44px}
+  .ctlFact{max-height:1.5em;white-space:nowrap;text-overflow:ellipsis}
 }
 </style></head>
 <body><div class="wrap">
 <div class="topBar">
-  <h1>dngscan · RAW 分析与转换</h1>
+  <h1><span class="brand">dngscan</span><span class="brandDetail"> · RAW 分析与转换</span></h1>
   <input type="file" id="filePicker" accept="RAW_ACCEPT" title="RAW 文件">
   <div class="ctlFact" id="fileFact" style="margin-top:0"></div>
   <input type="hidden" id="input">
@@ -106,7 +191,15 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
 <div class="workspace">
 <div class="controlPanel">
 
-<div class="card">
+<div class="dashboardTabs" role="tablist" aria-label="调整分区">
+  <button type="button" class="dashTab active" id="captureTab" role="tab" aria-selected="true" aria-controls="capturePanel" data-panel="capturePanel">基础</button>
+  <button type="button" class="dashTab" id="toneTab" role="tab" aria-selected="false" aria-controls="tonePanel" data-panel="tonePanel">色调</button>
+  <button type="button" class="dashTab" id="colorTab" role="tab" aria-selected="false" aria-controls="colorPanel" data-panel="colorPanel">色彩 / 风格</button>
+</div>
+
+<section class="dashboardPanel active" id="capturePanel" role="tabpanel" aria-labelledby="captureTab">
+
+<div class="card" id="mobileDecodeCard" data-mobile-card="decode">
   <div class="secTitle">RAW 解码</div>
   <div class="row">
     <div style="flex:1;min-width:170px" id="decoderBlock">
@@ -175,7 +268,7 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="mobileExposureCard" data-mobile-card="exposure">
   <div class="secTitle">曝光</div>
   <div class="row">
     <div class="evMain">
@@ -194,7 +287,11 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
   </div>
 </div>
 
-<div class="card" id="toneAdjustCard">
+</section>
+
+<section class="dashboardPanel" id="tonePanel" role="tabpanel" aria-labelledby="toneTab" hidden>
+
+<div class="card" id="toneAdjustCard" data-mobile-card="tone">
   <div class="secTitle">明暗</div>
   <div class="row">
     <div class="sliderField">
@@ -238,7 +335,7 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
   <div class="ctlFact" id="toneFact"></div>
 </div>
 
-<div class="card">
+<div class="card" id="mobileImagingCard" data-mobile-card="imaging">
   <div class="secTitle">成像</div>
   <div class="row">
     <div style="flex:1;min-width:190px">
@@ -292,7 +389,11 @@ FILM_CURVE_OPTIONS
   <div id="controlHint"></div>
 </div>
 
-<div class="card">
+</section>
+
+<section class="dashboardPanel" id="colorPanel" role="tabpanel" aria-labelledby="colorTab" hidden>
+
+<div class="card" data-mobile-card="color">
   <div class="secTitle">颜色</div>
   <div class="row">
     <div id="punchBlock" class="sliderField">
@@ -306,7 +407,7 @@ FILM_CURVE_OPTIONS
   </div>
 </div>
 
-<div class="card">
+<div class="card" data-mobile-card="color">
   <div class="secTitle">前馈校正 · 实验</div>
   <div class="row">
     <div style="flex:2;min-width:210px">
@@ -322,7 +423,7 @@ SCENE_TRANSFORM_OPTIONS
   </div>
 </div>
 
-<div class="card">
+<div class="card" data-mobile-card="color">
   <div class="secTitle">风格 · LUT</div>
   <div class="row">
     <div style="flex:2;min-width:210px">
@@ -338,6 +439,8 @@ GRADE_OPTIONS
   </div>
 </div>
 
+</section>
+
 </div>
 
 <div class="card previewCard">
@@ -346,14 +449,21 @@ GRADE_OPTIONS
     <button class="ghost" id="revealBtn" style="display:none">在 Finder 显示</button>
     <span class="previewLive" id="previewLiveBadge">实时 · PREVIEW_LONG_EDGEpx</span>
   </div>
-  <div id="status"></div>
   <details id="deliveryReport" style="display:none">
     <summary>投递报告 · 本次导出的实测真值</summary>
     <dl class="reportGrid" id="deliveryReportBody"></dl>
   </details>
-  <div id="previewWrap"><img id="preview"><div id="spinner"></div></div>
+  <div id="previewWrap"><img id="preview"><div id="spinner"></div><div id="status" role="status" aria-live="polite"></div></div>
   <canvas id="displayHist" class="histCanvas" title="显示码值直方图：与预览同帧的 1920px 已渲染帧，RGB 三通道与 luma，0–255。HDR 格式下为 SDR 底图直方图。"></canvas>
 </div>
+
+<nav class="mobileNav" role="tablist" aria-label="手机调整分区">
+  <button type="button" class="active" id="mobileDecodeTab" role="tab" aria-selected="true" aria-controls="mobileDecodeCard" data-mobile-target="decode">解码</button>
+  <button type="button" id="mobileExposureTab" role="tab" aria-selected="false" aria-controls="mobileExposureCard" data-mobile-target="exposure">曝光</button>
+  <button type="button" id="mobileToneTab" role="tab" aria-selected="false" aria-controls="toneAdjustCard" data-mobile-target="tone">明暗</button>
+  <button type="button" id="mobileImagingTab" role="tab" aria-selected="false" aria-controls="mobileImagingCard" data-mobile-target="imaging">成像</button>
+  <button type="button" id="mobileColorTab" role="tab" aria-selected="false" aria-controls="colorPanel" data-mobile-target="color">色彩</button>
+</nav>
 </div>
 
 <dialog class="outputDialog" id="outputDialog" aria-labelledby="outputDialogTitle">
@@ -427,6 +537,72 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
+const MOBILE_CARD_KEY="dngscan.mobile.card.v1";
+const MOBILE_CARD_IDS=["decode","exposure","tone","imaging","color"];
+function setMobileCard(cardId,focusTab=false){
+  if(!MOBILE_CARD_IDS.includes(cardId))cardId="decode";
+  document.body.dataset.mobileCard=cardId;
+  document.querySelectorAll(".mobileNav button").forEach(tab=>{
+    const active=tab.dataset.mobileTarget===cardId;
+    tab.classList.toggle("active",active);
+    tab.setAttribute("aria-selected",active?"true":"false");
+    tab.tabIndex=active?0:-1;
+    if(active&&focusTab)tab.focus();
+  });
+  try{localStorage.setItem(MOBILE_CARD_KEY,cardId);}catch(error){}
+}
+const mobileNavTabs=[...document.querySelectorAll(".mobileNav button")];
+mobileNavTabs.forEach((tab,index)=>{
+  tab.addEventListener("click",()=>setMobileCard(tab.dataset.mobileTarget));
+  tab.addEventListener("keydown",event=>{
+    if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    let next=index;
+    if(["ArrowLeft","ArrowUp"].includes(event.key))next=(index-1+mobileNavTabs.length)%mobileNavTabs.length;
+    if(["ArrowRight","ArrowDown"].includes(event.key))next=(index+1)%mobileNavTabs.length;
+    if(event.key==="Home")next=0;
+    if(event.key==="End")next=mobileNavTabs.length-1;
+    setMobileCard(mobileNavTabs[next].dataset.mobileTarget,true);
+  });
+});
+let initialMobileCard="decode";
+try{initialMobileCard=localStorage.getItem(MOBILE_CARD_KEY)||initialMobileCard;}catch(error){}
+setMobileCard(initialMobileCard);
+const DASHBOARD_PANEL_KEY="dngscan.dashboard.panel.v1";
+function setDashboardPanel(panelId,focusTab=false){
+  const panel=document.getElementById(panelId);
+  if(!panel)return;
+  document.querySelectorAll(".dashboardPanel").forEach(candidate=>{
+    const active=candidate===panel;
+    candidate.classList.toggle("active",active);
+    candidate.hidden=!active;
+  });
+  document.querySelectorAll(".dashTab").forEach(tab=>{
+    const active=tab.dataset.panel===panelId;
+    tab.classList.toggle("active",active);
+    tab.setAttribute("aria-selected",active?"true":"false");
+    tab.tabIndex=active?0:-1;
+    if(active&&focusTab)tab.focus();
+  });
+  try{localStorage.setItem(DASHBOARD_PANEL_KEY,panelId);}catch(error){}
+}
+const dashboardTabs=[...document.querySelectorAll(".dashTab")];
+dashboardTabs.forEach((tab,index)=>{
+  tab.addEventListener("click",()=>setDashboardPanel(tab.dataset.panel));
+  tab.addEventListener("keydown",event=>{
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    let next=index;
+    if(event.key==="ArrowLeft")next=(index-1+dashboardTabs.length)%dashboardTabs.length;
+    if(event.key==="ArrowRight")next=(index+1)%dashboardTabs.length;
+    if(event.key==="Home")next=0;
+    if(event.key==="End")next=dashboardTabs.length-1;
+    setDashboardPanel(dashboardTabs[next].dataset.panel,true);
+  });
+});
+let initialDashboardPanel="capturePanel";
+try{initialDashboardPanel=localStorage.getItem(DASHBOARD_PANEL_KEY)||initialDashboardPanel;}catch(error){}
+setDashboardPanel(initialDashboardPanel);
 const STORE_KEY="dngscan.settings.v9";
 const V8_STORE_KEY="dngscan.settings.v8";
 const V7_STORE_KEY="dngscan.settings.v7";
@@ -1193,7 +1369,7 @@ $("#revealBtn").onclick=async()=>{
   }catch(e){setStatus("Finder 请求失败："+e,"err");}
   $("#revealBtn").disabled=false;
 };
-function setStatus(t,c){const s=$("#status");s.textContent=t;s.className=c||"";}
+function setStatus(t,c){const s=$("#status");s.textContent=t;s.className=c||"";s.title=t||"";}
 </script>
 </div></body></html>
 """
