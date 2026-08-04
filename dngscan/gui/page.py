@@ -64,7 +64,7 @@ button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color
 .coreFacts b{color:#e7e9ee;font-weight:500}
 #controlHint{margin-top:10px;color:#9aa7c0;font-size:12px;line-height:1.55;min-height:0}
 #controlHint:empty{display:none}
-#status{margin-top:8px;white-space:pre-line}
+#status{position:absolute;z-index:3;top:8px;left:8px;right:8px;max-height:3em;margin:0;padding:5px 8px;overflow:hidden;border:1px solid rgba(82,91,110,.72);border-radius:6px;background:rgba(17,20,26,.9);white-space:pre-line;pointer-events:none}
 #status:empty{display:none}
 .err{color:#ff8a8a}.ok{color:#8ae08a}.warn{color:#ffc46b}
 .browserList{display:none;margin-top:10px;border:1px solid #2b2f3a;border-radius:8px;max-height:260px;overflow:auto;background:#12141a}
@@ -165,7 +165,7 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
   .actions{gap:5px}
   button.go,button.ghost{min-height:44px;padding:6px 11px}
   .previewLive{font-size:11px;padding:3px 7px}
-  #status{margin-top:4px;max-height:3em;overflow:hidden}
+  #status{top:5px;left:5px;right:5px;max-height:3em}
   #deliveryReport{margin-top:5px;padding:5px 8px}
   dialog.outputDialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
   .dialogPanel{max-height:calc(100dvh - 16px);padding:12px;scrollbar-width:none}
@@ -449,12 +449,11 @@ GRADE_OPTIONS
     <button class="ghost" id="revealBtn" style="display:none">在 Finder 显示</button>
     <span class="previewLive" id="previewLiveBadge">实时 · PREVIEW_LONG_EDGEpx</span>
   </div>
-  <div id="status"></div>
   <details id="deliveryReport" style="display:none">
     <summary>投递报告 · 本次导出的实测真值</summary>
     <dl class="reportGrid" id="deliveryReportBody"></dl>
   </details>
-  <div id="previewWrap"><img id="preview"><div id="spinner"></div></div>
+  <div id="previewWrap"><img id="preview"><div id="spinner"></div><div id="status" role="status" aria-live="polite"></div></div>
   <canvas id="displayHist" class="histCanvas" title="显示码值直方图：与预览同帧的 1920px 已渲染帧，RGB 三通道与 luma，0–255。HDR 格式下为 SDR 底图直方图。"></canvas>
 </div>
 
@@ -1370,7 +1369,7 @@ $("#revealBtn").onclick=async()=>{
   }catch(e){setStatus("Finder 请求失败："+e,"err");}
   $("#revealBtn").disabled=false;
 };
-function setStatus(t,c){const s=$("#status");s.textContent=t;s.className=c||"";}
+function setStatus(t,c){const s=$("#status");s.textContent=t;s.className=c||"";s.title=t||"";}
 </script>
 </div></body></html>
 """

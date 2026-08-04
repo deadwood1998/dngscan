@@ -101,6 +101,19 @@ class PageInformationDisplayTests(unittest.TestCase):
         start = PAGE.index("#status{")
         self.assertIn("white-space:pre-line", PAGE[start:PAGE.index("}", start)])
 
+    def test_status_is_an_accessible_overlay_that_cannot_resize_preview(self) -> None:
+        status_rule_start = PAGE.index("#status{")
+        status_rule = PAGE[status_rule_start:PAGE.index("}", status_rule_start)]
+        self.assertIn("position:absolute", status_rule)
+        self.assertIn("pointer-events:none", status_rule)
+
+        preview_wrap = PAGE[
+            PAGE.index('<div id="previewWrap">'):
+            PAGE.index('<canvas id="displayHist"')
+        ]
+        self.assertIn('id="status" role="status" aria-live="polite"', preview_wrap)
+        self.assertIn('s.title=t||""', PAGE)
+
     def test_tier_report_runs_once_per_file_not_every_prepare(self) -> None:
         selection = PAGE[PAGE.index('$("#filePicker").addEventListener') :]
         selection = selection[: selection.index("async function listOutDir")]
