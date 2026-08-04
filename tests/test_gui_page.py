@@ -85,15 +85,17 @@ class PageInformationDisplayTests(unittest.TestCase):
         self.assertEqual(PAGE.count('postJob("/raw9-support"'), 1)
 
     def test_layout_targets_desktop_landscape(self) -> None:
-        # This GUI ships desktop/laptop web only (16:9/16:10 landscape): the
-        # canvas opens wide, the preview column owns the viewport height, and
-        # the image fills its box instead of guessing a max-height.
+        # The desktop shell is a single-viewport dashboard: neither the page nor
+        # either column scrolls, and the preview consumes the remaining height.
         self.assertIn("max-width:1900px", PAGE)
-        self.assertIn("height:calc(100vh - 24px)", PAGE)
+        self.assertIn("html,body{width:100%;height:100%;overflow:hidden}", PAGE)
+        self.assertIn("height:100dvh", PAGE)
+        self.assertIn("grid-template-rows:auto minmax(0,1fr)", PAGE)
+        self.assertIn(".previewCard{height:100%;min-height:0", PAGE)
         self.assertIn("object-fit:contain", PAGE)
         self.assertNotIn("max-height:calc(100vh", PAGE)
 
-    def test_file_picker_sits_below_title_and_uses_full_width(self) -> None:
+    def test_file_picker_sits_after_title_and_uses_header_space(self) -> None:
         top_bar = PAGE[
             PAGE.index('<div class="topBar">'):
             PAGE.index("</div>", PAGE.index('<div class="topBar">'))
@@ -102,13 +104,31 @@ class PageInformationDisplayTests(unittest.TestCase):
 
         top_bar_start = PAGE.index(".topBar{")
         top_bar_rule = PAGE[top_bar_start:PAGE.index("}", top_bar_start)]
-        self.assertIn("flex-direction:column", top_bar_rule)
-        self.assertIn("align-items:stretch", top_bar_rule)
+        self.assertIn("display:grid", top_bar_rule)
+        self.assertIn("grid-template-columns:max-content minmax(280px,1fr)", top_bar_rule)
 
         start = PAGE.index(".topBar input[type=file]{")
         rule = PAGE[start:PAGE.index("}", start)]
         self.assertIn("width:100%", rule)
         self.assertNotIn("max-width", rule)
+
+    def test_controls_are_partitioned_into_accessible_dashboard_tabs(self) -> None:
+        control_panel = PAGE[
+            PAGE.index('<div class="controlPanel">'):
+            PAGE.index('<div class="card previewCard">')
+        ]
+        for tab_id, panel_id in (
+            ("captureTab", "capturePanel"),
+            ("toneTab", "tonePanel"),
+            ("colorTab", "colorPanel"),
+        ):
+            with self.subTest(panel=panel_id):
+                self.assertIn(f'id="{tab_id}" role="tab"', control_panel)
+                self.assertIn(f'aria-controls="{panel_id}"', control_panel)
+                self.assertIn(f'id="{panel_id}" role="tabpanel"', control_panel)
+        self.assertIn("function setDashboardPanel(", PAGE)
+        self.assertIn('tab.addEventListener("click"', PAGE)
+        self.assertIn('tab.addEventListener("keydown"', PAGE)
 
     def test_measured_facts_sit_next_to_their_controls(self) -> None:
         # Data-to-function adjacency: each measured fact renders inside the

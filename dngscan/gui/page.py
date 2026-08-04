@@ -10,17 +10,25 @@ PAGE = """<!doctype html>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden}
 body{margin:0;font:14px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif;background:#15171c;color:#e7e9ee}
-.wrap{max-width:1900px;margin:0 auto;padding:14px 18px}
+.wrap{width:100%;height:100dvh;max-width:1900px;margin:0 auto;padding:10px 14px;display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
 h1{font-size:17px;font-weight:600;margin:0;white-space:nowrap}
-.topBar{display:flex;flex-direction:column;gap:8px;align-items:stretch;margin:0 0 12px}
+.topBar{display:grid;grid-template-columns:max-content minmax(280px,1fr);grid-template-rows:auto auto;column-gap:14px;row-gap:4px;align-items:center;min-width:0;margin:0 0 8px}
+.topBar h1{grid-row:1 / span 2}
 .topBar input[type=file]{width:100%;min-width:260px}
-.topBar .ctlFact{min-width:260px}
-.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:14px;margin-bottom:12px}
-.secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px}
-.workspace{display:grid;grid-template-columns:minmax(360px,460px) minmax(0,1fr);gap:12px;align-items:start}
-.controlPanel{min-width:0}
-.previewCard{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;margin-bottom:0}
+.topBar .ctlFact{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card{background:#1d2028;border:1px solid #2b2f3a;border-radius:8px;padding:12px;margin:0;min-width:0}
+.secTitle{font-size:12px;font-weight:600;color:#8fa0c4;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+.workspace{display:grid;grid-template-columns:minmax(520px,36%) minmax(0,1fr);gap:10px;min-width:0;min-height:0;height:100%;overflow:hidden}
+.controlPanel{display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px;min-width:0;min-height:0;overflow:hidden}
+.dashboardTabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;background:#1d2028;border:1px solid #2b2f3a;border-radius:9px}
+.dashTab{border:1px solid transparent;border-radius:7px;background:transparent;color:#939baa;padding:7px 10px;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.dashTab:hover{color:#dce3f3;background:#242936}
+.dashTab.active{color:#fff;background:#2b3953;border-color:#48628d;box-shadow:0 1px 8px rgba(0,0,0,.18)}
+.dashboardPanel{display:none;grid-template-columns:minmax(0,1fr);gap:8px;align-content:start;min-height:0;overflow:hidden}
+.dashboardPanel.active{display:grid}
+.previewCard{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 label{display:block;font-size:12px;color:#9aa1b0;margin:0 0 6px}
 input[type=text],input[type=number],select{width:100%;background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color:#e7e9ee;padding:8px 10px;font:inherit}
@@ -75,7 +83,7 @@ button.ghost{background:#12141a;border:1px solid #2b2f3a;border-radius:8px;color
 .reportGrid dt{color:#9aa3b2;white-space:nowrap}
 .reportGrid dd{margin:0;color:#e6e9f0;font-variant-numeric:tabular-nums}
 .reportGrid dd.warn{color:#f0b35e}
-.histCanvas{display:none;width:100%;height:92px;margin-top:10px;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
+.histCanvas{display:none;width:100%;height:82px;margin-top:8px;background:#11141a;border:1px solid #2b2f3a;border-radius:8px}
 .ctlFact{margin-top:6px;color:#8fa0c4;font-size:11.5px;line-height:1.5;font-variant-numeric:tabular-nums;white-space:pre-line}
 .ctlFact:empty{display:none}
 .ctlFact.warn{color:#f0b35e}
@@ -88,11 +96,24 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
 .dialogHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 .dialogTitle{margin:0;font-size:17px;font-weight:600}
 .dialogActions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid #2b2f3a}
-@media (max-width:980px){
-  .wrap{padding:14px}
-  .workspace{display:block}
-  .previewCard{position:static;height:auto;min-height:60vh}
+@media (max-width:1240px){
+  .workspace{grid-template-columns:minmax(470px,46%) minmax(0,1fr)}
   .modes button .d{display:none}
+}
+@media (max-height:900px){
+  body{font-size:13px}
+  .wrap{padding:8px 10px}
+  .topBar{margin-bottom:6px;row-gap:2px}
+  .card{padding:9px}
+  .secTitle{margin-bottom:7px}
+  .dashboardPanel,.controlPanel{gap:6px}
+  input[type=text],input[type=number],select{padding:6px 8px}
+  .modes{margin-top:5px}
+  .modes button{min-height:40px;padding:5px 3px}
+  .dashboardPanel .row[style*="margin-top:12px"]{margin-top:8px!important}
+  .coreFacts{margin-top:8px}
+  #controlHint{margin-top:6px;line-height:1.35}
+  .histCanvas{height:68px;margin-top:6px}
 }
 </style></head>
 <body><div class="wrap">
@@ -105,6 +126,14 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
 
 <div class="workspace">
 <div class="controlPanel">
+
+<div class="dashboardTabs" role="tablist" aria-label="调整分区">
+  <button type="button" class="dashTab active" id="captureTab" role="tab" aria-selected="true" aria-controls="capturePanel" data-panel="capturePanel">基础</button>
+  <button type="button" class="dashTab" id="toneTab" role="tab" aria-selected="false" aria-controls="tonePanel" data-panel="tonePanel">色调</button>
+  <button type="button" class="dashTab" id="colorTab" role="tab" aria-selected="false" aria-controls="colorPanel" data-panel="colorPanel">色彩 / 风格</button>
+</div>
+
+<section class="dashboardPanel active" id="capturePanel" role="tabpanel" aria-labelledby="captureTab">
 
 <div class="card">
   <div class="secTitle">RAW 解码</div>
@@ -193,6 +222,10 @@ dialog.outputDialog::backdrop{background:rgba(7,9,13,.72);backdrop-filter:blur(3
     </div>
   </div>
 </div>
+
+</section>
+
+<section class="dashboardPanel" id="tonePanel" role="tabpanel" aria-labelledby="toneTab" hidden>
 
 <div class="card" id="toneAdjustCard">
   <div class="secTitle">明暗</div>
@@ -292,6 +325,10 @@ FILM_CURVE_OPTIONS
   <div id="controlHint"></div>
 </div>
 
+</section>
+
+<section class="dashboardPanel" id="colorPanel" role="tabpanel" aria-labelledby="colorTab" hidden>
+
 <div class="card">
   <div class="secTitle">颜色</div>
   <div class="row">
@@ -337,6 +374,8 @@ GRADE_OPTIONS
     </div>
   </div>
 </div>
+
+</section>
 
 </div>
 
@@ -427,6 +466,41 @@ GRADE_OPTIONS
 
 <script>
 const $=s=>document.querySelector(s);
+const DASHBOARD_PANEL_KEY="dngscan.dashboard.panel.v1";
+function setDashboardPanel(panelId,focusTab=false){
+  const panel=document.getElementById(panelId);
+  if(!panel)return;
+  document.querySelectorAll(".dashboardPanel").forEach(candidate=>{
+    const active=candidate===panel;
+    candidate.classList.toggle("active",active);
+    candidate.hidden=!active;
+  });
+  document.querySelectorAll(".dashTab").forEach(tab=>{
+    const active=tab.dataset.panel===panelId;
+    tab.classList.toggle("active",active);
+    tab.setAttribute("aria-selected",active?"true":"false");
+    tab.tabIndex=active?0:-1;
+    if(active&&focusTab)tab.focus();
+  });
+  try{localStorage.setItem(DASHBOARD_PANEL_KEY,panelId);}catch(error){}
+}
+const dashboardTabs=[...document.querySelectorAll(".dashTab")];
+dashboardTabs.forEach((tab,index)=>{
+  tab.addEventListener("click",()=>setDashboardPanel(tab.dataset.panel));
+  tab.addEventListener("keydown",event=>{
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    let next=index;
+    if(event.key==="ArrowLeft")next=(index-1+dashboardTabs.length)%dashboardTabs.length;
+    if(event.key==="ArrowRight")next=(index+1)%dashboardTabs.length;
+    if(event.key==="Home")next=0;
+    if(event.key==="End")next=dashboardTabs.length-1;
+    setDashboardPanel(dashboardTabs[next].dataset.panel,true);
+  });
+});
+let initialDashboardPanel="capturePanel";
+try{initialDashboardPanel=localStorage.getItem(DASHBOARD_PANEL_KEY)||initialDashboardPanel;}catch(error){}
+setDashboardPanel(initialDashboardPanel);
 const STORE_KEY="dngscan.settings.v9";
 const V8_STORE_KEY="dngscan.settings.v8";
 const V7_STORE_KEY="dngscan.settings.v7";
