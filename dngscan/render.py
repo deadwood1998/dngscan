@@ -31,6 +31,7 @@ from .tone import build_render_plan, scene_intent_rec2020, scene_rec2020_to_floa
 # render_output_u8 validates this at runtime; keep the constants divisible.
 STREAM_QUANTIZE_CHUNK = 1_000_000
 STREAM_RENDER_CHUNK = 500_000
+STREAM_COMPLEX_COLOR_CHUNK = 250_000
 STREAM_THREAD_MIN_PIXELS = 2_000_000
 
 
@@ -63,10 +64,16 @@ def dither_quantize_u8_with_noise(
     encoded: Any, noise_a: Any, noise_b: Any
 ) -> Any:
     """Reference quantizer with explicit noise for deterministic native parity."""
-    noise = np.asarray(noise_a, dtype=np.float32) - np.asarray(
-        noise_b, dtype=np.float32
-    )
-    return dither_quantize_u8_with_tpdf(encoded, noise)
+    # Operation order is part of the pixel contract.  Keeping the two source planes
+    # separate is observably different at float32 rounding boundaries from first
+    # combining them as ``noise_a - noise_b`` (a handful of final channels can move by
+    # one code value on a 1920px frame).  This is also the order used by the native
+    # finalizer and by the uncached streamed export path.
+    scaled = encoded.astype(np.float32, copy=False) * np.float32(255.0)
+    quantized = scaled + np.float32(0.5)
+    quantized = quantized + np.asarray(noise_a, dtype=np.float32)
+    quantized = quantized - np.asarray(noise_b, dtype=np.float32)
+    return np.clip(np.floor(quantized), 0, 255).astype(np.uint8)
 
 
 def dither_quantize_u8_with_tpdf(encoded: Any, noise: Any) -> Any:
@@ -75,8 +82,8 @@ def dither_quantize_u8_with_tpdf(encoded: Any, noise: Any) -> Any:
     return np.clip(np.floor(scaled + np.float32(0.5) + noise), 0, 255).astype(np.uint8)
 
 
-def deterministic_dither_plane(shape: Any) -> Any:
-    """Build the exact seed-0 TPDF plane consumed by streamed SDR rendering.
+def deterministic_dither_planes(shape: Any) -> tuple[Any, Any]:
+    """Build the exact seed-0 TPDF source planes consumed by streamed SDR rendering.
 
     The quantize-group ordering is part of the historical pixel contract. Preview
     sessions reuse this immutable plane because shape and RNG seed do not change
@@ -86,15 +93,32 @@ def deterministic_dither_plane(shape: Any) -> Any:
     if len(dimensions) != 3 or dimensions[-1] != 3:
         raise ValueError("dither shape must be (H, W, 3)")
     pixel_count = dimensions[0] * dimensions[1]
-    flat = np.empty((pixel_count, 3), dtype=np.float32)
+    flat_a = np.empty((pixel_count, 3), dtype=np.float32)
+    flat_b = np.empty((pixel_count, 3), dtype=np.float32)
     rng = np.random.default_rng(0)
     for start in range(0, pixel_count, STREAM_QUANTIZE_CHUNK):
         end = min(start + STREAM_QUANTIZE_CHUNK, pixel_count)
         first, second = generate_dither_noise(rng, (end - start, 3))
-        np.subtract(first, second, out=flat[start:end])
-    result = flat.reshape(dimensions)
-    result.setflags(write=False)
-    return result
+        flat_a[start:end] = first
+        flat_b[start:end] = second
+    first = flat_a.reshape(dimensions)
+    second = flat_b.reshape(dimensions)
+    first.setflags(write=False)
+    second.setflags(write=False)
+    return first, second
+
+
+def deterministic_dither_plane(shape: Any) -> Any:
+    """Legacy combined TPDF helper retained for external callers.
+
+    New preview code must use :func:`deterministic_dither_planes`; combining the
+    planes changes float32 addition order and is therefore not a bit-exact cache for
+    the authoritative streamed quantizer.
+    """
+    first, second = deterministic_dither_planes(shape)
+    combined = np.asarray(first, dtype=np.float32) - np.asarray(second, dtype=np.float32)
+    combined.setflags(write=False)
+    return combined
 
 
 def output_linear_to_u8(
@@ -481,19 +505,38 @@ def render_output_u8(
     flat_scene = scene.reshape(-1, scene.shape[-1])
     out = np.empty((flat_scene.shape[0], 3), dtype=np.uint8)
     flat_dither_noise = None
+    flat_dither_noise_a = None
+    flat_dither_noise_b = None
     if dither_noise is not None:
-        noise = np.asarray(dither_noise, dtype=np.float32)
-        if noise.shape != (h, w, 3):
-            raise ValueError(
-                f"dither noise shape {noise.shape} does not match render {(h, w, 3)}"
-            )
-        flat_dither_noise = np.ascontiguousarray(noise).reshape(-1, 3)
+        if isinstance(dither_noise, (tuple, list)) and len(dither_noise) == 2:
+            first = np.asarray(dither_noise[0], dtype=np.float32)
+            second = np.asarray(dither_noise[1], dtype=np.float32)
+            if first.shape != (h, w, 3) or second.shape != (h, w, 3):
+                raise ValueError(
+                    "dither noise plane shapes "
+                    f"{first.shape}/{second.shape} do not match render {(h, w, 3)}"
+                )
+            flat_dither_noise_a = np.ascontiguousarray(first).reshape(-1, 3)
+            flat_dither_noise_b = np.ascontiguousarray(second).reshape(-1, 3)
+        else:
+            # Compatibility only.  A single combined plane cannot preserve the
+            # authoritative two-plane float32 operation order.
+            noise = np.asarray(dither_noise, dtype=np.float32)
+            if noise.shape != (h, w, 3):
+                raise ValueError(
+                    f"dither noise shape {noise.shape} does not match render {(h, w, 3)}"
+                )
+            flat_dither_noise = np.ascontiguousarray(noise).reshape(-1, 3)
     quantize_chunk_size = STREAM_QUANTIZE_CHUNK
-    render_chunk_size = (
-        STREAM_RENDER_CHUNK
-        if flat_scene.shape[0] >= STREAM_THREAD_MIN_PIXELS
-        else quantize_chunk_size
-    )
+    if flat_scene.shape[0] < STREAM_THREAD_MIN_PIXELS:
+        render_chunk_size = quantize_chunk_size
+    elif scene_transform != "none" or look != "none":
+        # NumPy scene transforms/looks expose more independent work than the native
+        # baseline chain. A smaller exact divisor keeps all render workers occupied;
+        # quantization still joins in the historical 1M-pixel order below.
+        render_chunk_size = STREAM_COMPLEX_COLOR_CHUNK
+    else:
+        render_chunk_size = STREAM_RENDER_CHUNK
     if quantize_chunk_size % render_chunk_size != 0:
         # The grouped flush below fires on exact boundary equality; a non-divisible
         # pairing would never flush and silently leave trailing pixels at zero.
@@ -584,7 +627,10 @@ def render_output_u8(
             if flat_dither_noise is not None
             else None
         )
-        if noise is None:
+        if flat_dither_noise_a is not None:
+            noise_a = flat_dither_noise_a[start:end]
+            noise_b = flat_dither_noise_b[start:end]
+        elif noise is None:
             noise_a, noise_b = generate_dither_noise(rng, pixels.shape)
         else:
             noise_a = noise_b = None

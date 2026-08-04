@@ -106,6 +106,7 @@ def color_path_weight(
     raw_headroom_rgb: Any | None = None,
     raw_clip_class: Any | None = None,
     raw_snr_confidence: Any | None = None,
+    raw_permission: Any | None = None,
     midtone_protect: float = 0.92,
     highlight_ev_lo: float = 0.25,
     highlight_ev_hi: float = 2.75,
@@ -113,7 +114,9 @@ def color_path_weight(
 ) -> Any:
     """Blend weight for AgX color geometry over luma-first DRT (per pixel, 0–1)."""
     ev = np.asarray(scene_ev, dtype=np.float32)
-    if raw_headroom_rgb is not None and raw_headroom_rgb.shape[0] == ev.shape[0]:
+    if raw_permission is not None and raw_permission.shape[0] == ev.shape[0]:
+        raw_perm = np.asarray(raw_permission, dtype=np.float32)
+    elif raw_headroom_rgb is not None and raw_headroom_rgb.shape[0] == ev.shape[0]:
         raw_perm = raw_color_permission(headroom_rgb=raw_headroom_rgb, clip_class=raw_clip_class)
     elif masks_rgb is not None and masks_rgb.shape[0] == ev.shape[0]:
         raw_perm = raw_color_permission(masks_rgb)
@@ -267,10 +270,17 @@ def build_raw_guidance_maps(
     headroom = _raw_headroom_rgb(bundle, target_shape)
     clip_class = clip_class_from_masks(saturation_proximity_from_headroom(headroom).reshape(-1, 3)).reshape(target_shape)
     snr = _raw_snr_confidence(bundle, analysis, target_shape)
+    stored_headroom = headroom.astype(np.float16, copy=False)
+    stored_class = clip_class.astype(np.uint8, copy=False)
+    permission = raw_color_permission(
+        headroom_rgb=stored_headroom.reshape(-1, 3),
+        clip_class=stored_class.reshape(-1),
+    ).reshape(target_shape)
     return RawGuidanceMaps(
-        headroom=headroom.astype(np.float16, copy=False),
-        clip_class=clip_class.astype(np.uint8, copy=False),
+        headroom=stored_headroom,
+        clip_class=stored_class,
         snr_confidence=snr.astype(np.float16, copy=False) if snr is not None else None,
+        raw_permission=permission,
     )
 
 
@@ -330,9 +340,17 @@ def raw_guidance_for_shape(
     from .retreat import resize_clip_masks
 
     crop = getattr(bundle, "scene_geometry_crop", None)
+    resized_headroom = resize_clip_masks(maps.headroom, shape, crop=crop).astype(
+        np.float16, copy=False
+    )
+    resized_class = _resize_nearest_scalar(maps.clip_class, shape, crop=crop)
+    resized_permission = raw_color_permission(
+        headroom_rgb=resized_headroom.reshape(-1, 3),
+        clip_class=resized_class.reshape(-1),
+    ).reshape(shape)
     resized = RawGuidanceMaps(
-        headroom=resize_clip_masks(maps.headroom, shape, crop=crop).astype(np.float16, copy=False),
-        clip_class=_resize_nearest_scalar(maps.clip_class, shape, crop=crop),
+        headroom=resized_headroom,
+        clip_class=resized_class,
         snr_confidence=(
             resize_clip_masks(maps.snr_confidence[:, :, None], shape, crop=crop)[:, :, 0].astype(
                 np.float16, copy=False
@@ -340,6 +358,7 @@ def raw_guidance_for_shape(
             if maps.snr_confidence is not None
             else None
         ),
+        raw_permission=resized_permission,
     )
     bundle._raw_guidance_cache_shape = shape
     bundle._raw_guidance_resized = resized
@@ -357,6 +376,11 @@ def flatten_raw_guidance(
         snr_confidence=(
             np.asarray(maps.snr_confidence).reshape(-1)[start:end:step]
             if maps.snr_confidence is not None else None
+        ),
+        raw_permission=(
+            np.asarray(maps.raw_permission).reshape(-1)[start:end:step]
+            if maps.raw_permission is not None
+            else None
         ),
     )
 

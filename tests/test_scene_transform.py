@@ -9,6 +9,26 @@ import dngscan as dg
 
 
 class SceneTransformTests(unittest.TestCase):
+    def test_parallel_regions_are_bit_exact_to_serial_oracle(self) -> None:
+        from dngscan.scene_transform import (
+            _apply_scene_transform_rec2020_reference,
+            apply_scene_transform_rec2020,
+        )
+
+        rng = dg.np.random.default_rng(20260804)
+        rgb = rng.lognormal(0.0, 1.2, size=(80_000, 3)).astype(dg.np.float32)
+        rgb[:3] = dg.np.asarray(
+            [[dg.np.nan, 1.0, 0.0], [dg.np.inf, 0.2, 1.0], [-1.0, 0.0, 2.0]],
+            dtype=dg.np.float32,
+        )
+        for transform in ("arri_skin_d55", "portra400_d55"):
+            for adapt in (None, (0.82, 1.17), (0.91, 1.08, "coreimage")):
+                expected = _apply_scene_transform_rec2020_reference(
+                    rgb, transform, 1.3, adapt
+                )
+                actual = apply_scene_transform_rec2020(rgb, transform, 1.3, adapt)
+                dg.np.testing.assert_array_equal(actual, expected)
+
     def test_strength_zero_is_identity(self) -> None:
         rgb = dg.np.asarray([[1.4, 1.0, 0.25], [0.2, 0.2, 0.2]], dtype=dg.np.float32)
         out = dg.apply_scene_transform_rec2020(rgb, "arri_skin_d55", 0.0)

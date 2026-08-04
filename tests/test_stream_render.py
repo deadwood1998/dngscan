@@ -10,7 +10,7 @@ from unittest import mock
 from dngscan._deps import np
 from dngscan.models import RawBundle, ToneCompressionPlan
 from dngscan.render import (
-    deterministic_dither_plane,
+    deterministic_dither_planes,
     quantize_final_output_linear_to_u8,
     render_output_linear,
     render_output_u8,
@@ -79,7 +79,7 @@ class StreamRenderTest(unittest.TestCase):
                 self.assertEqual(float(np.percentile(delta, 99)), 0.0, (gamut, core))
                 self.assertLessEqual(float(np.mean(delta != 0)), 0.01, (gamut, core))
 
-    def test_precomputed_dither_plane_is_byte_identical(self) -> None:
+    def test_precomputed_dither_planes_are_byte_identical(self) -> None:
         bundle, plan = self._bundle_and_plan(73, 97, seed=43)
         with mock.patch.dict(os.environ, {"DNGSCAN_FAST": "0"}):
             streamed = render_output_u8(bundle, object(), "srgb", plan)
@@ -88,11 +88,37 @@ class StreamRenderTest(unittest.TestCase):
                 object(),
                 "srgb",
                 plan,
-                dither_noise=deterministic_dither_plane(
+                dither_noise=deterministic_dither_planes(
                     bundle.scene_rec2020_render.shape
                 ),
             )
         np.testing.assert_array_equal(cached, streamed)
+
+    def test_two_plane_quantizer_keeps_authoritative_operation_order(self) -> None:
+        from dngscan.render import dither_quantize_u8_with_noise
+
+        rng = np.random.default_rng(90210)
+        encoded = rng.random((200_000, 3), dtype=np.float32)
+        noise_a = rng.random(encoded.shape, dtype=np.float32)
+        noise_b = rng.random(encoded.shape, dtype=np.float32)
+        actual = dither_quantize_u8_with_noise(encoded, noise_a, noise_b)
+        sequential = encoded * np.float32(255.0) + np.float32(0.5)
+        sequential = sequential + noise_a
+        sequential = sequential - noise_b
+        expected = np.clip(np.floor(sequential), 0, 255).astype(np.uint8)
+        np.testing.assert_array_equal(actual, expected)
+
+        # Prove why the cache may not collapse the two source planes.
+        combined = np.clip(
+            np.floor(
+                encoded * np.float32(255.0)
+                + np.float32(0.5)
+                + (noise_a - noise_b)
+            ),
+            0,
+            255,
+        ).astype(np.uint8)
+        self.assertGreater(int(np.count_nonzero(combined != expected)), 0)
 
     def test_native_failure_reuses_noise_for_exact_auto_fallback(self) -> None:
         import dngscan._fast as fast_backend
@@ -171,6 +197,45 @@ class StreamRenderTest(unittest.TestCase):
             ) = saved
         np.testing.assert_array_equal(threaded, unthreaded)
         self.assertGreater(int(threaded.max()), 0)
+
+    def test_complex_color_chunking_is_byte_identical(self) -> None:
+        import dngscan.render as render_mod
+
+        bundle, plan = self._bundle_and_plan(60, 70, seed=47)
+        saved = (
+            render_mod.STREAM_THREAD_MIN_PIXELS,
+            render_mod.STREAM_RENDER_CHUNK,
+            render_mod.STREAM_COMPLEX_COLOR_CHUNK,
+            render_mod.STREAM_QUANTIZE_CHUNK,
+        )
+        try:
+            render_mod.STREAM_RENDER_CHUNK = 512
+            render_mod.STREAM_COMPLEX_COLOR_CHUNK = 256
+            render_mod.STREAM_QUANTIZE_CHUNK = 1_024
+            render_mod.STREAM_THREAD_MIN_PIXELS = 10**9
+            serial = render_output_u8(
+                bundle,
+                object(),
+                "srgb",
+                plan,
+                look="optic_warm_cyan",
+            )
+            render_mod.STREAM_THREAD_MIN_PIXELS = 1_000
+            threaded = render_output_u8(
+                bundle,
+                object(),
+                "srgb",
+                plan,
+                look="optic_warm_cyan",
+            )
+        finally:
+            (
+                render_mod.STREAM_THREAD_MIN_PIXELS,
+                render_mod.STREAM_RENDER_CHUNK,
+                render_mod.STREAM_COMPLEX_COLOR_CHUNK,
+                render_mod.STREAM_QUANTIZE_CHUNK,
+            ) = saved
+        np.testing.assert_array_equal(threaded, serial)
 
     def test_misaligned_stream_chunking_raises(self) -> None:
         import dngscan.render as render_mod

@@ -191,6 +191,7 @@ def reliable_scene_ev_selection(
     scene_transform_strength: float = 1.0,
     exposure_gain: float | None = None,
     max_samples: int = 800_000,
+    rec2020_sample: Any | None = None,
 ) -> tuple[Any, Any, Any, bool]:
     """The single declared reliable-sample selection behind every scene decision.
 
@@ -221,15 +222,22 @@ def reliable_scene_ev_selection(
     """
     flat = bundle.scene_rec2020_render.reshape(-1, bundle.scene_rec2020_render.shape[-1])
     step = subsample_step(flat.shape[0], max_samples)
-    gain = bundle.exposure_gain if exposure_gain is None else exposure_gain
-    rec = scene_intent_rec2020(flat[::step, :3], bundle, gain)
-    wb_adapt = scene_transform_engine.wb_adaptation_ratios(
-        bundle.wb_mode, bundle.applied_wb or bundle.camera_wb, bundle.daylight_wb,
-        scene_transform_engine.window_transport_tag(bundle)
-    )
-    rec = scene_transform_engine.apply_scene_transform_rec2020(
-        rec, scene_transform, scene_transform_strength, wb_adapt
-    )
+    if rec2020_sample is None:
+        gain = bundle.exposure_gain if exposure_gain is None else exposure_gain
+        rec = tone_plan_sample_scene_rec2020(
+            bundle,
+            max_samples=max_samples,
+            scene_transform=scene_transform,
+            scene_transform_strength=scene_transform_strength,
+            exposure_gain=gain,
+        )
+    else:
+        rec = np.asarray(rec2020_sample)
+        expected = flat[::step, :3].shape
+        if rec.shape != expected:
+            raise ValueError(
+                f"prepared tone-plan sample shape {rec.shape} does not match {expected}"
+            )
     y = np.clip(rec2020_to_xyz(rec)[:, 1], 2.0 ** EV_REPORT_FLOOR, None)
     ev = np.log2(y) - GRAY_EV
 
@@ -268,6 +276,7 @@ def scene_tone_metrics(
     scene_transform_strength: float = 1.0,
     plan_exposure_gain: float | None = None,
     max_samples: int = 800_000,
+    rec2020_sample: Any | None = None,
 ) -> SceneToneMetrics:
     """Measure the reliable scene body separately from its highlight tail.
 
@@ -286,6 +295,7 @@ def scene_tone_metrics(
         scene_transform_strength,
         plan_exposure_gain,
         max_samples,
+        rec2020_sample,
     )
     reliable_sample_pct = float(np.mean(evidence_reliable) * 100.0)
     reliable_tail_p9999 = (
@@ -378,6 +388,7 @@ def build_tone_compression_plan(
     plan_exposure_gain: float | None = None,
     scene_metrics: SceneToneMetrics | None = None,
     endpoint_mode: str = "adaptive",
+    rec2020_sample: Any | None = None,
 ) -> ToneCompressionPlan:
     agx_primaries = agx_engine.resolve_agx_primaries(agx_primaries)
     endpoint_mode = endpoint_mode if endpoint_mode in ENDPOINT_MODE_CHOICES else "adaptive"
@@ -392,9 +403,15 @@ def build_tone_compression_plan(
         scene_transform_strength,
         plan_gain,
     )
-    rec2020 = tone_plan_sample_scene_rec2020(
-        bundle, scene_transform=scene_transform, scene_transform_strength=scene_transform_strength,
-        exposure_gain=plan_gain,
+    rec2020 = (
+        tone_plan_sample_scene_rec2020(
+            bundle,
+            scene_transform=scene_transform,
+            scene_transform_strength=scene_transform_strength,
+            exposure_gain=plan_gain,
+        )
+        if rec2020_sample is None
+        else np.asarray(rec2020_sample)
     )
     xyz = rec2020_to_xyz(rec2020)
     y = np.clip(xyz[:, 1], 0.0, None)
@@ -674,9 +691,20 @@ def build_render_plan(
     else:
         target_gamut = output_gamut_space(output_gamut)
     plan_gain = compute_exposure_gain(exposure_mode_for_tone_core(tone_core), 0.0)
+    # The scene metrics and the tone compiler historically transformed the identical
+    # deterministic <=800k sample twice.  Share that exact array: every downstream
+    # operation and percentile keeps its original order and dtype, while one full
+    # scene-transform pass disappears from first-WB and first-film plan compilation.
+    rec2020_sample = tone_plan_sample_scene_rec2020(
+        bundle,
+        scene_transform=scene_transform if mode == "agx" else "none",
+        scene_transform_strength=scene_transform_strength,
+        exposure_gain=plan_gain,
+    )
     scene = scene_tone_metrics(
         bundle, analysis, scene_transform if mode == "agx" else "none",
         scene_transform_strength, plan_gain,
+        rec2020_sample=rec2020_sample,
     )
     tone = build_tone_compression_plan(
         bundle,
@@ -695,6 +723,7 @@ def build_render_plan(
         plan_exposure_gain=plan_gain,
         scene_metrics=scene,
         endpoint_mode=endpoint_mode,
+        rec2020_sample=rec2020_sample,
     )
     if film_curve != "none":
         from dataclasses import replace as _replace

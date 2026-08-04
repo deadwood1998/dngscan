@@ -13,18 +13,17 @@ from pathlib import Path
 from typing import Any, Callable, Hashable
 
 import dngscan as dg
-from dngscan.guidance import raw_guidance_for_shape
+from dngscan.guidance import raw_color_permission, raw_guidance_for_shape
 from dngscan.models import Analysis, RawBundle, RawGuidanceMaps
 from dngscan.retreat import resize_clip_masks
 
 from .constants import PROXY_LONG_EDGE
 
 
-# v10: bundle metadata gained wb_color_matrix (hot-WB C0 ladder rung 2).  Entries
-# written by v9 lack it, and on bodies whose rgb_xyz_matrix is all-zero (Sigma fp) a
-# stale entry would silently degrade every fixed-Kelvin/daylight rebalance back to
-# camera — a correctness change, so the version bump forces a re-decode.
-PREVIEW_CACHE_VERSION = 10
+# v11: RAW guidance gained the compiled permission map. Older entries can still
+# recompute it, but forcing one rebuild keeps the preview hot path and its exactness
+# contract independent of which cache version happened to be on disk.
+PREVIEW_CACHE_VERSION = 11
 PROXY_RESAMPLER = "lanczos"
 MAX_DISK_CACHE_FILES = 24
 MAX_DISK_CACHE_BYTES = 768 * 1024 * 1024
@@ -53,7 +52,7 @@ class PreviewEntry:
     _balance_cache: OrderedDict[str, "PreviewEntry"] = field(
         default_factory=OrderedDict, init=False, repr=False
     )
-    _dither_noise: Any | None = field(default=None, init=False, repr=False)
+    _dither_noise: tuple[Any, Any] | None = field(default=None, init=False, repr=False)
     _runtime_cache_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
@@ -134,11 +133,11 @@ class PreviewEntry:
             while len(self._frame_cache) > MAX_FRAME_CACHE_ITEMS:
                 self._frame_cache.popitem(last=False)
 
-    def get_or_build_dither_noise(self) -> Any:
-        """Reuse the fixed seed-0 TPDF plane for this proxy geometry."""
+    def get_or_build_dither_noise(self) -> tuple[Any, Any]:
+        """Reuse both fixed seed-0 TPDF planes without changing operation order."""
         with self._runtime_cache_lock:
             if self._dither_noise is None:
-                self._dither_noise = dg.deterministic_dither_plane(
+                self._dither_noise = dg.deterministic_dither_planes(
                     self.bundle.scene_rec2020_render.shape[:2] + (3,)
                 )
             return self._dither_noise
@@ -412,14 +411,25 @@ def _copy_guidance(maps: RawGuidanceMaps | None) -> RawGuidanceMaps | None:
     if maps is None:
         return None
     np = dg.np
+    headroom = np.asarray(maps.headroom).copy()
+    clip_class = np.asarray(maps.clip_class).copy()
+    permission = (
+        np.asarray(maps.raw_permission).copy()
+        if maps.raw_permission is not None
+        else raw_color_permission(
+            headroom_rgb=headroom.reshape(-1, 3),
+            clip_class=clip_class.reshape(-1),
+        ).reshape(headroom.shape[:2])
+    )
     return RawGuidanceMaps(
-        headroom=np.asarray(maps.headroom).copy(),
-        clip_class=np.asarray(maps.clip_class).copy(),
+        headroom=headroom,
+        clip_class=clip_class,
         snr_confidence=(
             np.asarray(maps.snr_confidence).copy()
             if maps.snr_confidence is not None
             else None
         ),
+        raw_permission=permission,
     )
 
 
@@ -480,6 +490,9 @@ def _read_disk_entry(cache_path: Path, source_path: Path, require_guidance: bool
                     headroom=np.asarray(payload["guidance_headroom"]).copy(),
                     clip_class=np.asarray(payload["guidance_clip_class"]).copy(),
                     snr_confidence=snr,
+                    raw_permission=np.asarray(
+                        payload["guidance_raw_permission"]
+                    ).copy(),
                 )
             bundle = _bundle_from_cache(source_path, metadata["bundle"], scene, masks, guidance)
             return PreviewEntry(bundle=bundle, analysis=_analysis_from_json(metadata["analysis"]))
@@ -536,6 +549,14 @@ def _write_disk_entry(cache_path: Path, entry: PreviewEntry) -> None:
                 if maps is not None:
                     values["guidance_headroom"] = np.asarray(maps.headroom)
                     values["guidance_clip_class"] = np.asarray(maps.clip_class)
+                    values["guidance_raw_permission"] = (
+                        np.asarray(maps.raw_permission)
+                        if maps.raw_permission is not None
+                        else raw_color_permission(
+                            headroom_rgb=np.asarray(maps.headroom).reshape(-1, 3),
+                            clip_class=np.asarray(maps.clip_class).reshape(-1),
+                        ).reshape(np.asarray(maps.headroom).shape[:2])
+                    )
                     if maps.snr_confidence is not None:
                         values["guidance_snr"] = np.asarray(maps.snr_confidence)
                 np.savez(handle, **values)

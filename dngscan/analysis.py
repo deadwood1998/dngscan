@@ -2,6 +2,7 @@
 """Per-frame RAW sensor analysis and metrics."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import math
 from dataclasses import replace
 from typing import Any
@@ -777,13 +778,33 @@ def reanalyze_balanced_scene(
     sensor-domain scan on an interactive balance change.
     """
     y = luminance_from_xyz_render(bundle.xyz_render, bundle.render_scale)
-    _ev, raw_p1, p1, p50, p99, p999, dr, floor_hit_pct, vs_gray = compute_ev_metrics(y)
-    gamut_pct, bright_pct = compute_gamut_metrics(
-        bundle.xyz_render,
-        bundle.render_scale,
-        y,
-        gamut_names,
-    )
+    # EV percentiles and gamut occupancy are independent read-only reductions over the
+    # same luminance plane.  NumPy releases the GIL for their heavy kernels, so running
+    # the two original functions concurrently removes their serialized wall time while
+    # preserving every operation, dtype, percentile definition, and result bit.
+    with ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="dngscan-balance-analysis"
+    ) as pool:
+        ev_future = pool.submit(compute_ev_metrics, y)
+        gamut_future = pool.submit(
+            compute_gamut_metrics,
+            bundle.xyz_render,
+            bundle.render_scale,
+            y,
+            gamut_names,
+        )
+        (
+            _ev,
+            raw_p1,
+            p1,
+            p50,
+            p99,
+            p999,
+            dr,
+            floor_hit_pct,
+            vs_gray,
+        ) = ev_future.result()
+        gamut_pct, bright_pct = gamut_future.result()
     return replace(
         capture,
         ev_p1=p1,

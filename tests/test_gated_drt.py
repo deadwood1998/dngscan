@@ -6,7 +6,8 @@ import unittest
 import numpy as np
 
 from dngscan.color import luminance_from_rec2020, rgb_to_oklab
-from dngscan.gated_drt import apply_gated_core
+from dngscan.gated_drt import _apply_gated_core_reference, apply_gated_core
+from dngscan.guidance import raw_color_permission
 from dngscan.models import ColorGeometryPlan, RawGuidanceMaps, ToneCompressionPlan
 
 
@@ -33,6 +34,41 @@ def _plan(tone_core: str = "gated", primaries: str = "smooth") -> ToneCompressio
 
 
 class GatedDrtTest(unittest.TestCase):
+    def test_parallel_and_precompiled_raw_permission_are_bit_exact(self) -> None:
+        rng = np.random.default_rng(20260804)
+        rgb = rng.lognormal(-1.0, 1.4, size=(80_000, 3)).astype(np.float32)
+        rgb[:6] = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [-2.0, 0.5, 3.0],
+                [1e-8, 1e-7, 1e-6],
+                [1e3, 1e-3, 2.0],
+                [1.0, 1.0, 1.0],
+                [-0.0, 0.0, -0.0],
+            ],
+            dtype=np.float32,
+        )
+        masks = rng.random(rgb.shape, dtype=np.float32)
+        headroom = rng.random(rgb.shape, dtype=np.float32).astype(np.float16)
+        clip_class = rng.integers(0, 8, size=(rgb.shape[0],), dtype=np.uint8)
+        snr = rng.random((rgb.shape[0],), dtype=np.float32).astype(np.float16)
+        plan = _plan()
+        color = ColorGeometryPlan("srgb", 0.0, 3.7)
+        reference_guidance = RawGuidanceMaps(headroom, clip_class, snr)
+        compiled_guidance = RawGuidanceMaps(
+            headroom,
+            clip_class,
+            snr,
+            raw_color_permission(
+                headroom_rgb=headroom, clip_class=clip_class
+            ),
+        )
+        expected = _apply_gated_core_reference(
+            rgb, plan, color, masks, reference_guidance
+        )
+        actual = apply_gated_core(rgb, plan, color, masks, compiled_guidance)
+        np.testing.assert_array_equal(actual, expected)
+
     def test_midtone_path_differs_from_full_agx(self) -> None:
         from dngscan.render import apply_agx_core
 

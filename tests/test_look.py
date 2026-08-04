@@ -7,10 +7,33 @@ import unittest
 
 import numpy as np
 
-from dngscan.look import LOOK_FIELDS, _hue_in_arc, apply_look_oklab
+from dngscan.look import (
+    LOOK_FIELDS,
+    _apply_look_oklab_reference,
+    _hue_in_arc,
+    apply_look_oklab,
+)
 
 
 class LookLayerTests(unittest.TestCase):
+    def test_parallel_hot_path_is_bit_exact(self) -> None:
+        rng = np.random.default_rng(20260804)
+        lightness = rng.uniform(-0.25, 1.5, 80_000).astype(np.float32)
+        a = rng.normal(0.0, 0.35, lightness.size).astype(np.float32)
+        b = rng.normal(0.0, 0.35, lightness.size).astype(np.float32)
+        lightness[:5] = [0.0, 1.0, np.nan, np.inf, -np.inf]
+        a[:5] = [0.0, -0.0, np.nan, np.inf, -np.inf]
+        b[:5] = [-0.0, 0.0, np.inf, np.nan, -np.inf]
+        with np.errstate(all="ignore"):
+            expected = _apply_look_oklab_reference(
+                lightness, a, b, "optic_warm_cyan", 1.0
+            )
+            actual = apply_look_oklab(
+                lightness, a, b, "optic_warm_cyan", 1.0
+            )
+        for optimized, reference in zip(actual, expected):
+            np.testing.assert_array_equal(optimized, reference)
+
     def test_public_registry_contains_only_project_look(self) -> None:
         self.assertEqual(set(LOOK_FIELDS), {"optic_warm_cyan"})
 

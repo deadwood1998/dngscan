@@ -8,7 +8,10 @@ chromaticity windows.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,11 @@ from typing import Any
 from ._deps import np
 
 EPS = 1e-8
+SCENE_TRANSFORM_REGION_PARALLEL_MIN_PIXELS = 64 * 1024
+_REGION_WORKERS = min(8, max(2, (os.cpu_count() or 4) - 2))
+_REGION_POOL = ThreadPoolExecutor(
+    max_workers=_REGION_WORKERS, thread_name_prefix="dngscan-scene-region"
+)
 SCENE_TRANSFORM_PRESETS_JSON = Path(__file__).with_name("scene_transform_presets.json")
 
 
@@ -237,19 +245,17 @@ def _apply_matrix(rgb: Any, matrix: Any) -> Any:
     return out
 
 
-def _gaussian_weight(
-    chroma: Any,
+@lru_cache(maxsize=256)
+def _compiled_gaussian_parameters(
     mu_rg_bg: tuple[float, float],
     cov_rg_bg: tuple[tuple[float, float], tuple[float, float]],
     scale: float,
     wb_adapt: tuple[float, float] | None,
-) -> Any:
+) -> tuple[Any, Any]:
+    """Compile immutable Gaussian constants with the reference operation order."""
     mu = np.asarray(mu_rg_bg, dtype=np.float32)
     cov = np.asarray(cov_rg_bg, dtype=np.float32) * np.float32(max(scale, EPS) ** 2)
     if wb_adapt is not None:
-        # Transport the calibrated window to the applied white balance: the anchor moves
-        # with the chromaticity ratios and the covariance stretches with them (the
-        # region matrix itself is a spectral-crosstalk correction and stays fixed).
         scale_vec = np.asarray(wb_adapt, dtype=np.float32)
         mu = mu * scale_vec
         cov = cov * np.outer(scale_vec, scale_vec).astype(np.float32)
@@ -257,6 +263,39 @@ def _gaussian_weight(
         inv_cov = np.linalg.inv(cov).astype(np.float32, copy=False)
     except np.linalg.LinAlgError:
         inv_cov = np.linalg.pinv(cov).astype(np.float32, copy=False)
+    mu.setflags(write=False)
+    inv_cov.setflags(write=False)
+    return mu, inv_cov
+
+
+@lru_cache(maxsize=128)
+def _compiled_region_matrix(
+    matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+) -> Any:
+    result = np.asarray(matrix, dtype=np.float32)
+    result.setflags(write=False)
+    return result
+
+
+def _gaussian_weight(
+    chroma: Any,
+    mu_rg_bg: tuple[float, float],
+    cov_rg_bg: tuple[tuple[float, float], tuple[float, float]],
+    scale: float,
+    wb_adapt: tuple[float, float] | None,
+) -> Any:
+    transport = (
+        None
+        if wb_adapt is None
+        else (float(wb_adapt[0]), float(wb_adapt[1]))
+    )
+    mu, inv_cov = _compiled_gaussian_parameters(
+        mu_rg_bg, cov_rg_bg, float(scale), transport
+    )
     d = chroma - mu[None, :]
     mahal = d[:, 0] * (inv_cov[0, 0] * d[:, 0] + inv_cov[0, 1] * d[:, 1])
     mahal += d[:, 1] * (inv_cov[1, 0] * d[:, 0] + inv_cov[1, 1] * d[:, 1])
@@ -282,25 +321,37 @@ def _compose_transport(
     return (base[0] * dec[0], base[1] * dec[1])
 
 
-def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple | None = None) -> Any:
+def _scene_chroma_and_signal(rgb: Any) -> tuple[Any, Any]:
     denom = np.maximum(rgb[:, 1], np.float32(EPS))
     chroma = np.empty((rgb.shape[0], 2), dtype=np.float32)
     chroma[:, 0] = rgb[:, 0] / denom
     chroma[:, 1] = rgb[:, 2] / denom
+    return chroma, np.max(rgb, axis=1)
 
+
+def _region_weight_from_chroma(
+    chroma: Any,
+    signal: Any,
+    region: SceneTransformRegion,
+    wb_adapt: tuple | None = None,
+) -> Any:
     transport = _compose_transport(wb_adapt, region.name)
     if region.components:
         # Mixture window: MAX over components, not sum — overlapping lobes must not
         # double-count. Each component transports through von Kries individually.
-        weight = np.zeros((rgb.shape[0],), dtype=np.float32)
+        weight = np.zeros((chroma.shape[0],), dtype=np.float32)
         for comp in region.components:
             comp_w = _gaussian_weight(chroma, comp.mu_rg_bg, comp.cov_rg_bg, region.scale, transport)
             comp_w *= np.float32(min(1.0, max(0.0, comp.weight)))
             np.maximum(weight, comp_w, out=weight)
     else:
         weight = _gaussian_weight(chroma, region.mu_rg_bg, region.cov_rg_bg, region.scale, transport)
-    signal = np.max(rgb, axis=1)
     return np.where(signal > np.float32(EPS), weight, np.float32(0.0))
+
+
+def _region_weight(rgb: Any, region: SceneTransformRegion, wb_adapt: tuple | None = None) -> Any:
+    chroma, signal = _scene_chroma_and_signal(rgb)
+    return _region_weight_from_chroma(chroma, signal, region, wb_adapt)
 
 
 def apply_scene_transform_rec2020(
@@ -308,6 +359,31 @@ def apply_scene_transform_rec2020(
     transform: str = "none",
     strength: float = 1.0,
     wb_adapt: tuple[float, float] | None = None,
+) -> Any:
+    return _apply_scene_transform_rec2020(
+        rgb, transform, strength, wb_adapt, parallel=True
+    )
+
+
+def _apply_scene_transform_rec2020_reference(
+    rgb: Any,
+    transform: str = "none",
+    strength: float = 1.0,
+    wb_adapt: tuple[float, float] | None = None,
+) -> Any:
+    """Serial bit-exact oracle retained for optimized-path validation."""
+    return _apply_scene_transform_rec2020(
+        rgb, transform, strength, wb_adapt, parallel=False
+    )
+
+
+def _apply_scene_transform_rec2020(
+    rgb: Any,
+    transform: str,
+    strength: float,
+    wb_adapt: tuple[float, float] | None,
+    *,
+    parallel: bool,
 ) -> Any:
     """Apply a soft chromaticity-windowed 3x3 scene transform in linear Rec.2020.
 
@@ -324,10 +400,35 @@ def apply_scene_transform_rec2020(
         return rgb
 
     rgb32 = np.nan_to_num(rgb.astype(np.float32, copy=False), nan=0.0, posinf=1e6, neginf=0.0)
-    weights: list[Any] = []
-    for region in preset.regions:
+    shared_chroma = shared_signal = None
+    if parallel:
+        # Every region consumes the same scene chromaticity and signal mask. Building
+        # those arrays once removes repeated full-frame divides/max reductions without
+        # changing any region's Gaussian or blend arithmetic.
+        shared_chroma, shared_signal = _scene_chroma_and_signal(rgb32)
+
+    def region_weight(region: SceneTransformRegion) -> Any:
         eff = max(0.0, region.strength) * min(1.0, max(0.0, region.confidence))
-        weights.append(_region_weight(rgb32, region, wb_adapt) * np.float32(eff))
+        base = (
+            _region_weight_from_chroma(
+                shared_chroma, shared_signal, region, wb_adapt
+            )
+            if shared_chroma is not None
+            else _region_weight(rgb32, region, wb_adapt)
+        )
+        return base * np.float32(eff)
+
+    if (
+        parallel
+        and rgb32.shape[0] >= SCENE_TRANSFORM_REGION_PARALLEL_MIN_PIXELS
+        and len(preset.regions) > 1
+    ):
+        futures = [_REGION_POOL.submit(region_weight, region) for region in preset.regions]
+        # Collect in declaration order; the accumulation below therefore retains the
+        # exact float32 order of the serial oracle.
+        weights = [future.result() for future in futures]
+    else:
+        weights = [region_weight(region) for region in preset.regions]
     total = np.zeros((rgb32.shape[0],), dtype=np.float32)
     for w in weights:
         total += w
@@ -339,7 +440,7 @@ def apply_scene_transform_rec2020(
         w = (weight / norm * global_strength).astype(np.float32, copy=False)
         if not bool(np.any(w > 1e-6)):
             continue
-        matrix = np.asarray(region.matrix, dtype=np.float32)
+        matrix = _compiled_region_matrix(region.matrix)
         mapped = _apply_matrix(rgb32, matrix)
         out += w[:, None] * (mapped - rgb32)
     return np.nan_to_num(out, nan=0.0, posinf=1e6, neginf=-1e6)

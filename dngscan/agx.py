@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any, NamedTuple
 
@@ -13,6 +15,11 @@ except Exception:  # pragma: no cover - handled by dngscan.core import checks
     np = None  # type: ignore[assignment]
 
 EPS = 1e-12
+_FORMATION_POOL = ThreadPoolExecutor(
+    max_workers=min(8, max(2, (os.cpu_count() or 4) - 2)),
+    thread_name_prefix="dngscan-agx-formation",
+)
+_PARALLEL_FORMATION_MIN_PIXELS = 64 * 1024
 
 # Linear Rec.2020 as represented by darktable's ICC profile. LittleCMS adapts its
 # D65 primaries to the D50 PCS before darktable constructs the AgX custom primaries.
@@ -603,13 +610,43 @@ def compress_into_gamut(rgb: Any) -> Any:
     # AgX opponent-luminance constants from the pinned darktable implementation. They
     # intentionally differ from standard Rec.2020 Y and belong only to this negative-RGB
     # guard; scene analysis and the luminance core continue to use true Rec.2020 Y.
-    coeff = np.asarray(
-        [0.2658180370250449, 0.59846986045365, 0.1357121025213052],
-        dtype=np.float32,
-    )
+    coeff = _AGX_OPPONENT_LUMA
     # Malformed NaN/Inf inputs are sanitized by the caller after this reference step;
     # suppress only the expected IEEE invalid-operation warnings so the Python and C++
     # fallback contracts can be tested without polluting normal command output.
+    with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+        input_y = coeff[0] * rgb[:, 0] + coeff[1] * rgb[:, 1] + coeff[2] * rgb[:, 2]
+        max_rgb = np.max(rgb, axis=1)
+        opponent = max_rgb[:, None] - rgb
+        opponent_y = coeff[0] * opponent[:, 0] + coeff[1] * opponent[:, 1] + coeff[2] * opponent[:, 2]
+        max_opponent = np.max(opponent, axis=1)
+        y_compensate_negative = max_opponent - opponent_y + input_y
+        offset = np.maximum(-np.min(rgb, axis=1), 0.0)
+        rgb_offset = rgb + offset[:, None]
+        max_offset = np.max(rgb_offset, axis=1)
+        # ``opponent`` is dead after y_compensate_negative. Reusing it here removes
+        # one full RGB temporary while preserving the exact ufunc calls and order.
+        np.subtract(max_offset[:, None], rgb_offset, out=opponent)
+        max_inverse = np.max(opponent, axis=1)
+        y_inverse = coeff[0] * opponent[:, 0] + coeff[1] * opponent[:, 1] + coeff[2] * opponent[:, 2]
+        y_new = coeff[0] * rgb_offset[:, 0] + coeff[1] * rgb_offset[:, 1] + coeff[2] * rgb_offset[:, 2]
+        y_new = max_inverse - y_inverse + y_new
+        ratio = np.ones_like(y_new)
+        mask = (y_new > y_compensate_negative) & (y_new > EPS)
+        ratio[mask] = y_compensate_negative[mask] / y_new[mask]
+        np.multiply(rgb_offset, ratio[:, None], out=rgb_offset)
+        return rgb_offset
+
+
+_AGX_OPPONENT_LUMA = np.asarray(
+    [0.2658180370250449, 0.59846986045365, 0.1357121025213052],
+    dtype=np.float32,
+)
+
+
+def _compress_into_gamut_reference(rgb: Any) -> Any:
+    """Allocation-heavy oracle retained for bit-exact hot-path tests."""
+    coeff = _AGX_OPPONENT_LUMA
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         input_y = coeff[0] * rgb[:, 0] + coeff[1] * rgb[:, 1] + coeff[2] * rgb[:, 2]
         max_rgb = np.max(rgb, axis=1)
@@ -641,6 +678,32 @@ def _rgb_to_hsv(rgb: Any) -> Any:
     rmask = mask & (maxc == r)
     gmask = mask & (maxc == g) & ~rmask
     bmask = mask & ~rmask & ~gmask
+    safe_delta = np.where(mask, delta, np.float32(1.0))
+    np.copyto(h, ((g - b) / safe_delta) % 6.0, where=rmask)
+    np.copyto(h, (b - r) / safe_delta + 2.0, where=gmask)
+    np.copyto(h, (r - g) / safe_delta + 4.0, where=bmask)
+    h = (h / 6.0) % 1.0
+    s = np.zeros_like(maxc)
+    positive = maxc > EPS
+    np.divide(delta, maxc, out=s, where=positive)
+    out = np.empty((rgb.shape[0], 3), dtype=np.float32)
+    out[:, 0] = h
+    out[:, 1] = s
+    out[:, 2] = maxc
+    return out
+
+
+def _rgb_to_hsv_reference(rgb: Any) -> Any:
+    """Fancy-indexing oracle retained for bit-exact hot-path tests."""
+    r, g, b = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    maxc = np.max(rgb, axis=1)
+    minc = np.min(rgb, axis=1)
+    delta = maxc - minc
+    h = np.zeros_like(maxc)
+    mask = delta > EPS
+    rmask = mask & (maxc == r)
+    gmask = mask & (maxc == g) & ~rmask
+    bmask = mask & ~rmask & ~gmask
     h[rmask] = ((g[rmask] - b[rmask]) / delta[rmask]) % 6.0
     h[gmask] = (b[gmask] - r[gmask]) / delta[gmask] + 2.0
     h[bmask] = (r[bmask] - g[bmask]) / delta[bmask] + 4.0
@@ -652,6 +715,26 @@ def _rgb_to_hsv(rgb: Any) -> Any:
 
 
 def _hsv_to_rgb(hsv: Any) -> Any:
+    h = (hsv[:, 0] % 1.0) * 6.0
+    s = np.clip(hsv[:, 1], 0.0, None)
+    v = hsv[:, 2]
+    i = np.floor(h).astype(np.int32) % 6
+    f = h - np.floor(h)
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    out = np.empty((hsv.shape[0], 3), dtype=np.float32)
+    for idx, (cr, cg, cb) in enumerate([(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)]):
+        m = i == idx
+        if np.any(m):
+            np.copyto(out[:, 0], cr, where=m)
+            np.copyto(out[:, 1], cg, where=m)
+            np.copyto(out[:, 2], cb, where=m)
+    return out
+
+
+def _hsv_to_rgb_reference(hsv: Any) -> Any:
+    """Fancy-indexing oracle retained for bit-exact hot-path tests."""
     h = (hsv[:, 0] % 1.0) * 6.0
     s = np.clip(hsv[:, 1], 0.0, None)
     v = hsv[:, 2]
@@ -841,3 +924,31 @@ def apply_core(rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: An
     gain = channel_ratio_gain(inset, plan, formation_luma_row(outset_matrix))
     linear = apply_formation_curve(inset, plan)
     return finish_formation(linear, pre_hue, plan, outset_matrix, channel_gain=gain)
+
+
+def apply_core_parallel(
+    rgb_rec2020: Any, plan: Any, inset_matrix: Any, outset_matrix: Any
+) -> Any:
+    """Exact formation with independent hue capture overlapped with the curve.
+
+    The two branches consume the same immutable inset and are joined before the
+    original hue restore/outset sequence. No arithmetic is reordered within either
+    branch, so this is byte-for-byte identical to :func:`apply_core`.
+    """
+    if np.asarray(rgb_rec2020).shape[0] < _PARALLEL_FORMATION_MIN_PIXELS:
+        return apply_core(rgb_rec2020, plan, inset_matrix, outset_matrix)
+    hue_restore = _plan_hue_restore(plan)
+    rgb = compress_into_gamut(rgb_rec2020.astype(np.float32, copy=False))
+    inset = _apply_matrix3(rgb, inset_matrix)
+    pre_hue_future = None
+    if hue_restore > 1e-6:
+        nonnegative = np.maximum(inset, 0.0)
+        pre_hue_future = _FORMATION_POOL.submit(_rgb_to_hsv, nonnegative)
+    gain = channel_ratio_gain(inset, plan, formation_luma_row(outset_matrix))
+    linear = apply_formation_curve(inset, plan)
+    pre_hue = (
+        pre_hue_future.result()[:, 0] if pre_hue_future is not None else None
+    )
+    return finish_formation(
+        linear, pre_hue, plan, outset_matrix, channel_gain=gain
+    )

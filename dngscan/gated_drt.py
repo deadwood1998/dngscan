@@ -2,6 +2,8 @@
 """RAW-gated display DRT: darktable-style luminance C1 + permission-weighted AgX color path."""
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ._deps import np
@@ -12,6 +14,10 @@ from . import punch as punch_engine
 from .color import luminance_from_rec2020
 from .models import ColorGeometryPlan, ToneCompressionPlan
 
+_GATED_POOL = ThreadPoolExecutor(
+    max_workers=min(8, max(2, (os.cpu_count() or 4) - 2)),
+    thread_name_prefix="dngscan-gated",
+)
 
 def apply_gated_core(
     rgb_rec2020: Any,
@@ -20,6 +26,36 @@ def apply_gated_core(
     clip_masks_rgb: Any | None = None,
     raw_guidance: Any | None = None,
 ) -> Any:
+    """Run the RAW-gated DRT."""
+    return _apply_gated_core(
+        rgb_rec2020, plan, color_plan, clip_masks_rgb, raw_guidance,
+        parallel_formation=True,
+    )
+
+
+def _apply_gated_core_reference(
+    rgb_rec2020: Any,
+    plan: ToneCompressionPlan,
+    color_plan: ColorGeometryPlan | None = None,
+    clip_masks_rgb: Any | None = None,
+    raw_guidance: Any | None = None,
+) -> Any:
+    """Serial oracle kept for exact optimized-path validation."""
+    return _apply_gated_core(
+        rgb_rec2020, plan, color_plan, clip_masks_rgb, raw_guidance,
+        parallel_formation=False,
+    )
+
+
+def _apply_gated_core(
+    rgb_rec2020: Any,
+    plan: ToneCompressionPlan,
+    color_plan: ColorGeometryPlan | None,
+    clip_masks_rgb: Any | None,
+    raw_guidance: Any | None,
+    *,
+    parallel_formation: bool,
+) -> Any:
     """Luma-first C1 shoulder with RAW-gated AgX colour geometry.
 
     The C1 luminance result is the sole brightness authority. AgX supplies a chromatic
@@ -27,11 +63,24 @@ def apply_gated_core(
     CFA confidence boundary cannot create a brightness seam.
     """
     rgb = np.asarray(rgb_rec2020, dtype=np.float32)
-    lum_mapped = lum_engine.apply_lum_core(rgb, plan)
+    def agx_branch() -> Any:
+        inset, outset = agx_engine.formation_matrices(plan)
+        mapped = (
+            agx_engine.apply_core_parallel(rgb, plan, inset, outset)
+            if parallel_formation
+            else agx_engine.apply_core(rgb, plan, inset, outset)
+        )
+        return punch_engine.apply_punch_rec2020(
+            mapped, float(getattr(plan, "punch_strength", 0.0))
+        )
 
-    inset, outset = agx_engine.formation_matrices(plan)
-    agx_mapped = agx_engine.apply_core(rgb, plan, inset, outset)
-    agx_mapped = punch_engine.apply_punch_rec2020(agx_mapped, float(getattr(plan, "punch_strength", 0.0)))
+    if parallel_formation and rgb.shape[0] >= 64 * 1024:
+        lum_future = _GATED_POOL.submit(lum_engine.apply_lum_core, rgb, plan)
+        agx_mapped = agx_branch()
+        lum_mapped = lum_future.result()
+    else:
+        lum_mapped = lum_engine.apply_lum_core(rgb, plan)
+        agx_mapped = agx_branch()
     target_y = luminance_from_rec2020(lum_mapped)
     agx_y = luminance_from_rec2020(agx_mapped)
     ratio = np.zeros_like(target_y, dtype=np.float32)
@@ -57,6 +106,7 @@ def apply_gated_core(
         raw_headroom_rgb=getattr(raw_guidance, "headroom", None),
         raw_clip_class=getattr(raw_guidance, "clip_class", None),
         raw_snr_confidence=getattr(raw_guidance, "snr_confidence", None),
+        raw_permission=getattr(raw_guidance, "raw_permission", None),
         midtone_protect=midtone_protect,
         highlight_ev_lo=ev_lo,
         highlight_ev_hi=ev_hi,

@@ -167,6 +167,9 @@ class RawGuidanceMaps:
     headroom: Any
     clip_class: Any
     snr_confidence: Any
+    # WB/EV-independent RAW loss permission compiled once from headroom + clip class.
+    # Float32 is intentional: reducing this to float16 changes the gated blend.
+    raw_permission: Any | None = None
 
 
 @dataclass

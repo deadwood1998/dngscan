@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields as dataclass_fields
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,11 @@ except Exception:  # pragma: no cover
 # User-extendable local look registry. The file is ignored by Git so users can keep
 # private experiments without accidentally redistributing third-party colour assets.
 LOOK_FIELDS_JSON = Path(__file__).resolve().parents[1] / "dngscan_assets" / "look_fields.json"
+_LOOK_POOL = ThreadPoolExecutor(
+    max_workers=min(8, max(2, (os.cpu_count() or 4) - 2)),
+    thread_name_prefix="dngscan-look",
+)
+_LOOK_PARALLEL_MIN_PIXELS = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -196,10 +204,17 @@ def _smoothstep(edge0: float, edge1: float, x: Any) -> Any:
     return t * t * (3.0 - 2.0 * t)
 
 
+@lru_cache(maxsize=64)
+def _periodic_table(table: tuple[float, ...]) -> Any:
+    values = np.asarray(table + (table[0],), dtype=np.float32)
+    values.setflags(write=False)
+    return values
+
+
 def _periodic_interp(table: tuple[float, ...], hue_deg: Any) -> Any:
     """Circular linear interpolation of a 12-sector table over hue."""
     n = len(table)
-    vals = np.asarray(table + (table[0],), dtype=np.float32)
+    vals = _periodic_table(table)
     pos = (hue_deg - 15.0) % 360.0 / 30.0
     pos = np.clip(pos, 0.0, float(n) - 1e-5)
     idx = np.floor(pos).astype(np.int32)
@@ -222,6 +237,29 @@ def _hue_in_arc(hue_deg: Any, lo: float, hi: float) -> Any:
 
 
 def apply_look_oklab(lab_l: Any, lab_a: Any, lab_b: Any, look: str, strength: float = 1.0) -> tuple[Any, Any, Any]:
+    return _apply_look_oklab(
+        lab_l, lab_a, lab_b, look, strength, parallel=True
+    )
+
+
+def _apply_look_oklab_reference(
+    lab_l: Any, lab_a: Any, lab_b: Any, look: str, strength: float = 1.0
+) -> tuple[Any, Any, Any]:
+    """Serial oracle retained for exact optimized-path validation."""
+    return _apply_look_oklab(
+        lab_l, lab_a, lab_b, look, strength, parallel=False
+    )
+
+
+def _apply_look_oklab(
+    lab_l: Any,
+    lab_a: Any,
+    lab_b: Any,
+    look: str,
+    strength: float,
+    *,
+    parallel: bool,
+) -> tuple[Any, Any, Any]:
     """Apply the measured chromatic field on Oklab coordinates.
 
     L is untouched. Four operator families:
@@ -232,13 +270,24 @@ def apply_look_oklab(lab_l: Any, lab_a: Any, lab_b: Any, look: str, strength: fl
     """
     field = LOOK_FIELDS[look]
     s = np.float32(max(0.0, strength))
-    chroma = np.hypot(lab_a, lab_b)
-    hue = np.degrees(np.arctan2(lab_b, lab_a)) % 360.0
+    use_parallel = parallel and np.asarray(lab_l).size >= _LOOK_PARALLEL_MIN_PIXELS
+    if use_parallel:
+        chroma_future = _LOOK_POOL.submit(np.hypot, lab_a, lab_b)
+        hue = np.degrees(np.arctan2(lab_b, lab_a)) % 360.0
+        chroma = chroma_future.result()
+    else:
+        chroma = np.hypot(lab_a, lab_b)
+        hue = np.degrees(np.arctan2(lab_b, lab_a)) % 360.0
 
     chroma_w = _smoothstep(0.005, 0.03, chroma)
     rot = np.radians(_periodic_interp(field.hue_rotation_deg, hue)) * s * chroma_w
-    cos_r = np.cos(rot)
-    sin_r = np.sin(rot)
+    if use_parallel:
+        sin_future = _LOOK_POOL.submit(np.sin, rot)
+        cos_r = np.cos(rot)
+        sin_r = sin_future.result()
+    else:
+        cos_r = np.cos(rot)
+        sin_r = np.sin(rot)
     a2 = lab_a * cos_r - lab_b * sin_r
     b2 = lab_a * sin_r + lab_b * cos_r
     hue = np.degrees(np.arctan2(b2, a2)) % 360.0
@@ -247,8 +296,13 @@ def apply_look_oklab(lab_l: Any, lab_a: Any, lab_b: Any, look: str, strength: fl
     if field.skin_hue_pull > 0.0:
         delta = (field.skin_hue_center - hue + 180.0) % 360.0 - 180.0
         pull = np.radians(delta) * np.float32(field.skin_hue_pull) * s * skin_w
-        cos_p = np.cos(pull)
-        sin_p = np.sin(pull)
+        if use_parallel:
+            sin_future = _LOOK_POOL.submit(np.sin, pull)
+            cos_p = np.cos(pull)
+            sin_p = sin_future.result()
+        else:
+            cos_p = np.cos(pull)
+            sin_p = np.sin(pull)
         a3 = a2 * cos_p - b2 * sin_p
         b3 = a2 * sin_p + b2 * cos_p
         a2, b2 = a3, b3
@@ -258,8 +312,13 @@ def apply_look_oklab(lab_l: Any, lab_a: Any, lab_b: Any, look: str, strength: fl
     if field.magenta_hue_pull > 0.0:
         delta = (field.magenta_hue_center - hue + 180.0) % 360.0 - 180.0
         pull = np.radians(delta) * np.float32(field.magenta_hue_pull) * s * magenta_w
-        cos_m = np.cos(pull)
-        sin_m = np.sin(pull)
+        if use_parallel:
+            sin_future = _LOOK_POOL.submit(np.sin, pull)
+            cos_m = np.cos(pull)
+            sin_m = sin_future.result()
+        else:
+            cos_m = np.cos(pull)
+            sin_m = np.sin(pull)
         a3 = a2 * cos_m - b2 * sin_m
         b3 = a2 * sin_m + b2 * cos_m
         a2, b2 = a3, b3
